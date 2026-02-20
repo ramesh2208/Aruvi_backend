@@ -24,8 +24,8 @@ from Crypto.Util.Padding import pad, unpad
 import pyotp
 from cryptography.fernet import Fernet
 
-from backend import models, schemas, database
-from backend.database import engine
+import models, schemas, database
+from database import engine
 
 # Create tables if they don't exist
 models.Base.metadata.create_all(bind=engine)
@@ -2688,3 +2688,4 @@ def timesheet_action(action_req: schemas.TimesheetApprovalAction, db: Session = 
     
     db.commit()
     return {"message": f"Timesheet {action_req.action} successfully"}
+
