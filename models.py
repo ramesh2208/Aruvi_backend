@@ -1,5 +1,5 @@
 from sqlalchemy import Column, Integer, String, Date, DateTime, DECIMAL, Time, Text
-from backend.database import Base
+from database import Base
 
 class EmpDet(Base):
     __tablename__ = "xxits_emp_det_t"
@@ -335,4 +335,5 @@ class TimesheetDet(Base):
     last_updated_by = Column(String(100))
     last_update_date = Column(DateTime)
     last_update_login = Column(String(255))
+
 
