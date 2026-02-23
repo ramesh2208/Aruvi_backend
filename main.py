@@ -2225,6 +2225,33 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
         "notifications": notifications
     }
 
+@app.get("/birthdays-this-month")
+def get_birthdays_this_month(db: Session = Depends(get_db)):
+    today = datetime.now()
+    current_month = today.month
+    current_year = today.year
+
+    all_emps = db.query(models.EmpDet).filter(
+        (models.EmpDet.end_date == None) | (models.EmpDet.end_date == "")
+    ).all()
+
+    birthdays = []
+    for emp in all_emps:
+        if emp.dob and emp.name:
+            dob = parse_date(emp.dob)
+            if dob and dob.month == current_month:
+                display_date = f"{dob.day:02d}-{dob.strftime('%b')}-{current_year}"
+                birthdays.append({
+                    "emp_id": emp.emp_id,
+                    "name": emp.name,
+                    "display_dob": display_date,
+                    "original_dob": emp.dob,
+                    "day": dob.day
+                })
+
+    birthdays.sort(key=lambda x: x["day"])
+    return birthdays
+
 @app.get("/timesheet-month/{emp_id}", response_model=List[schemas.TimesheetResponse])
 def get_timesheet_month(emp_id: str, month: Optional[str] = None, year: Optional[str] = None, db: Session = Depends(get_db)):
     from sqlalchemy import or_, func
@@ -2345,4 +2372,8 @@ def timesheet_action(action_req: schemas.TimesheetApprovalAction, background_tas
     except Exception as e:
         print(f"⚠️ Email notification failed: {e}")
     return {"message": f"Timesheet {action_req.action} successfully"}
+
+
+
+
 
