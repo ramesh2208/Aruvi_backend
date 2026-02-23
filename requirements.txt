@@ -8,3 +8,4 @@ passlib[bcrypt]
 pycryptodome
 pyotp
 cryptography
+requests
