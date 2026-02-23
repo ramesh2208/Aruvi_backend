@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, Form
+from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, case
@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, date
 from typing import List, Optional
 import shutil
 import os
-import smtplib
+import requests
 import random
 import string
 import hashlib
@@ -17,15 +17,13 @@ from sqlalchemy import func
 from pydantic import BaseModel
 from typing import Optional
 import traceback
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 import pyotp
 from cryptography.fernet import Fernet
 
-import models, schemas, database
-from database import engine
+from backend import models, schemas, database
+from backend.database import engine
 
 # Create tables if they don't exist
 models.Base.metadata.create_all(bind=engine)
@@ -175,7 +173,7 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
 
 
 @app.post("/forgot-password")
-def forgot_password(request: schemas.ForgotPasswordRequest, db: Session = Depends(get_db)):
+def forgot_password(request: schemas.ForgotPasswordRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     email = request.email.strip().lower()
     print(f"\n--- 📧 FORGOT PASSWORD ATTEMPT: {email} ---")
     user = db.query(models.EmpDet).filter(func.lower(models.EmpDet.p_mail) == email).first()
@@ -185,14 +183,7 @@ def forgot_password(request: schemas.ForgotPasswordRequest, db: Session = Depend
     otp = ''.join(random.choices(string.digits, k=6))
     otp_store[email] = {"otp": otp, "expires_at": datetime.now() + timedelta(minutes=5)}
     print(f" Generated OTP: {otp}")
-    sender_email = "ramesh.p@ilantechsolutions.com"
-    sender_password = "s#$ITS@9Hs4^Rma"
-    smtp_server = "ilantechsolutions.com"
-    smtp_port = 465
-    msg = MIMEMultipart()
-    msg['From'] = f"Ilan Tech Solutions <{sender_email}>"
-    msg['To'] = email
-    msg['Subject'] = f"ITS - Password Reset Code : {otp} Enclosed"
+    
     body = f"""
     <html>
     <body style="font-family: 'Times New Roman', Times, serif; line-height: 1.6; color: #00008B;">
@@ -214,15 +205,8 @@ def forgot_password(request: schemas.ForgotPasswordRequest, db: Session = Depend
     </body>
     </html>
     """
-    msg.attach(MIMEText(body, 'html'))
-    try:
-        server = smtplib.SMTP_SSL(smtp_server, smtp_port)
-        server.login(sender_email, sender_password)
-        server.sendmail(sender_email, email, msg.as_string())
-        server.quit()
-        print(f"🚀 SUCCESS: OTP sent successfully to {email}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
+    
+    background_tasks.add_task(send_email_notification, email, f"ITS - Password Reset Code : {otp} Enclosed", body)
     return {"message": "OTP sent successfully"}
 
 @app.post("/verify-otp")
@@ -519,20 +503,24 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         grace_end_time = datetime.strptime("10:00:00", fmt)
         checkout_grace_start = datetime.strptime("18:30:00", fmt)
         checkout_grace_end = datetime.strptime("19:00:00", fmt)
+        
         if grace_start_time <= t1 <= grace_end_time:
             t1 = grace_start_time
             checkin_record.in_time = "09:30:00"
         if checkout_grace_start <= t2 <= checkout_grace_end:
             t2 = checkout_grace_end
             checkin_record.out_time = "19:00:00"
+            
         delta = t2 - t1
         total_seconds = int(delta.total_seconds())
         if total_seconds < 0:
             total_seconds = 0
+            
         hours = total_seconds // 3600
         minutes = (total_seconds % 3600) // 60
         checkin_record.Total_hours = f"{hours}h {minutes}m"
         total_hours_float = hours + (minutes / 60)
+        
         if total_hours_float < 4:
             checkin_record.status = "CL"
             try:
@@ -543,13 +531,27 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
                     leave_type="Casual Leave",
                     from_date=today_formatted,
                     to_date=today_formatted,
-                    days=1.0,
+                    days="1.0",
                     reason=f"Auto-deducted: Worked only {hours}h {minutes}m (below 4 hours)",
                     status="Approved",
                     created_by=emp_id,
                     creation_date=now,
                     last_updated_by=emp_id,
-                    last_update_date=now
+                    last_update_date=now,
+                    # Added missing fields to avoid MySQL NOT NULL errors
+                    applied_date=today_formatted,
+                    mail_message_id="",
+                    hr_action="",
+                    hr_approval="",
+                    admin_approval="",
+                    lop_days="0",
+                    remarks="",
+                    approved_by="System",
+                    reporting_manager="",
+                    approver="",
+                    revision="1",
+                    attribute_category="",
+                    last_update_login=emp_id
                 )
                 db.add(auto_leave)
                 print(f"✅ Auto-deducted 1 CL for {emp_id} - worked {total_hours_float:.2f} hours")
@@ -559,14 +561,22 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
             checkin_record.status = "0.5P"
         else:
             checkin_record.status = "P"
+            
+        db.commit()
     except Exception as e:
-        print(f"Time calc error: {e}")
-        checkin_record.Total_hours = "0h 0m"
-        checkin_record.status = "Error"
-    db.commit()
+        db.rollback()
+        print(f"❌ Check-out Error: {str(e)}")
+        # If it failed during time calc or leave insert, at least try to save out_time
+        try:
+            checkin_record.out_time = request.out_time
+            checkin_record.status = "Error"
+            db.commit()
+        except:
+            db.rollback()
+        
     return {
         "message": "Check-out successful",
-        "total_hours": checkin_record.Total_hours,
+        "total_hours": checkin_record.Total_hours or "0h 0m",
         "status": checkin_record.status
     }
 
@@ -666,28 +676,41 @@ def send_email_notification(to_email: str, subject: str, body_html: str):
     if not to_email:
         print("⚠️ Email notification skipped: No recipient email provided")
         return False
-    sender_email = "ramesh.p@ilantechsolutions.com"
-    sender_password = "s#$ITS@9Hs4^Rma"
-    smtp_server = "ilantechsolutions.com"
-    smtp_port = 465
-    msg = MIMEMultipart()
-    msg['From'] = f"Ilan Tech Solutions <{sender_email}>"
-    msg['To'] = to_email
-    msg['Subject'] = subject
-    msg.attach(MIMEText(body_html, 'html'))
+    
+    # NEW: Use the user-provided API to bypass SMTP blocks (e.g. on Render free tier)
+    url = "http://devbms.ilantechsolutions.com/attendance/send-mail/"
+    api_key = "my_secret_key_123"
+    
+    payload = {
+        "to_email": to_email,
+        "subject": subject,
+        "body": body_html
+    }
+    
+    headers = {
+        "x-api-key": api_key,
+        "Content-Type": "application/json"
+    }
+    
     try:
-        server = smtplib.SMTP_SSL(smtp_server, smtp_port)
-        server.login(sender_email, sender_password)
-        server.sendmail(sender_email, to_email, msg.as_string())
-        server.quit()
-        print(f"🚀 EMAIL SENT successfully to {to_email}")
-        return True
+        print(f"📧 Attempting to send email via API to: {to_email}")
+        response = requests.post(url, json=payload, headers=headers, timeout=15)
+        
+        if response.status_code in [200, 201]:
+            print(f"🚀 EMAIL SENT successfully via API to {to_email}")
+            return True
+        else:
+            print(f"❌ API FAILED to send email to {to_email}: Status {response.status_code}")
+            print(f"   Response Preview: {response.text[:200]}")
+            return False
+            
     except Exception as e:
-        print(f"❌ FAILED to send email to {to_email}: {str(e)}")
+        print(f"❌ ERROR calling email API for {to_email}: {str(e)}")
         return False
 
 @app.post("/apply-leave")
 async def apply_leave(
+    background_tasks: BackgroundTasks,
     emp_id: str = Form(...),
     leave_type: str = Form(...),
     from_date: str = Form(...),
@@ -771,7 +794,7 @@ async def apply_leave(
                     <p>Please review and approve/reject via the Aruvi Mobile App.</p>
                 </body></html>
                 """
-                send_email_notification(manager.p_mail, subject, body)
+                background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
     except Exception as e:
         print(f"❌ DATABASE ERROR: {str(e)}")
         db.rollback()
@@ -833,7 +856,7 @@ def get_all_leave_history(manager_id: Optional[str] = None, db: Session = Depend
     return results
 
 @app.post("/admin/approve-leave")
-def approve_leave(request_item: schemas.LeaveApprovalAction, db: Session = Depends(get_db)):
+def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     leave = db.query(models.EmpLeave).filter(models.EmpLeave.l_id == request_item.l_id).first()
     if not leave:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Leave request not found")
@@ -878,7 +901,7 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, db: Session = Depen
                 <p><strong>Action By:</strong> {leave.approved_by or 'Manager'}</p>
             </body></html>
             """
-            send_email_notification(emp_user.p_mail, subject, body)
+            background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
     except Exception as e:
         print(f"⚠️ Email notification failed: {e}")
     return {"message": f"Leave request {request_item.action.lower()} successfully", "approved_by": leave.approved_by}
@@ -1373,7 +1396,7 @@ def clear_all_notifications(user_id: str, db: Session = Depends(get_db)):
 
 
 @app.post("/apply-permission")
-def apply_permission(request: schemas.PermissionApplyRequest, db: Session = Depends(get_db)):
+def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     from datetime import datetime, time
     target_emp_id = request.emp_id.strip()
     user = db.query(models.EmpDet).filter(
@@ -1460,7 +1483,7 @@ def apply_permission(request: schemas.PermissionApplyRequest, db: Session = Depe
                     <p>Thanks & Regards,<br><strong>{user.name}</strong></p>
                 </body></html>
                 """
-                send_email_notification(manager.p_mail, subject, body)
+                background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
         return {"message": "Permission request submitted successfully", "p_id": new_perm.p_id}
     except Exception as e:
         print(f"❌ DB ERROR in apply_permission: {str(e)}")
@@ -1524,7 +1547,7 @@ def get_all_permission_history(manager_id: Optional[str] = None, db: Session = D
     return results
 
 @app.post("/admin/approve-permission")
-def approve_permission(request: schemas.PermissionApprovalAction, db: Session = Depends(get_db)):
+def approve_permission(request: schemas.PermissionApprovalAction, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     perm = db.query(models.EmpPermission).filter(models.EmpPermission.p_id == request.p_id).first()
     if not perm:
         raise HTTPException(status_code=404, detail="Permission request not found")
@@ -1576,7 +1599,7 @@ def approve_permission(request: schemas.PermissionApprovalAction, db: Session = 
                 <p>Thanks & Regards,<br>Ilan Tech Solutions</p>
             </body></html>
             """
-            send_email_notification(emp_user.p_mail, subject, body)
+            background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
     except Exception as e:
         print(f"⚠️ Email notification failed: {e}")
     return {"message": f"Permission {request.action.lower()} successfully"}
@@ -1630,7 +1653,7 @@ def get_all_ot_history(manager_id: Optional[str] = None, db: Session = Depends(g
     return results
 
 @app.post("/admin/approve-ot")
-def approve_ot(request: schemas.OverTimeApprovalAction, db: Session = Depends(get_db)):
+def approve_ot(request: schemas.OverTimeApprovalAction, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     ot = db.query(models.OverTimeDet).filter(models.OverTimeDet.ot_id == request.ot_id).first()
     if not ot:
         raise HTTPException(status_code=404, detail="OT request not found")
@@ -1660,13 +1683,13 @@ def approve_ot(request: schemas.OverTimeApprovalAction, db: Session = Depends(ge
                 <br><p>Thanks & Regards,<br>Ilan Tech Solutions</p>
             </body></html>
             """
-            send_email_notification(emp_user.p_mail, subject, body)
+            background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
     except Exception as e:
         print(f"⚠️ Email notification failed: {e}")
     return {"message": f"OT request {request.action.lower()} successfully"}
 
 @app.post("/apply-ot")
-def apply_ot(request: schemas.OverTimeApplyRequest, db: Session = Depends(get_db)):
+def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     try:
         user = db.query(models.EmpDet).filter(func.trim(models.EmpDet.emp_id) == request.emp_id.strip()).first()
         if not user:
@@ -1709,7 +1732,7 @@ def apply_ot(request: schemas.OverTimeApplyRequest, db: Session = Depends(get_db
                     <p>Thanks & Regards,<br><strong>{user.name}</strong></p>
                 </body></html>
                 """
-                send_email_notification(manager.p_mail, subject, body)
+                background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
         return {"message": "OT request submitted successfully", "ot_id": new_ot.ot_id}
     except Exception as e:
         print(f"❌ OT INSERT ERROR: {str(e)}")
@@ -1799,7 +1822,7 @@ def get_all_wfh_history(manager_id: Optional[str] = None, db: Session = Depends(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/admin/approve-wfh")
-def approve_wfh(request: schemas.WFHApprovalAction, db: Session = Depends(get_db)):
+def approve_wfh(request: schemas.WFHApprovalAction, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     wfh = db.query(models.WFHDet).filter(models.WFHDet.wfh_id == request.wfh_id).first()
     if not wfh:
         raise HTTPException(status_code=404, detail="WFH request not found")
@@ -1828,7 +1851,7 @@ def approve_wfh(request: schemas.WFHApprovalAction, db: Session = Depends(get_db
                 <br><p>Thanks & Regards,<br>Ilan Tech Solutions</p>
             </body></html>
             """
-            send_email_notification(emp_user.p_mail, subject, body)
+            background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
     except Exception as e:
         print(f"⚠️ Email notification failed: {e}")
     return {"message": f"WFH request {request.action.lower()} successfully"}
@@ -1843,28 +1866,30 @@ def get_wfh_stats(emp_id: str, db: Session = Depends(get_db)):
     return {"total": total_wfh, "approved": approved_wfh, "rejected": rejected_wfh}
 
 @app.post("/apply-wfh")
-def apply_wfh(request: schemas.WFHApplyRequest, db: Session = Depends(get_db)):
+def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     try:
+        clean_emp_id = request.emp_id.strip()
         new_wfh = models.WFHDet(
-            emp_id=request.emp_id,
+            emp_id=clean_emp_id,
             from_date=request.date,
             to_date=request.date,
             days="1",
             reason=request.reason,
             status=request.status or "Pending",
-            created_by=request.emp_id,
+            created_by=clean_emp_id,
             creation_date=datetime.now(),
-            last_updated_by=request.emp_id,
+            last_updated_by=clean_emp_id,
             last_update_date=datetime.now(),
-            last_update_login=request.emp_id,
+            last_update_login=clean_emp_id,
             remarks=""
         )
         db.add(new_wfh)
         db.commit()
         db.refresh(new_wfh)
-        user = db.query(models.EmpDet).filter(func.trim(models.EmpDet.emp_id) == request.emp_id.strip()).first()
+        user = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == clean_emp_id.lower()).first()
         if user and user.manager_id:
-            manager = db.query(models.EmpDet).filter(func.trim(models.EmpDet.emp_id) == user.manager_id.strip()).first()
+            manager_id_clean = user.manager_id.strip()
+            manager = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == manager_id_clean.lower()).first()
             if manager and manager.p_mail:
                 try:
                     wfh_date_dt = parse_date(request.date)
@@ -1882,7 +1907,7 @@ def apply_wfh(request: schemas.WFHApplyRequest, db: Session = Depends(get_db)):
                     <p>Thanks & Regards,<br><strong>{user.name}</strong></p>
                 </body></html>
                 """
-                send_email_notification(manager.p_mail, subject, body)
+                background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
         return {"message": "WFH request submitted successfully", "wfh_id": new_wfh.wfh_id}
     except Exception as e:
         db.rollback()
@@ -2082,8 +2107,57 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
                     "time": perm.creation_date.strftime("%Y-%m-%d %H:%M") if perm.creation_date else "",
                     "type": "alert", "icon": "time-outline"
                 })
+            
+            # WFH Notifications (Manager)
+            pending_wfh = db.query(models.WFHDet, models.EmpDet.name)\
+                .join(models.EmpDet, models.WFHDet.emp_id == models.EmpDet.emp_id)\
+                .filter(models.WFHDet.status == 'Pending')\
+                .filter(func.lower(func.trim(models.EmpDet.manager_id)) == emp_id.lower())\
+                .order_by(models.WFHDet.creation_date.desc()).limit(5).all()
+            for wfh, name in pending_wfh:
+                notifications.append({
+                    "id": f"mgr_wfh_{wfh.wfh_id}", "title": "New WFH Request (Team)",
+                    "message": f"{name} requested WFH for {wfh.from_date}",
+                    "time": wfh.creation_date.strftime("%Y-%m-%d %H:%M") if wfh.creation_date else "",
+                    "type": "alert", "icon": "home-outline"
+                })
+
+            # OT Notifications (Manager)
+            pending_ots = db.query(models.OverTimeDet, models.EmpDet.name)\
+                .join(models.EmpDet, func.lower(func.trim(models.OverTimeDet.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id)))\
+                .filter(func.lower(models.OverTimeDet.status) == 'pending')\
+                .filter(func.lower(func.trim(models.EmpDet.manager_id)) == emp_id.lower())\
+                .order_by(models.OverTimeDet.creation_date.desc()).limit(5).all()
+            for ot, name in pending_ots:
+                notifications.append({
+                    "id": f"mgr_ot_{ot.ot_id}", "title": "New OT Request (Team)",
+                    "message": f"{name} requested OT for {ot.ot_date}",
+                    "time": ot.creation_date.strftime("%Y-%m-%d %H:%M") if ot.creation_date else "",
+                    "type": "alert", "icon": "time-outline"
+                })
         except Exception as e:
             print(f"Error fetching manager notifications: {e}")
+    
+    # All Admin view
+    if is_admin:
+        try:
+             # WFH Notifications (Admin)
+            pending_wfh_admin = db.query(models.WFHDet, models.EmpDet.name)\
+                .join(models.EmpDet, models.WFHDet.emp_id == models.EmpDet.emp_id)\
+                .filter(models.WFHDet.status == 'Pending')\
+                .order_by(models.WFHDet.creation_date.desc()).limit(5).all()
+            for wfh, name in pending_wfh_admin:
+                # Avoid duplicates if already added by manager logic
+                if not any(n["id"] == f"mgr_wfh_{wfh.wfh_id}" for n in notifications):
+                    notifications.append({
+                        "id": f"admin_wfh_{wfh.wfh_id}", "title": "New WFH Request",
+                        "message": f"{name} requested WFH for {wfh.from_date}",
+                        "time": wfh.creation_date.strftime("%Y-%m-%d %H:%M") if wfh.creation_date else "",
+                        "type": "alert", "icon": "home-outline"
+                    })
+        except Exception as e:
+            print(f"Error fetching admin wfh notifications: {e}")
+
     try:
         my_leave_updates = db.query(models.EmpLeave)\
             .filter(models.EmpLeave.emp_id == emp_id)\
@@ -2110,6 +2184,36 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
                 "message": f"Your permission request for {perm.date.strftime('%d-%b-%Y') if perm.date else ''} was {perm.status}",
                 "time": perm.last_update_date.strftime("%Y-%m-%d %H:%M") if perm.last_update_date else "",
                 "type": "success" if perm.status == 'Approved' else "error",
+                "icon": "time-outline"
+            })
+        
+        # WFH Updates for Employee
+        my_wfh_updates = db.query(models.WFHDet)\
+            .filter(models.WFHDet.emp_id == emp_id)\
+            .filter(models.WFHDet.status.in_(['Approved', 'Rejected']))\
+            .filter(models.WFHDet.last_update_date >= recent_date_limit)\
+            .order_by(models.WFHDet.last_update_date.desc()).limit(5).all()
+        for wfh in my_wfh_updates:
+            notifications.append({
+                "id": f"emp_wfh_{wfh.wfh_id}", "title": f"WFH {wfh.status}",
+                "message": f"Your WFH request for {wfh.from_date} was {wfh.status}",
+                "time": wfh.last_update_date.strftime("%Y-%m-%d %H:%M") if wfh.last_update_date else "",
+                "type": "success" if wfh.status == 'Approved' else "error",
+                "icon": "home-outline"
+            })
+
+        # OT Updates for Employee
+        my_ot_updates = db.query(models.OverTimeDet)\
+            .filter(func.lower(func.trim(models.OverTimeDet.emp_id)) == emp_id.lower())\
+            .filter(models.OverTimeDet.status.in_(['Approved', 'Rejected', 'approved', 'rejected']))\
+            .filter(models.OverTimeDet.last_update_date >= recent_date_limit)\
+            .order_by(models.OverTimeDet.last_update_date.desc()).limit(5).all()
+        for ot in my_ot_updates:
+            notifications.append({
+                "id": f"emp_ot_{ot.ot_id}", "title": f"OT {ot.status}",
+                "message": f"Your OT request for {ot.ot_date} was {ot.status}",
+                "time": ot.last_update_date.strftime("%Y-%m-%d %H:%M") if ot.last_update_date else "",
+                "type": "success" if ot.status.lower() == 'approved' else "error",
                 "icon": "time-outline"
             })
     except Exception as e:
@@ -2208,7 +2312,7 @@ def get_admin_timesheet_employees(month: Optional[str] = None, year: Optional[st
     return results
 
 @app.post("/admin/timesheet/action")
-def timesheet_action(action_req: schemas.TimesheetApprovalAction, db: Session = Depends(get_db)):
+def timesheet_action(action_req: schemas.TimesheetApprovalAction, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     ts = db.query(models.TimesheetDet).filter(models.TimesheetDet.t_id == action_req.t_id).first()
     if not ts:
         raise HTTPException(status_code=404, detail="Timesheet record not found")
@@ -2237,8 +2341,7 @@ def timesheet_action(action_req: schemas.TimesheetApprovalAction, db: Session = 
                 <br><p>Thanks & Regards,<br>Ilan Tech Solutions</p>
             </body></html>
             """
-            send_email_notification(emp_user.p_mail, subject, body)
+            background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
     except Exception as e:
         print(f"⚠️ Email notification failed: {e}")
     return {"message": f"Timesheet {action_req.action} successfully"}
-
