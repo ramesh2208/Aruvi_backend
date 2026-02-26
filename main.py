@@ -28,6 +28,33 @@ from database import engine
 # Create tables if they don't exist
 models.Base.metadata.create_all(bind=engine)
 
+# Proactive Migration for WFH table
+def migrate_wfh_table():
+    from sqlalchemy import text
+    db = SessionLocal()
+    try:
+        # Check if WFHDet has 'to_date'
+        try:
+            db.execute(text("SELECT to_date FROM xxits_aruvi_wfh_det_t LIMIT 1"))
+        except Exception:
+            print("⚠️ Migration: Adding to_date to xxits_aruvi_wfh_det_t")
+            db.execute(text("ALTER TABLE xxits_aruvi_wfh_det_t ADD COLUMN to_date VARCHAR(20)"))
+            db.commit()
+
+        # Check if WFHDet has 'days'
+        try:
+            db.execute(text("SELECT days FROM xxits_aruvi_wfh_det_t LIMIT 1"))
+        except Exception:
+            print("⚠️ Migration: Adding days to xxits_aruvi_wfh_det_t")
+            db.execute(text("ALTER TABLE xxits_aruvi_wfh_det_t ADD COLUMN days VARCHAR(15)"))
+            db.commit()
+    except Exception as e:
+        print(f"❌ Migration Error: {e}")
+    finally:
+        db.close()
+
+migrate_wfh_table()
+
 # In-memory OTP storage
 otp_store = {}
 
@@ -721,8 +748,11 @@ async def apply_leave(
     attachment: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db)
 ):
+    emp_id = emp_id.strip()
     user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == emp_id).first()
     emp_name = user.name if user else 'Unknown'
+    normalized_leave_type = (leave_type or "").strip().lower()
+    requested_days = float(days or 0)
     attachment_path = None
     if attachment:
         upload_dir = "uploads/leave_attachments"
@@ -735,11 +765,77 @@ async def apply_leave(
         attachment_path = file_path
     print(f"📝 Processing Leave Request for: {emp_id}, Type: {leave_type}, Days: {days}")
     try:
+        req_from = parse_date(from_date)
+        req_to = parse_date(to_date)
+        if not req_from or not req_to:
+            raise HTTPException(status_code=400, detail="Invalid From/To date format")
+        if req_to < req_from:
+            raise HTTPException(status_code=400, detail="To date must be on or after from date")
+
+        if requested_days <= 0:
+            raise HTTPException(status_code=400, detail="Invalid leave days")
+
+        existing_leaves = db.query(models.EmpLeave).filter(
+            func.lower(func.trim(models.EmpLeave.emp_id)) == emp_id.lower(),
+            func.lower(func.trim(models.EmpLeave.status)).in_(["pending", "approved"])
+        ).all()
+        for row in existing_leaves:
+            row_from = parse_date(row.from_date)
+            row_to = parse_date(row.to_date) if row.to_date else row_from
+            if not row_from or not row_to:
+                continue
+            if not (req_to < row_from or req_from > row_to):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Leave already applied for overlapping dates ({row.from_date} to {row.to_date})."
+                )
+
+        if normalized_leave_type == "casual leave":
+            # Enforce maximum 3 casual leave days per month.
+            month_usage: dict[str, float] = {}
+            for row in existing_leaves:
+                if (row.leave_type or "").strip().lower() != "casual leave":
+                    continue
+                row_from = parse_date(row.from_date)
+                row_to = parse_date(row.to_date) if row.to_date else row_from
+                if not row_from or not row_to:
+                    continue
+                if row_to < row_from:
+                    row_from, row_to = row_to, row_from
+                cur = row_from
+                daily_share = float(row.days or 0) / ((row_to - row_from).days + 1 or 1)
+                while cur <= row_to:
+                    key = f"{cur.year}-{cur.month:02d}"
+                    month_usage[key] = month_usage.get(key, 0.0) + daily_share
+                    cur = cur + timedelta(days=1)
+
+            req_month_usage: dict[str, float] = {}
+            req_cur = req_from
+            req_daily_share = requested_days / ((req_to - req_from).days + 1 or 1)
+            while req_cur <= req_to:
+                req_key = f"{req_cur.year}-{req_cur.month:02d}"
+                req_month_usage[req_key] = req_month_usage.get(req_key, 0.0) + req_daily_share
+                req_cur = req_cur + timedelta(days=1)
+
+            for month_key, req_value in req_month_usage.items():
+                used_value = month_usage.get(month_key, 0.0)
+                if used_value + req_value > 3.0001:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Casual Leave max is 3 days per month ({month_key}). Remaining should be applied as LOP."
+                    )
+
         l_type_key = leave_type.strip().lower().split(' ')[0]
         balance_row = db.query(models.LeaveDet).filter(
             func.lower(func.trim(models.LeaveDet.emp_id)) == emp_id.strip().lower(),
             func.lower(func.trim(models.LeaveDet.leave_type)).contains(l_type_key)
         ).first()
+        if balance_row:
+            available_leave = float(balance_row.available_leave or 0)
+            if available_leave <= 0:
+                raise HTTPException(status_code=400, detail=f"{leave_type} balance is 0")
+            if requested_days > available_leave + 0.0001:
+                raise HTTPException(status_code=400, detail=f"Insufficient {leave_type} balance")
         det_id = balance_row.l_det_id if balance_row else None
         new_leave = models.EmpLeave(
             l_det_id=det_id,
@@ -747,7 +843,7 @@ async def apply_leave(
             leave_type=leave_type,
             from_date=from_date,
             to_date=to_date,
-            days=str(days),
+            days=str(requested_days),
             reason=reason,
             status=status,
             file=attachment_path,
@@ -772,7 +868,7 @@ async def apply_leave(
         )
         db.add(new_leave)
         if balance_row:
-            days_count = float(days)
+            days_count = requested_days
             balance_row.availed_leave = float(balance_row.availed_leave or 0) + days_count
             if balance_row.available_leave is not None:
                 balance_row.available_leave = float(balance_row.available_leave or 0) - days_count
@@ -795,6 +891,9 @@ async def apply_leave(
                 </body></html>
                 """
                 background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         print(f"❌ DATABASE ERROR: {str(e)}")
         db.rollback()
@@ -1421,6 +1520,18 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
         if not p_date_dt:
             raise HTTPException(status_code=400, detail="Invalid date format")
         p_date = p_date_dt.date()
+
+        duplicate_perm = db.query(models.EmpPermission).filter(
+            func.lower(func.trim(models.EmpPermission.emp_id)) == user.emp_id.strip().lower(),
+            models.EmpPermission.date == p_date,
+            func.lower(func.trim(models.EmpPermission.status)).in_(["pending", "approved"])
+        ).first()
+        if duplicate_perm:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Permission already applied for {p_date.strftime('%d-%b-%Y')}."
+            )
+
         h1, m1 = f_time.hour, f_time.minute
         h2, m2 = t_time.hour, t_time.minute
         diff_mins = (h2 * 60 + m2) - (h1 * 60 + m1)
@@ -1485,6 +1596,9 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                 """
                 background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
         return {"message": "Permission request submitted successfully", "p_id": new_perm.p_id}
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         print(f"❌ DB ERROR in apply_permission: {str(e)}")
         db.rollback()
@@ -1695,6 +1809,18 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
         if not user:
             raise HTTPException(status_code=404, detail="Employee not found")
         target_emp_id = user.emp_id
+        ot_date_clean = (request.ot_date or "").strip()
+        if not ot_date_clean:
+            raise HTTPException(status_code=400, detail="Invalid OT date")
+
+        duplicate_ot = db.query(models.OverTimeDet).filter(
+            func.lower(func.trim(models.OverTimeDet.emp_id)) == target_emp_id.strip().lower(),
+            func.lower(func.trim(models.OverTimeDet.ot_date)) == ot_date_clean.lower(),
+            func.lower(func.trim(models.OverTimeDet.status)).in_(["pending", "approved"])
+        ).first()
+        if duplicate_ot:
+            raise HTTPException(status_code=400, detail=f"OT already applied for {ot_date_clean}.")
+
         new_ot = models.OverTimeDet(
             emp_id=target_emp_id,
             ot_date=request.ot_date,
@@ -1734,6 +1860,9 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
                 """
                 background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
         return {"message": "OT request submitted successfully", "ot_id": new_ot.ot_id}
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         print(f"❌ OT INSERT ERROR: {str(e)}")
         db.rollback()
@@ -1869,48 +1998,95 @@ def get_wfh_stats(emp_id: str, db: Session = Depends(get_db)):
 def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     try:
         clean_emp_id = request.emp_id.strip()
+        from_date_input = request.from_date or request.date
+        if not from_date_input:
+            raise HTTPException(status_code=400, detail="from_date is required")
+        from_date = from_date_input.strip()
+        to_date = (request.to_date or from_date).strip()
+        days_val = str(request.days) if request.days is not None else "1"
+
+        req_from = parse_date(from_date)
+        req_to = parse_date(to_date)
+        if not req_from or not req_to:
+            raise HTTPException(status_code=400, detail="Invalid WFH from/to date format")
+        if req_to < req_from:
+            raise HTTPException(status_code=400, detail="To date must be on or after from date")
+
+        existing_wfh = db.query(models.WFHDet).filter(
+            func.lower(func.trim(models.WFHDet.emp_id)) == clean_emp_id.lower(),
+            func.lower(func.trim(models.WFHDet.status)).in_(["pending", "approved"])
+        ).all()
+        for row in existing_wfh:
+            row_from = parse_date(row.from_date)
+            row_to = parse_date(row.to_date) if row.to_date else row_from
+            if not row_from or not row_to:
+                continue
+            if not (req_to < row_from or req_from > row_to):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"WFH already applied for overlapping dates ({row.from_date} to {row.to_date})."
+                )
+
+        print(f"📋 WFH Apply: emp={clean_emp_id} from={from_date} to={to_date} days={days_val}")
+
+        submitter = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == clean_emp_id.lower()
+        ).first()
+        creator_name = (submitter.name or clean_emp_id).strip() if submitter else clean_emp_id
+        normalized_status = (request.status or "Pending").strip() or "Pending"
+        if normalized_status.lower() == "pending":
+            normalized_status = "Pending"
+
         new_wfh = models.WFHDet(
             emp_id=clean_emp_id,
-            from_date=request.date,
-            to_date=request.date,
-            days="1",
+            from_date=from_date,
+            to_date=to_date,
+            days=days_val,
             reason=request.reason,
-            status=request.status or "Pending",
-            created_by=clean_emp_id,
+            status=normalized_status,
+            created_by=creator_name,
             creation_date=datetime.now(),
             last_updated_by=clean_emp_id,
             last_update_date=datetime.now(),
-            last_update_login=clean_emp_id,
-            remarks=""
+            last_update_login=clean_emp_id
         )
         db.add(new_wfh)
         db.commit()
         db.refresh(new_wfh)
-        user = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == clean_emp_id.lower()).first()
+        print(f"✅ WFH inserted: ID={new_wfh.wfh_id}")
+
+        user = submitter
         if user and user.manager_id:
             manager_id_clean = user.manager_id.strip()
             manager = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == manager_id_clean.lower()).first()
             if manager and manager.p_mail:
                 try:
-                    wfh_date_dt = parse_date(request.date)
-                    wfh_date_str = wfh_date_dt.strftime("%d-%b-%Y") if wfh_date_dt else request.date
+                    from_dt = parse_date(from_date)
+                    to_dt = parse_date(to_date)
+                    from_str = from_dt.strftime("%d-%b-%Y") if from_dt else from_date
+                    to_str = to_dt.strftime("%d-%b-%Y") if to_dt else to_date
                 except:
-                    wfh_date_str = request.date
+                    from_str = from_date
+                    to_str = to_date
                 customer_name = user.attribute3 if user.attribute3 else "Internal"
-                subject = f"ITS - {user.name} – {customer_name} - WFH | {wfh_date_str}"
+                subject = f"ITS - {user.name} – {customer_name} - WFH | {from_str} to {to_str} ({days_val} Days)"
                 body = f"""
                 <html><body style="font-family: 'Times New Roman', Times, serif; color: #00008B;">
                     <p>Dear {manager.name} ,</p>
                     <p>Good Evening! I hope you are doing well. </p>
-                    <p>I would like to request Work From Home for {wfh_date_str} (1 Day) due to {request.reason}</p>
+                    <p>I would like to request Work From Home from <strong>{from_str}</strong> to <strong>{to_str}</strong> ({days_val} Days) due to {request.reason}</p>
                     <p>Kindly, Approve the same to proceed.</p>
-                    <p>Thanks & Regards,<br><strong>{user.name}</strong></p>
+                    <p>Thanks &amp; Regards,<br><strong>{user.name}</strong></p>
                 </body></html>
                 """
                 background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
         return {"message": "WFH request submitted successfully", "wfh_id": new_wfh.wfh_id}
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
+        print(f"❌ WFH INSERT ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/wfh-history/{emp_id}")
@@ -1918,7 +2094,12 @@ def get_wfh_history(emp_id: str, db: Session = Depends(get_db)):
     history = db.query(models.WFHDet).filter(
         func.lower(func.trim(models.WFHDet.emp_id)) == emp_id.lower()
     ).order_by(models.WFHDet.wfh_id.desc()).all()
-    return [{"id": r.wfh_id, "date": r.from_date, "reason": r.reason, "status": r.status,
+    return [{"id": r.wfh_id,
+             "date": r.from_date,
+             "to_date": r.to_date,
+             "days": r.days,
+             "reason": r.reason,
+             "status": r.status,
              "submittedDate": r.creation_date.strftime("%Y-%m-%d") if r.creation_date else "N/A"}
             for r in history]
 
@@ -2372,8 +2553,3 @@ def timesheet_action(action_req: schemas.TimesheetApprovalAction, background_tas
     except Exception as e:
         print(f"⚠️ Email notification failed: {e}")
     return {"message": f"Timesheet {action_req.action} successfully"}
-
-
-
-
-
