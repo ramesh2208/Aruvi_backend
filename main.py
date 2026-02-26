@@ -1988,7 +1988,6 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
         submitter = db.query(models.EmpDet).filter(
             func.lower(func.trim(models.EmpDet.emp_id)) == clean_emp_id.lower()
         ).first()
-        emp_name = submitter.name if submitter and submitter.name else clean_emp_id
         normalized_status = (request.status or "Pending").strip() or "Pending"
         if normalized_status.lower() == "pending":
             normalized_status = "Pending"
@@ -2000,11 +1999,11 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
             days=days_val,
             reason=request.reason,
             status=normalized_status,
-            created_by=emp_name,
+            created_by=clean_emp_id,
             creation_date=datetime.now(),
-            last_updated_by=emp_name,
+            last_updated_by=clean_emp_id,
             last_update_date=datetime.now(),
-            last_update_login=emp_name
+            last_update_login=clean_emp_id
         )
         db.add(new_wfh)
         db.commit()
