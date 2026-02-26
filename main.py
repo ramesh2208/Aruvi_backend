@@ -2032,7 +2032,6 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
         submitter = db.query(models.EmpDet).filter(
             func.lower(func.trim(models.EmpDet.emp_id)) == clean_emp_id.lower()
         ).first()
-        creator_name = (submitter.name or clean_emp_id).strip() if submitter else clean_emp_id
         normalized_status = (request.status or "Pending").strip() or "Pending"
         if normalized_status.lower() == "pending":
             normalized_status = "Pending"
@@ -2044,7 +2043,8 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
             days=days_val,
             reason=request.reason,
             status=normalized_status,
-            created_by=creator_name,
+            # Keep DB audit columns as employee ID to match legacy table expectations/constraints.
+            created_by=clean_emp_id,
             creation_date=datetime.now(),
             last_updated_by=clean_emp_id,
             last_update_date=datetime.now(),
@@ -2087,6 +2087,7 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
     except Exception as e:
         db.rollback()
         print(f"❌ WFH INSERT ERROR: {str(e)}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/wfh-history/{emp_id}")
