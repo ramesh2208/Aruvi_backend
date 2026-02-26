@@ -23,7 +23,7 @@ import pyotp
 from cryptography.fernet import Fernet
 
 import models, schemas, database
-from database import engine
+from database import engine , SessionLocal
 
 # Create tables if they don't exist
 models.Base.metadata.create_all(bind=engine)
