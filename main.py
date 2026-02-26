@@ -565,7 +565,6 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
                     creation_date=now,
                     last_updated_by=emp_id,
                     last_update_date=now,
-                    # Added missing fields to avoid MySQL NOT NULL errors
                     applied_date=today_formatted,
                     mail_message_id="",
                     hr_action="",
@@ -593,7 +592,6 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         print(f"❌ Check-out Error: {str(e)}")
-        # If it failed during time calc or leave insert, at least try to save out_time
         try:
             checkin_record.out_time = request.out_time
             checkin_record.status = "Error"
@@ -704,7 +702,6 @@ def send_email_notification(to_email: str, subject: str, body_html: str):
         print("⚠️ Email notification skipped: No recipient email provided")
         return False
     
-    # NEW: Use the user-provided API to bypass SMTP blocks (e.g. on Render free tier)
     url = "http://devbms.ilantechsolutions.com/attendance/send-mail/"
     api_key = "my_secret_key_123"
     
@@ -791,7 +788,6 @@ async def apply_leave(
                 )
 
         if normalized_leave_type == "casual leave":
-            # Enforce maximum 3 casual leave days per month.
             month_usage: dict[str, float] = {}
             for row in existing_leaves:
                 if (row.leave_type or "").strip().lower() != "casual leave":
@@ -1006,27 +1002,6 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
     return {"message": f"Leave request {request_item.action.lower()} successfully", "approved_by": leave.approved_by}
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# NOTIFICATIONS — FIXED VERSION
-# ═══════════════════════════════════════════════════════════════════════════
-#
-# KEY FIXES:
-#
-# 1. STABLE IDs — Admin:
-#    ID = f"{type}_{record_id}"  e.g. "leave_42"
-#    When admin approves leave_42, the notification ID stays "leave_42".
-#    The frontend's knownNotifIds already has "leave_42", so NO spurious toast.
-#    The status/icon/color in the notification body will just update.
-#
-# 2. STABLE IDs — Employee:
-#    Old code: f"leave_{l_id}_{status.lower()}"  — changing status = new ID = unwanted toast
-#    New code: f"leave_{l_id}"  — ID never changes regardless of status
-#
-# 3. LAST_UPDATE_DATE for ordering — ensures status-changed items bubble up
-#    and the frontend can detect actual status changes if needed.
-#
-# ═══════════════════════════════════════════════════════════════════════════
-
 @app.get("/notifications/{user_id}")
 def get_notifications(
     user_id: str,
@@ -1034,20 +1009,9 @@ def get_notifications(
     manager_id: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
-    """
-    Fetch notifications for Leave, Permission, OT, WFH, Timesheet.
-    - Admin:    All requests (Pending/Approved/Rejected) from subordinates
-    - Employee: All their own requests (Pending/Approved/Rejected)
-
-    NOTIFICATION ID RULES (stable IDs prevent false "new notification" toasts):
-    - Admin   : f"{type}_{record_id}"          e.g. "leave_42", "ot_7"
-    - Employee: f"{type}_{record_id}"          e.g. "leave_42", "permission_3"
-      (status is NOT included in the ID — status changes don't create new IDs)
-    """
     user_id = user_id.strip()
     notifications = []
 
-    # ── Cutoff date (for approved/rejected; pending always shown) ───────────
     user = db.query(models.EmpDet).filter(
         func.lower(func.trim(models.EmpDet.emp_id)) == user_id.lower()
     ).first()
@@ -1062,7 +1026,6 @@ def get_notifications(
     effective_cutoff = last_clear_date if last_clear_date else (datetime.now() - timedelta(days=30))
     print(f"📅 Notifications for {user_id} | role={role} | cutoff={effective_cutoff}")
 
-    # ── Helper functions ─────────────────────────────────────────────────────
     def status_type(s: str):
         s = (s or '').lower()
         if s == 'pending':  return 'pending'
@@ -1085,25 +1048,24 @@ def get_notifications(
         return s or 'Unknown'
 
     def cutoff_filter(status_col, date_col, creation_col):
-        """Always show pending; show others only if updated after cutoff."""
         return or_(
             func.lower(status_col) == 'pending',
             func.coalesce(date_col, creation_col) > effective_cutoff
         )
 
     # ════════════════════════════════════════════════════════════════════════
-    # ADMIN - SHOW ONLY PENDING REQUESTS
+    # ADMIN
     # ════════════════════════════════════════════════════════════════════════
     if role.lower() == 'admin':
         print(f"🔍 ADMIN notifications for {user_id} (manager_id={manager_id}) - SHOWING ONLY PENDING")
 
-        # ── 1. Permission ────────────────────────────────────────────────────
+        # 1. Permission
         q_perms = (
             db.query(models.EmpPermission, models.EmpDet)
             .outerjoin(models.EmpDet,
                 func.lower(func.trim(models.EmpPermission.emp_id)) ==
                 func.lower(func.trim(models.EmpDet.emp_id)))
-            .filter(func.lower(models.EmpPermission.status) == "pending")  # ADMIN: Only pending
+            .filter(func.lower(models.EmpPermission.status) == "pending")
             .filter(cutoff_filter(
                 models.EmpPermission.status,
                 models.EmpPermission.last_update_date,
@@ -1132,7 +1094,6 @@ def get_notifications(
                 st = perm.status or 'Pending'
                 update_time = perm.last_update_date or perm.creation_date
                 notifications.append({
-                    # ✅ STABLE ID — no status suffix
                     "id": f"permission_{perm.p_id}",
                     "record_id": perm.p_id,
                     "type": status_type(st),
@@ -1146,13 +1107,13 @@ def get_notifications(
             except Exception as e:
                 print(f"   Error formatting permission {perm.p_id}: {e}")
 
-        # ── 2. Leave ─────────────────────────────────────────────────────────
+        # 2. Leave
         q_leaves = (
             db.query(models.EmpLeave, models.EmpDet)
             .outerjoin(models.EmpDet,
                 func.lower(func.trim(models.EmpLeave.emp_id)) ==
                 func.lower(func.trim(models.EmpDet.emp_id)))
-            .filter(func.lower(models.EmpLeave.status) == "pending")  # ADMIN: Only pending
+            .filter(func.lower(models.EmpLeave.status) == "pending")
             .filter(cutoff_filter(
                 models.EmpLeave.status,
                 models.EmpLeave.last_update_date,
@@ -1172,7 +1133,6 @@ def get_notifications(
                 st = leave.status or 'Pending'
                 update_time = (leave.last_update_date or leave.creation_date or leave.applied_date)
                 notifications.append({
-                    # ✅ STABLE ID
                     "id": f"leave_{leave.l_id}",
                     "record_id": leave.l_id,
                     "type": status_type(st),
@@ -1187,13 +1147,13 @@ def get_notifications(
             except Exception as e:
                 print(f"   Error formatting leave {leave.l_id}: {e}")
 
-        # ── 3. OT ────────────────────────────────────────────────────────────
+        # 3. OT
         q_ot = (
             db.query(models.OverTimeDet, models.EmpDet)
             .outerjoin(models.EmpDet,
                 func.lower(func.trim(models.OverTimeDet.emp_id)) ==
                 func.lower(func.trim(models.EmpDet.emp_id)))
-            .filter(func.lower(models.OverTimeDet.status) == "pending")  # ADMIN: Only pending
+            .filter(func.lower(models.OverTimeDet.status) == "pending")
             .filter(cutoff_filter(
                 models.OverTimeDet.status,
                 models.OverTimeDet.last_update_date,
@@ -1213,7 +1173,6 @@ def get_notifications(
                 st = ot.status or 'Pending'
                 update_time = ot.last_update_date or ot.creation_date
                 notifications.append({
-                    # ✅ STABLE ID
                     "id": f"ot_{ot.ot_id}",
                     "record_id": ot.ot_id,
                     "type": status_type(st),
@@ -1227,14 +1186,14 @@ def get_notifications(
             except Exception as e:
                 print(f"   Error formatting OT {ot.ot_id}: {e}")
 
-        # ── 4. WFH ───────────────────────────────────────────────────────────
+        # 4. WFH
         try:
             q_wfh = (
                 db.query(models.WFHDet, models.EmpDet)
                 .outerjoin(models.EmpDet,
                     func.lower(func.trim(models.WFHDet.emp_id)) ==
                     func.lower(func.trim(models.EmpDet.emp_id)))
-                .filter(func.lower(models.WFHDet.status) == "pending")  # ADMIN: Only pending
+                .filter(func.lower(models.WFHDet.status) == "pending")
                 .filter(cutoff_filter(
                     models.WFHDet.status,
                     models.WFHDet.last_update_date,
@@ -1254,7 +1213,6 @@ def get_notifications(
                     st = wfh.status or 'Pending'
                     update_time = wfh.last_update_date or wfh.creation_date
                     notifications.append({
-                        # ✅ STABLE ID
                         "id": f"wfh_{wfh.wfh_id}",
                         "record_id": wfh.wfh_id,
                         "type": status_type(st),
@@ -1269,17 +1227,15 @@ def get_notifications(
                     print(f"   Error formatting WFH {wfh.wfh_id}: {e}")
         except Exception as wfh_error:
             print(f"⚠️ Error fetching WFH notifications (admin): {wfh_error}")
-            import traceback
             traceback.print_exc()
-            # Continue with other notifications even if WFH fails
 
-        # ── 5. Timesheet ─────────────────────────────────────────────────────
+        # 5. Timesheet
         q_timesheets = (
             db.query(models.TimesheetDet, models.EmpDet)
             .outerjoin(models.EmpDet,
                 func.lower(func.trim(models.TimesheetDet.emp_id)) ==
                 func.lower(func.trim(models.EmpDet.emp_id)))
-            .filter(func.lower(models.TimesheetDet.status) == "pending")  # ADMIN: Only pending
+            .filter(func.lower(models.TimesheetDet.status) == "pending")
             .filter(cutoff_filter(
                 models.TimesheetDet.status,
                 models.TimesheetDet.last_update_date,
@@ -1299,7 +1255,6 @@ def get_notifications(
                 st = ts.status or 'Pending'
                 update_time = ts.last_update_date or ts.creation_date
                 notifications.append({
-                    # ✅ STABLE ID
                     "id": f"timesheet_{ts.t_id}",
                     "record_id": ts.t_id,
                     "type": status_type(st),
@@ -1314,17 +1269,17 @@ def get_notifications(
                 print(f"   Error formatting Timesheet {ts.t_id}: {e}")
 
     # ════════════════════════════════════════════════════════════════════════
-    # EMPLOYEE - SHOW ONLY APPROVED REQUESTS
+    # EMPLOYEE
     # ════════════════════════════════════════════════════════════════════════
     else:
         print(f"🔍 EMPLOYEE notifications for {user_id} - SHOWING ONLY APPROVED")
 
-        # ── 1. Leave ─────────────────────────────────────────────────────────
+        # 1. Leave
         for leave in (
             db.query(models.EmpLeave)
             .filter(
                 func.lower(func.trim(models.EmpLeave.emp_id)) == user_id.lower(),
-                func.lower(models.EmpLeave.status) == "approved",  # EMPLOYEE: Only approved
+                func.lower(models.EmpLeave.status) == "approved",
                 cutoff_filter(
                     models.EmpLeave.status,
                     models.EmpLeave.last_update_date,
@@ -1337,7 +1292,6 @@ def get_notifications(
             st = leave.status or 'Pending'
             update_time = leave.last_update_date or leave.creation_date
             notifications.append({
-                # ✅ STABLE ID — no status suffix
                 "id": f"leave_{leave.l_id}",
                 "record_id": leave.l_id,
                 "type": status_type(st),
@@ -1350,12 +1304,12 @@ def get_notifications(
                 "screen": f"/EmployeeLeave?tab=history&id={leave.l_id}"
             })
 
-        # ── 2. Permission ────────────────────────────────────────────────────
+        # 2. Permission
         for perm in (
             db.query(models.EmpPermission)
             .filter(
                 func.lower(func.trim(models.EmpPermission.emp_id)) == user_id.lower(),
-                func.lower(models.EmpPermission.status) == "approved",  # EMPLOYEE: Only approved
+                func.lower(models.EmpPermission.status) == "approved",
                 cutoff_filter(
                     models.EmpPermission.status,
                     models.EmpPermission.last_update_date,
@@ -1371,7 +1325,6 @@ def get_notifications(
                           else str(perm.date or ''))
             update_time = perm.last_update_date or perm.creation_date
             notifications.append({
-                # ✅ STABLE ID
                 "id": f"permission_{perm.p_id}",
                 "record_id": perm.p_id,
                 "type": status_type(st),
@@ -1383,7 +1336,7 @@ def get_notifications(
                 "screen": f"/EmployeePermission?tab=history&id={perm.p_id}"
             })
 
-        # ── 3. OT ────────────────────────────────────────────────────────────
+        # 3. OT
         for ot in (
             db.query(models.OverTimeDet)
             .filter(
@@ -1401,7 +1354,6 @@ def get_notifications(
             st = ot.status or 'Pending'
             update_time = ot.last_update_date or ot.creation_date
             notifications.append({
-                # ✅ STABLE ID
                 "id": f"ot_{ot.ot_id}",
                 "record_id": ot.ot_id,
                 "type": status_type(st),
@@ -1413,7 +1365,7 @@ def get_notifications(
                 "screen": f"/EmployeeOt?tab=history&id={ot.ot_id}"
             })
 
-        # ── 4. WFH ───────────────────────────────────────────────────────────
+        # 4. WFH
         try:
             for wfh in (
                 db.query(models.WFHDet)
@@ -1432,7 +1384,6 @@ def get_notifications(
                 st = wfh.status or 'Pending'
                 update_time = wfh.last_update_date or wfh.creation_date
                 notifications.append({
-                    # ✅ STABLE ID
                     "id": f"wfh_{wfh.wfh_id}",
                     "record_id": wfh.wfh_id,
                     "type": status_type(st),
@@ -1445,9 +1396,8 @@ def get_notifications(
                 })
         except Exception as wfh_error:
             print(f"⚠️ Error fetching WFH notifications: {wfh_error}")
-            # Continue with other notifications even if WFH fails
 
-        # ── 5. Timesheet ─────────────────────────────────────────────────────
+        # 5. Timesheet
         for ts in (
             db.query(models.TimesheetDet)
             .filter(
@@ -1465,7 +1415,6 @@ def get_notifications(
             st = ts.status or 'Pending'
             update_time = ts.last_update_date or ts.creation_date
             notifications.append({
-                # ✅ STABLE ID
                 "id": f"timesheet_{ts.t_id}",
                 "record_id": ts.t_id,
                 "type": status_type(st),
@@ -1920,9 +1869,14 @@ def get_pending_wfh(manager_id: Optional[str] = None, db: Session = Depends(get_
     results = []
     for wfh, emp in pending:
         results.append({
-            "wfh_id": wfh.wfh_id, "emp_name": emp.name or "Unknown", "emp_id": emp.emp_id or "N/A",
-            "date": wfh.from_date, "from_date": wfh.from_date, "to_date": wfh.to_date,
-            "reason": wfh.reason or "No reason", "remarks": wfh.remarks or "",
+            "wfh_id": wfh.wfh_id,
+            "emp_name": emp.name or "Unknown",
+            "emp_id": emp.emp_id or "N/A",
+            "date": wfh.from_date,
+            "from_date": wfh.from_date,
+            "to_date": wfh.to_date,
+            "reason": wfh.reason or "No reason",
+            "remarks": "",
             "status": wfh.status or "Pending",
             "submittedDate": wfh.creation_date.strftime("%d-%b-%Y") if wfh.creation_date else "N/A"
         })
@@ -1940,10 +1894,16 @@ def get_all_wfh_history(manager_id: Optional[str] = None, db: Session = Depends(
         results = []
         for wfh, emp in all_wfh:
             results.append({
-                "wfh_id": wfh.wfh_id, "emp_name": emp.name if emp else "Unknown",
-                "emp_id": wfh.emp_id, "date": wfh.from_date, "from_date": wfh.from_date,
-                "to_date": wfh.to_date, "days": wfh.days, "reason": wfh.reason or "No reason",
-                "remarks": wfh.remarks or "", "status": wfh.status or "Pending",
+                "wfh_id": wfh.wfh_id,
+                "emp_name": emp.name if emp else "Unknown",
+                "emp_id": wfh.emp_id,
+                "date": wfh.from_date,
+                "from_date": wfh.from_date,
+                "to_date": wfh.to_date,
+                "days": wfh.days,
+                "reason": wfh.reason or "No reason",
+                "remarks": "",
+                "status": wfh.status or "Pending",
                 "submittedDate": wfh.creation_date.strftime("%d-%b-%Y") if wfh.creation_date else "N/A"
             })
         return results
@@ -1956,12 +1916,8 @@ def approve_wfh(request: schemas.WFHApprovalAction, background_tasks: Background
     if not wfh:
         raise HTTPException(status_code=404, detail="WFH request not found")
     wfh.status = request.action
-    wfh.remarks = request.remarks
     wfh.last_update_date = datetime.now()
     admin_user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == request.admin_id.strip()).first()
-    if admin_user:
-        existing_remarks = wfh.remarks or ""
-        wfh.remarks = f"{existing_remarks} (Action by: {admin_user.name})".strip() if existing_remarks else f"Action by: {admin_user.name}"
     db.commit()
     try:
         emp_user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == wfh.emp_id).first()
@@ -2032,6 +1988,7 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
         submitter = db.query(models.EmpDet).filter(
             func.lower(func.trim(models.EmpDet.emp_id)) == clean_emp_id.lower()
         ).first()
+        emp_name = submitter.name if submitter and submitter.name else clean_emp_id
         normalized_status = (request.status or "Pending").strip() or "Pending"
         if normalized_status.lower() == "pending":
             normalized_status = "Pending"
@@ -2043,12 +2000,11 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
             days=days_val,
             reason=request.reason,
             status=normalized_status,
-            # Keep DB audit columns as employee ID to match legacy table expectations/constraints.
-            created_by=clean_emp_id,
+            created_by=emp_name,
             creation_date=datetime.now(),
-            last_updated_by=clean_emp_id,
+            last_updated_by=emp_name,
             last_update_date=datetime.now(),
-            last_update_login=clean_emp_id
+            last_update_login=emp_name
         )
         db.add(new_wfh)
         db.commit()
@@ -2163,7 +2119,6 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
             h_date = parse_date(h.Office_Holiday_Date)
             if h_date:
                 h_date_flat = h_date.replace(hour=0, minute=0, second=0, microsecond=0)
-                # Show if in current month OR within next 90 days
                 if h_date_flat.month == today.month and h_date_flat.year == today.year:
                     show_h = True
                 elif 0 <= (h_date_flat - today_flat).days <= 90:
@@ -2185,15 +2140,12 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
 
     # 2. Birthdays & Anniversaries
     for emp in all_emps:
-        # Birthdays
         if emp.dob:
             bday = parse_date(emp.dob)
             if bday:
-                # Convert birth year to current year for display/sorting
                 this_year_bday = bday.replace(year=today.year)
                 this_year_bday_flat = this_year_bday.replace(hour=0, minute=0, second=0, microsecond=0)
                 
-                # Show if in current month OR within next 60 days
                 if this_year_bday_flat.month == today.month or (0 <= (this_year_bday_flat - today_flat).days <= 60):
                     upcoming_events.append({
                         "id": f"bday_{emp.emp_id}_{this_year_bday.strftime('%Y%m%d')}",
@@ -2202,7 +2154,6 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
                         "raw_date": this_year_bday_flat
                     })
 
-        # Anniversaries
         if emp.date_of_joining:
             join_date = parse_date(emp.date_of_joining)
             if join_date:
@@ -2217,7 +2168,6 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
                         "raw_date": this_anniv_flat
                     })
 
-    # Sort all events month-wise (chronological)
     upcoming_events.sort(key=lambda x: x["raw_date"])
     for event in upcoming_events:
         del event["raw_date"]
@@ -2290,7 +2240,6 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
                     "type": "alert", "icon": "time-outline"
                 })
             
-            # WFH Notifications (Manager)
             pending_wfh = db.query(models.WFHDet, models.EmpDet.name)\
                 .join(models.EmpDet, models.WFHDet.emp_id == models.EmpDet.emp_id)\
                 .filter(models.WFHDet.status == 'Pending')\
@@ -2304,7 +2253,6 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
                     "type": "alert", "icon": "home-outline"
                 })
 
-            # OT Notifications (Manager)
             pending_ots = db.query(models.OverTimeDet, models.EmpDet.name)\
                 .join(models.EmpDet, func.lower(func.trim(models.OverTimeDet.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id)))\
                 .filter(func.lower(models.OverTimeDet.status) == 'pending')\
@@ -2320,16 +2268,13 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
         except Exception as e:
             print(f"Error fetching manager notifications: {e}")
     
-    # All Admin view
     if is_admin:
         try:
-             # WFH Notifications (Admin)
             pending_wfh_admin = db.query(models.WFHDet, models.EmpDet.name)\
                 .join(models.EmpDet, models.WFHDet.emp_id == models.EmpDet.emp_id)\
                 .filter(models.WFHDet.status == 'Pending')\
                 .order_by(models.WFHDet.creation_date.desc()).limit(5).all()
             for wfh, name in pending_wfh_admin:
-                # Avoid duplicates if already added by manager logic
                 if not any(n["id"] == f"mgr_wfh_{wfh.wfh_id}" for n in notifications):
                     notifications.append({
                         "id": f"admin_wfh_{wfh.wfh_id}", "title": "New WFH Request",
@@ -2369,7 +2314,6 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
                 "icon": "time-outline"
             })
         
-        # WFH Updates for Employee
         my_wfh_updates = db.query(models.WFHDet)\
             .filter(models.WFHDet.emp_id == emp_id)\
             .filter(models.WFHDet.status.in_(['Approved', 'Rejected']))\
@@ -2384,7 +2328,6 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
                 "icon": "home-outline"
             })
 
-        # OT Updates for Employee
         my_ot_updates = db.query(models.OverTimeDet)\
             .filter(func.lower(func.trim(models.OverTimeDet.emp_id)) == emp_id.lower())\
             .filter(models.OverTimeDet.status.in_(['Approved', 'Rejected', 'approved', 'rejected']))\
