@@ -112,16 +112,26 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
     print(f"📧 Username input: {username_input}")
     prefix = username_input.split("@")[0] if "@" in username_input else username_input
 
-    user = db.query(models.EmpDet).filter(
-        (func.lower(models.EmpDet.p_mail) == username_input) |
-        (func.lower(models.EmpDet.mail_id) == username_input) |
-        (func.upper(models.EmpDet.emp_id) == prefix.upper()) |
-        (func.lower(models.EmpDet.p_mail).like(f"{prefix}%"))
-    ).first()
+    if len(prefix) <= 3:
+        # Require exact match for short inputs to prevent accidental logins with single letters
+        user = db.query(models.EmpDet).filter(
+            (func.lower(models.EmpDet.p_mail) == username_input) |
+            (func.lower(models.EmpDet.mail) == username_input) |
+            (func.upper(models.EmpDet.emp_id) == prefix.upper())
+        ).first()
+    else:
+        # Allow prefix matches for longer inputs
+        user = db.query(models.EmpDet).filter(
+            (func.lower(models.EmpDet.p_mail) == username_input) |
+            (func.lower(models.EmpDet.mail) == username_input) |
+            (func.upper(models.EmpDet.emp_id) == prefix.upper()) |
+            (func.lower(models.EmpDet.p_mail).like(f"{prefix}@%")) | # Match name part of email
+            (func.lower(models.EmpDet.name).like(f"{prefix}%"))
+        ).first()
 
     if not user:
         print(f"❌ User not found for input: {username_input}")
-        raise HTTPException(status_code=404, detail="Username Wrong")
+        raise HTTPException(status_code=404, detail="Invalid Username")
 
     print(f"✅ User FOUND: {user.emp_id} ({user.p_mail})")
 
@@ -159,7 +169,7 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
 
     if not password_valid:
         print("❌ PASSWORD FAILED")
-        raise HTTPException(status_code=401, detail="Password Wrong")
+        raise HTTPException(status_code=401, detail="Invalid Password")
 
     print("✅ PASSWORD VERIFIED")
 
@@ -410,7 +420,7 @@ def get_employees(manager_id: Optional[str] = None, db: Session = Depends(get_db
             "name": emp.name or "Unknown",
             "phone": emp.phone_number or emp.alt_phone_number or "N/A",
             "status": "active" if not emp.end_date else "inactive",
-            "email": emp.p_mail or emp.mail_id or "",
+            "email": emp.p_mail or emp.mail or "",
             "department": domain_name,
             "designation": emp.role_type or "Employee",
             "doj": emp.date_of_joining or "",
@@ -445,8 +455,11 @@ def get_employee_profile(emp_id: str, db: Session = Depends(get_db)):
         "domain": domain_name,
         "department": user.dpt_id or "N/A",
         "role": user.role_type or "N/A",
-        "personal_mail": user.p_mail,
-        "professional_mail": user.mail_id,
+        "email": user.mail or user.p_mail,
+        "p_mail": user.p_mail,
+        "mail": user.mail,
+        "personal_mail": user.mail,
+        "professional_mail": user.p_mail,
         "permanent_address": user.p_address,
         "password": user.password,
         "aadhaar_no": user.aadhar_no,
@@ -641,38 +654,44 @@ def get_leave_stats(emp_id: str, db: Session = Depends(get_db)):
         "casualLeave": {"total": 0, "availed": 0},
         "sickLeave": {"total": 0, "availed": 0},
         "maternityPaternity": {"total": 0, "availed": 0},
-        "marriageLeave": {"total": 0, "availed": 0},
+        "marriageLeave": {"total": 5, "availed": 0}, # standard 5 days
         "total": 0,
         "availed": 0
     }
-    total_allowed = 0
-    total_availed = 0
+    
+    cl_total, sl_total, mp_total, mr_total = 0, 0, 0, 5
+    cl_availed, sl_availed, mp_availed, mr_availed = 0, 0, 0, 0
+
     for row in leave_rows:
         l_type = (row.leave_type or "").lower()
         try:
-            t_leave = float(row.total_leave or 0)
-            a_leave = float(row.availed_leave or 0)
+            t_val = float(row.total_leave or 0)
+            a_val = float(row.availed_leave or 0)
         except:
-            t_leave = 0
-            a_leave = 0
-        is_counted = False
-        if 'casual' in l_type:
-            stats["casualLeave"] = {"total": t_leave, "availed": a_leave}
-            is_counted = True
-        elif 'sick' in l_type:
-            stats["sickLeave"] = {"total": t_leave, "availed": a_leave}
-            is_counted = True
-        elif 'maternity' in l_type or 'paternity' in l_type:
-            stats["maternityPaternity"] = {"total": t_leave, "availed": a_leave}
-            is_counted = True
+            t_val, a_val = 0, 0
+            
+        if 'casual' in l_type or l_type == 'cl':
+            cl_total = t_val
+            cl_availed = a_val
+        elif 'sick' in l_type or l_type == 'sl':
+            sl_total = t_val
+            sl_availed = a_val
+        elif 'maternity' in l_type or 'paternity' in l_type or l_type in ['ml', 'pl']:
+            mp_total = t_val
+            mp_availed = a_val
         elif 'marriage' in l_type:
-            stats["marriageLeave"] = {"total": t_leave, "availed": a_leave}
-            is_counted = True
-        if is_counted:
-            total_allowed += t_leave
-            total_availed += a_leave
-    stats["total"] = total_allowed
-    stats["availed"] = total_availed
+            # We use standard 5 for total, but take availed from DB
+            mr_availed = a_val
+
+    stats["casualLeave"] = {"total": cl_total, "availed": cl_availed}
+    stats["sickLeave"] = {"total": sl_total, "availed": sl_availed}
+    stats["maternityPaternity"] = {"total": mp_total, "availed": mp_availed}
+    stats["marriageLeave"] = {"total": mr_total, "availed": mr_availed}
+    
+    # Grand Total = CL + SL + MP + MR(5)
+    stats["total"] = cl_total + sl_total + mp_total + mr_total
+    stats["availed"] = cl_availed + sl_availed + mp_availed + mr_availed
+    
     return stats
 
 @app.get("/leave-history/{emp_id}")
@@ -742,7 +761,7 @@ async def apply_leave(
     days: float = Form(...),
     reason: str = Form(...),
     status: str = Form(...),
-    attachment: Optional[UploadFile] = File(None),
+    attachments: Optional[List[UploadFile]] = File(None),
     db: Session = Depends(get_db)
 ):
     emp_id = emp_id.strip()
@@ -750,17 +769,31 @@ async def apply_leave(
     emp_name = user.name if user else 'Unknown'
     normalized_leave_type = (leave_type or "").strip().lower()
     requested_days = float(days or 0)
-    attachment_path = None
-    if attachment:
+    
+    # Process multiple attachments
+    attachment_paths = []
+    if attachments:
+        # Check image count constraint if some images are uploaded
+        images = [f for f in attachments if f.content_type and f.content_type.startswith('image/')]
+        if len(images) > 0 and (len(images) < 5 or len(images) > 8):
+            raise HTTPException(status_code=400, detail="Please upload between 5 to 8 images.")
+
         upload_dir = "uploads/leave_attachments"
         os.makedirs(upload_dir, exist_ok=True)
-        file_extension = attachment.filename.split('.')[-1]
-        file_name = f"{emp_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{file_extension}"
-        file_path = os.path.join(upload_dir, file_name)
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(attachment.file, buffer)
-        attachment_path = file_path
-    print(f"📝 Processing Leave Request for: {emp_id}, Type: {leave_type}, Days: {days}")
+        
+        for file in attachments:
+            file_extension = file.filename.split('.')[-1]
+            file_name = f"{emp_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{len(attachment_paths)}.{file_extension}"
+            file_path = os.path.join(upload_dir, file_name)
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+            attachment_paths.append(file_path)
+    
+    # comma-separated for attribute14
+    attr14_paths = ",".join(attachment_paths) if attachment_paths else None
+    primary_attachment_path = attachment_paths[0] if attachment_paths else None
+    
+    print(f"📝 Processing Leave Request for: {emp_id}, Type: {leave_type}, Days: {days}, Attachments: {len(attachment_paths)}")
     try:
         req_from = parse_date(from_date)
         req_to = parse_date(to_date)
@@ -842,7 +875,8 @@ async def apply_leave(
             days=str(requested_days),
             reason=reason,
             status=status,
-            file=attachment_path,
+            file=primary_attachment_path,
+            attribute14=attr14_paths,
             applied_date=datetime.now().strftime('%Y-%m-%d'),
             mail_message_id="",
             hr_action="",
@@ -1487,13 +1521,27 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
         if diff_mins < 0: diff_mins += 24 * 60
         if diff_mins <= 0:
             raise HTTPException(status_code=400, detail="To Time must be after From Time")
+        
+        # New Logic:
+        # 1 minutes to 60 minutes means permitted hours will be 1 hours
+        # 61 minutes to 120 minutes to permitted hours 2 hours
+        # ather then 2 hours above cosider lop hours
+        # like 2 hhours 1 minutes means consider 1 minutes lop hours and 2 hours only approved hours
+        
+        if diff_mins <= 60:
+            approved_hrs = 1.0
+            lop_hrs = 0.0
+        elif diff_mins <= 120:
+            approved_hrs = 2.0
+            lop_hrs = 0.0
+        else:
+            approved_hrs = 2.0
+            lop_hrs = (diff_mins - 120) / 60.0
+
         duration_hrs = diff_mins / 60.0
-        if duration_hrs > 4:
-            raise HTTPException(status_code=400, detail="Permission duration cannot exceed 4 hours")
-        approved_hrs = min(duration_hrs, 2.0)
-        lop_hrs = max(0.0, duration_hrs - 2.0)
-        final_total_hours = request.total_hours if request.total_hours is not None else f"{duration_hrs:.1f}"
-        final_dis_total_hours = request.dis_total_hours if request.dis_total_hours is not None else f"{lop_hrs:.1f}"
+        
+        final_total_hours = f"{duration_hrs:.1f}"
+        final_dis_total_hours = f"{lop_hrs:.1f}"
         final_status = request.status if request.status else "Pending"
         new_remaining = 0.0
         try:
