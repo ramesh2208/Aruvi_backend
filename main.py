@@ -37,7 +37,7 @@ def migrate_wfh_table():
         try:
             db.execute(text("SELECT to_date FROM xxits_aruvi_wfh_det_t LIMIT 1"))
         except Exception:
-            print("⚠️ Migration: Adding to_date to xxits_aruvi_wfh_det_t")
+            print(" Migration: Adding to_date to xxits_aruvi_wfh_det_t")
             db.execute(text("ALTER TABLE xxits_aruvi_wfh_det_t ADD COLUMN to_date VARCHAR(20)"))
             db.commit()
 
@@ -45,11 +45,11 @@ def migrate_wfh_table():
         try:
             db.execute(text("SELECT days FROM xxits_aruvi_wfh_det_t LIMIT 1"))
         except Exception:
-            print("⚠️ Migration: Adding days to xxits_aruvi_wfh_det_t")
+            print(" Migration: Adding days to xxits_aruvi_wfh_det_t")
             db.execute(text("ALTER TABLE xxits_aruvi_wfh_det_t ADD COLUMN days VARCHAR(15)"))
             db.commit()
     except Exception as e:
-        print(f"❌ Migration Error: {e}")
+        print(f" Migration Error: {e}")
     finally:
         db.close()
 
@@ -104,12 +104,12 @@ def parse_date(d):
 @app.post("/login", response_model=schemas.Token)
 def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
     print("\n" + "="*60)
-    print("🔐 LOGIN ATTEMPT (DEBUG MODE)")
+    print(" LOGIN ATTEMPT (DEBUG MODE)")
     print("="*60)
 
     username_input = request.username.strip().lower()
     input_pwd = request.password.strip()
-    print(f"📧 Username input: {username_input}")
+    print(f" Username input: {username_input}")
     prefix = username_input.split("@")[0] if "@" in username_input else username_input
 
     if len(prefix) <= 3:
@@ -130,13 +130,13 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         ).first()
 
     if not user:
-        print(f"❌ User not found for input: {username_input}")
+        print(f" User not found for input: {username_input}")
         raise HTTPException(status_code=404, detail="Invalid Username")
 
-    print(f"✅ User FOUND: {user.emp_id} ({user.p_mail})")
+    print(f" User FOUND: {user.emp_id} ({user.p_mail})")
 
     input_md5 = hashlib.md5(input_pwd.encode()).hexdigest()
-    print("\n🧪 PASSWORD DEBUG")
+    print("\n PASSWORD DEBUG")
     print("Input password:", input_pwd)
     print("Input MD5:", input_md5)
     print("DB attribute15:", user.attribute15)
@@ -144,13 +144,13 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
 
     password_valid = False
     if user.attribute15 and user.attribute15.lower() == input_md5.lower():
-        print("✅ Match via attribute15 MD5")
+        print(" Match via attribute15 MD5")
         password_valid = True
     if not password_valid and user.password and user.password.lower() == input_md5.lower():
-        print("✅ Match via password column MD5")
+        print(" Match via password column MD5")
         password_valid = True
     if not password_valid and user.password == input_pwd:
-        print("✅ Match via PLAINTEXT password")
+        print(" Match via PLAINTEXT password")
         password_valid = True
     if not password_valid and user.password and user.attribute15:
         try:
@@ -160,18 +160,18 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
             if len(iv_bytes) == 16:
                 cipher = AES.new(AES_KEY, AES.MODE_CBC, iv_bytes)
                 decrypted = unpad(cipher.decrypt(encrypted_bytes), 16).decode()
-                print("🔓 AES decrypted password:", decrypted)
+                print(" AES decrypted password:", decrypted)
                 if decrypted == input_pwd:
-                    print("✅ Match via AES decrypted password")
+                    print(" Match via AES decrypted password")
                     password_valid = True
         except Exception as e:
-            print("⚠️ AES decrypt failed:", str(e))
+            print(" AES decrypt failed:", str(e))
 
     if not password_valid:
-        print("❌ PASSWORD FAILED")
+        print(" PASSWORD FAILED")
         raise HTTPException(status_code=401, detail="Invalid Password")
 
-    print("✅ PASSWORD VERIFIED")
+    print(" PASSWORD VERIFIED")
 
     is_global_admin = False
     role_type = "Employee"
@@ -193,8 +193,8 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         role_type = "Admin"
 
     has_2fa = bool(user.auth_key and user.auth_key.strip())
-    print(f"🔐 2FA Enabled: {has_2fa}")
-    print(f"🎭 Role: {role_type}, Global Admin: {is_global_admin}, Manager: {is_manager}")
+    print(f" 2FA Enabled: {has_2fa}")
+    print(f" Role: {role_type}, Global Admin: {is_global_admin}, Manager: {is_manager}")
     print("="*60)
 
     return {
@@ -212,7 +212,7 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
 @app.post("/forgot-password")
 def forgot_password(request: schemas.ForgotPasswordRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     email = request.email.strip().lower()
-    print(f"\n--- 📧 FORGOT PASSWORD ATTEMPT: {email} ---")
+    print(f"\n---  FORGOT PASSWORD ATTEMPT: {email} ---")
     user = db.query(models.EmpDet).filter(func.lower(models.EmpDet.p_mail) == email).first()
     if not user:
         raise HTTPException(status_code=404, detail="Email not found in our records")
@@ -268,7 +268,7 @@ def decrypt_auth_key_fernet(encrypted_auth_key: str) -> str:
         decrypted_secret = fernet.decrypt(encrypted_auth_key.encode()).decode()
         return decrypted_secret
     except Exception as e:
-        print(f"❌ Fernet decryption error: {str(e)}")
+        print(f" Fernet decryption error: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to decrypt 2FA secret")
 
 class GetAuthKeyRequest(BaseModel):
@@ -282,7 +282,7 @@ class GetAuthKeyResponse(BaseModel):
 @app.post("/get-user-auth-key", response_model=GetAuthKeyResponse)
 def get_user_auth_key(request: GetAuthKeyRequest, db: Session = Depends(get_db)):
     print("\n" + "="*60)
-    print("🔐 GET USER AUTH KEY")
+    print(" GET USER AUTH KEY")
     print("="*60)
     p_mail = request.p_mail.strip().lower()
     if not p_mail:
@@ -292,46 +292,46 @@ def get_user_auth_key(request: GetAuthKeyRequest, db: Session = Depends(get_db))
         raise HTTPException(status_code=404, detail="User not found")
     if not user.auth_key:
         raise HTTPException(status_code=400, detail="2FA not configured for this user")
-    print(f"✅ User found: {user.emp_id}")
-    print(f"⏰ Auth Timer: {user.auth_timer}")
+    print(f" User found: {user.emp_id}")
+    print(f" Auth Timer: {user.auth_timer}")
     return GetAuthKeyResponse(auth_key=user.auth_key, auth_timer=user.auth_timer or 30, p_mail=user.p_mail)
 
 import time
 def verify_authenticator_otp_for_user(user, otp_input: str) -> bool:
     try:
         print("\n==============================")
-        print("🔐 2FA VERIFY (DB MODE)")
+        print(" 2FA VERIFY (DB MODE)")
         print("==============================")
         encrypted_key = user.auth_key
         auth_timer = user.auth_timer or 30
         if not encrypted_key:
-            print("❌ No auth_key found")
+            print(" No auth_key found")
             return False
         fernet = Fernet(FERNET_KEY.encode())
         secret = fernet.decrypt(encrypted_key.encode()).decode()
-        print("✅ Secret decrypted")
+        print(" Secret decrypted")
         totp = pyotp.TOTP(secret, digits=6, interval=auth_timer)
         now = int(time.time())
-        print("⏰ Time:", now)
-        print("🔢 Prev:", totp.at(now - auth_timer))
-        print("🔢 Curr:", totp.now())
-        print("🔢 Next:", totp.at(now + auth_timer))
+        print(" Time:", now)
+        print(" Prev:", totp.at(now - auth_timer))
+        print(" Curr:", totp.now())
+        print(" Next:", totp.at(now + auth_timer))
         otp_clean = otp_input.strip()
         if not otp_clean.isdigit() or len(otp_clean) != 6:
-            print("❌ Invalid OTP format")
+            print(" Invalid OTP format")
             return False
-        print("📱 Received:", otp_clean)
+        print(" Received:", otp_clean)
         ok = totp.verify(otp_clean, valid_window=1)
-        print("✅ SUCCESS" if ok else "❌ FAILED")
+        print(" SUCCESS" if ok else " FAILED")
         return ok
     except Exception as e:
-        print("❌ OTP verify error:", str(e))
+        print(" OTP verify error:", str(e))
         return False
 
 @app.post("/verify-2fa")
 def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db)):
     print("\n" + "="*60)
-    print("🔐 2FA VERIFY")
+    print(" 2FA VERIFY")
     print("="*60)
     emp_id = request.user_id.strip().upper()
     otp_input = request.totp_code.strip()
@@ -340,11 +340,11 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
         raise HTTPException(status_code=404, detail="User not found")
     if not user.auth_key:
         raise HTTPException(status_code=400, detail="2FA not configured")
-    print(f"✅ User: {user.emp_id}")
+    print(f" User: {user.emp_id}")
     ok = verify_authenticator_otp_for_user(user, otp_input)
     if not ok:
         raise HTTPException(status_code=401, detail="Invalid Authenticator code")
-    print("✅ 2FA SUCCESS")
+    print(" 2FA SUCCESS")
     is_global_admin = False
     role_type = "Employee"
     if user.dom_id:
@@ -593,9 +593,9 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
                     last_update_login=emp_id
                 )
                 db.add(auto_leave)
-                print(f"✅ Auto-deducted 1 CL for {emp_id} - worked {total_hours_float:.2f} hours")
+                print(f" Auto-deducted 1 CL for {emp_id} - worked {total_hours_float:.2f} hours")
             except Exception as e:
-                print(f"⚠️ Could not auto-deduct leave: {e}")
+                print(f" Could not auto-deduct leave: {e}")
         elif total_hours_float < 6:
             checkin_record.status = "0.5P"
         else:
@@ -604,7 +604,7 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         db.commit()
     except Exception as e:
         db.rollback()
-        print(f"❌ Check-out Error: {str(e)}")
+        print(f" Check-out Error: {str(e)}")
         try:
             checkin_record.out_time = request.out_time
             checkin_record.status = "Error"
@@ -718,7 +718,7 @@ def get_leave_history(emp_id: str, db: Session = Depends(get_db)):
 
 def send_email_notification(to_email: str, subject: str, body_html: str):
     if not to_email:
-        print("⚠️ Email notification skipped: No recipient email provided")
+        print(" Email notification skipped: No recipient email provided")
         return False
     
     url = "http://devbms.ilantechsolutions.com/attendance/send-mail/"
@@ -736,19 +736,19 @@ def send_email_notification(to_email: str, subject: str, body_html: str):
     }
     
     try:
-        print(f"📧 Attempting to send email via API to: {to_email}")
+        print(f" Attempting to send email via API to: {to_email}")
         response = requests.post(url, json=payload, headers=headers, timeout=15)
         
         if response.status_code in [200, 201]:
-            print(f"🚀 EMAIL SENT successfully via API to {to_email}")
+            print(f" EMAIL SENT successfully via API to {to_email}")
             return True
         else:
-            print(f"❌ API FAILED to send email to {to_email}: Status {response.status_code}")
+            print(f" API FAILED to send email to {to_email}: Status {response.status_code}")
             print(f"   Response Preview: {response.text[:200]}")
             return False
             
     except Exception as e:
-        print(f"❌ ERROR calling email API for {to_email}: {str(e)}")
+        print(f" ERROR calling email API for {to_email}: {str(e)}")
         return False
 
 @app.post("/apply-leave")
@@ -793,7 +793,7 @@ async def apply_leave(
     attr14_paths = ",".join(attachment_paths) if attachment_paths else None
     primary_attachment_path = attachment_paths[0] if attachment_paths else None
     
-    print(f"📝 Processing Leave Request for: {emp_id}, Type: {leave_type}, Days: {days}, Attachments: {len(attachment_paths)}")
+    print(f" Processing Leave Request for: {emp_id}, Type: {leave_type}, Days: {days}, Attachments: {len(attachment_paths)}")
     try:
         req_from = parse_date(from_date)
         req_to = parse_date(to_date)
@@ -904,7 +904,7 @@ async def apply_leave(
                 balance_row.available_leave = float(balance_row.available_leave or 0) - days_count
         db.commit()
         db.refresh(new_leave)
-        print(f"✅ Leave Applied Successfully. ID: {new_leave.l_id} for Emp: {new_leave.emp_id}")
+        print(f" Leave Applied Successfully. ID: {new_leave.l_id} for Emp: {new_leave.emp_id}")
         if user and user.manager_id:
             manager = db.query(models.EmpDet).filter(models.EmpDet.emp_id == user.manager_id).first()
             if manager and manager.p_mail:
@@ -925,7 +925,7 @@ async def apply_leave(
         db.rollback()
         raise
     except Exception as e:
-        print(f"❌ DATABASE ERROR: {str(e)}")
+        print(f" DATABASE ERROR: {str(e)}")
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Database Insertion Error: {str(e)}")
     return {"message": "Leave request submitted successfully", "leave_id": new_leave.l_id}
@@ -1032,7 +1032,7 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
             """
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
     except Exception as e:
-        print(f"⚠️ Email notification failed: {e}")
+        print(f" Email notification failed: {e}")
     return {"message": f"Leave request {request_item.action.lower()} successfully", "approved_by": leave.approved_by}
 
 
@@ -1055,10 +1055,10 @@ def get_notifications(
         try:
             last_clear_date = datetime.strptime(user.attribute8.strip(), "%Y-%m-%d %H:%M:%S")
         except Exception as e:
-            print(f"⚠️ Could not parse attribute8 '{user.attribute8}': {e}")
+            print(f" Could not parse attribute8 '{user.attribute8}': {e}")
 
     effective_cutoff = last_clear_date if last_clear_date else (datetime.now() - timedelta(days=30))
-    print(f"📅 Notifications for {user_id} | role={role} | cutoff={effective_cutoff}")
+    print(f" Notifications for {user_id} | role={role} | cutoff={effective_cutoff}")
 
     def status_type(s: str):
         s = (s or '').lower()
@@ -1076,9 +1076,9 @@ def get_notifications(
 
     def status_label(s: str):
         s = (s or '').lower()
-        if s == 'pending':  return '🕐 Pending'
-        if s == 'approved': return '✅ Approved'
-        if s == 'rejected': return '❌ Rejected'
+        if s == 'pending':  return ' Pending'
+        if s == 'approved': return ' Approved'
+        if s == 'rejected': return ' Rejected'
         return s or 'Unknown'
 
     def cutoff_filter(status_col, date_col, creation_col):
@@ -1087,11 +1087,11 @@ def get_notifications(
             func.coalesce(date_col, creation_col) > effective_cutoff
         )
 
-    # ════════════════════════════════════════════════════════════════════════
+    # 
     # ADMIN
-    # ════════════════════════════════════════════════════════════════════════
+    # 
     if role.lower() == 'admin':
-        print(f"🔍 ADMIN notifications for {user_id} (manager_id={manager_id}) - SHOWING ONLY PENDING")
+        print(f" ADMIN notifications for {user_id} (manager_id={manager_id}) - SHOWING ONLY PENDING")
 
         # 1. Permission
         q_perms = (
@@ -1260,7 +1260,7 @@ def get_notifications(
                 except Exception as e:
                     print(f"   Error formatting WFH {wfh.wfh_id}: {e}")
         except Exception as wfh_error:
-            print(f"⚠️ Error fetching WFH notifications (admin): {wfh_error}")
+            print(f" Error fetching WFH notifications (admin): {wfh_error}")
             traceback.print_exc()
 
         # 5. Timesheet
@@ -1302,11 +1302,11 @@ def get_notifications(
             except Exception as e:
                 print(f"   Error formatting Timesheet {ts.t_id}: {e}")
 
-    # ════════════════════════════════════════════════════════════════════════
+    # 
     # EMPLOYEE
-    # ════════════════════════════════════════════════════════════════════════
+    # 
     else:
-        print(f"🔍 EMPLOYEE notifications for {user_id} - SHOWING ONLY APPROVED")
+        print(f" EMPLOYEE notifications for {user_id} - SHOWING ONLY APPROVED")
 
         # 1. Leave
         for leave in (
@@ -1429,7 +1429,7 @@ def get_notifications(
                     "screen": f"/EmployeeWfh?tab=history&id={wfh.wfh_id}"
                 })
         except Exception as wfh_error:
-            print(f"⚠️ Error fetching WFH notifications: {wfh_error}")
+            print(f" Error fetching WFH notifications: {wfh_error}")
 
         # 5. Timesheet
         for ts in (
@@ -1460,7 +1460,7 @@ def get_notifications(
                 "screen": "/EmployeeTimesheet"
             })
 
-    print(f"✅ Returning {len(notifications)} notifications for {user_id}")
+    print(f" Returning {len(notifications)} notifications for {user_id}")
     return notifications
 
 
@@ -1550,7 +1550,7 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
             new_remaining = max(0.0, curr_perm - approved_hrs)
             user.remaining_perm = str(new_remaining)
         except Exception as bal_err:
-            print(f"⚠️ Balance update error: {bal_err}")
+            print(f" Balance update error: {bal_err}")
         new_perm = models.EmpPermission(
             emp_id=user.emp_id,
             date=p_date,
@@ -1570,7 +1570,7 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
         db.add(new_perm)
         db.commit()
         db.refresh(new_perm)
-        print(f"✅ PERMISSION CREATED: ID={new_perm.p_id}")
+        print(f" PERMISSION CREATED: ID={new_perm.p_id}")
         if user and user.manager_id:
             manager = db.query(models.EmpDet).filter(
                 func.lower(func.trim(models.EmpDet.emp_id)) == user.manager_id.strip().lower()
@@ -1581,7 +1581,7 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                 t_time_str = t_time.strftime("%I:%M %p")
                 customer_name = user.attribute3 if user.attribute3 else "Internal"
                 duration_str = f"{duration_hrs:.1f}"
-                subject = f"ITS - {user.name} – {customer_name} - Permission | {p_date_str} | {f_time_str} to {t_time_str} ({duration_str} Hours)"
+                subject = f"ITS - {user.name}  {customer_name} - Permission | {p_date_str} | {f_time_str} to {t_time_str} ({duration_str} Hours)"
                 body = f"""
                 <html><body style="font-family: 'Times New Roman', Times, serif; color: #00008B;">
                     <p>Dear {manager.name},</p>
@@ -1597,7 +1597,7 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
         db.rollback()
         raise
     except Exception as e:
-        print(f"❌ DB ERROR in apply_permission: {str(e)}")
+        print(f" DB ERROR in apply_permission: {str(e)}")
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
@@ -1712,7 +1712,7 @@ def approve_permission(request: schemas.PermissionApprovalAction, background_tas
             """
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
     except Exception as e:
-        print(f"⚠️ Email notification failed: {e}")
+        print(f" Email notification failed: {e}")
     return {"message": f"Permission {request.action.lower()} successfully"}
 
 @app.get("/admin/pending-ot")
@@ -1796,7 +1796,7 @@ def approve_ot(request: schemas.OverTimeApprovalAction, background_tasks: Backgr
             """
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
     except Exception as e:
-        print(f"⚠️ Email notification failed: {e}")
+        print(f" Email notification failed: {e}")
     return {"message": f"OT request {request.action.lower()} successfully"}
 
 @app.post("/apply-ot")
@@ -1845,7 +1845,7 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
                 except:
                     ot_date_str = request.ot_date
                 customer_name = user.attribute3 if user.attribute3 else "Internal"
-                subject = f"ITS - {user.name} – {customer_name} - Overtime | {ot_date_str} | {request.from_time} to {request.to_time} ({request.duration})"
+                subject = f"ITS - {user.name}  {customer_name} - Overtime | {ot_date_str} | {request.from_time} to {request.to_time} ({request.duration})"
                 body = f"""
                 <html><body style="font-family: 'Times New Roman', Times, serif; color: #00008B;">
                     <p>Dear {manager.name} ,</p>
@@ -1861,7 +1861,7 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
         db.rollback()
         raise
     except Exception as e:
-        print(f"❌ OT INSERT ERROR: {str(e)}")
+        print(f" OT INSERT ERROR: {str(e)}")
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1986,7 +1986,7 @@ def approve_wfh(request: schemas.WFHApprovalAction, background_tasks: Background
             """
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
     except Exception as e:
-        print(f"⚠️ Email notification failed: {e}")
+        print(f" Email notification failed: {e}")
     return {"message": f"WFH request {request.action.lower()} successfully"}
 
 @app.get("/wfh-stats/{emp_id}")
@@ -2031,7 +2031,7 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
                     detail=f"WFH already applied for overlapping dates ({row.from_date} to {row.to_date})."
                 )
 
-        print(f"📋 WFH Apply: emp={clean_emp_id} from={from_date} to={to_date} days={days_val}")
+        print(f" WFH Apply: emp={clean_emp_id} from={from_date} to={to_date} days={days_val}")
 
         submitter = db.query(models.EmpDet).filter(
             func.lower(func.trim(models.EmpDet.emp_id)) == clean_emp_id.lower()
@@ -2056,7 +2056,7 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
         db.add(new_wfh)
         db.commit()
         db.refresh(new_wfh)
-        print(f"✅ WFH inserted: ID={new_wfh.wfh_id}")
+        print(f" WFH inserted: ID={new_wfh.wfh_id}")
 
         user = submitter
         if user and user.manager_id:
@@ -2072,7 +2072,7 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
                     from_str = from_date
                     to_str = to_date
                 customer_name = user.attribute3 if user.attribute3 else "Internal"
-                subject = f"ITS - {user.name} – {customer_name} - WFH | {from_str} to {to_str} ({days_val} Days)"
+                subject = f"ITS - {user.name}  {customer_name} - WFH | {from_str} to {to_str} ({days_val} Days)"
                 body = f"""
                 <html><body style="font-family: 'Times New Roman', Times, serif; color: #00008B;">
                     <p>Dear {manager.name} ,</p>
@@ -2089,7 +2089,7 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
         raise
     except Exception as e:
         db.rollback()
-        print(f"❌ WFH INSERT ERROR: {str(e)}")
+        print(f" WFH INSERT ERROR: {str(e)}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -2183,7 +2183,7 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
                         "raw_date": h_date_flat
                     })
     except Exception as e:
-        print(f"⚠️ Error fetching holidays: {e}")
+        print(f" Error fetching holidays: {e}")
 
     # 2. Birthdays & Anniversaries
     for emp in all_emps:
@@ -2399,30 +2399,42 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
 
 @app.get("/birthdays-this-month")
 def get_birthdays_this_month(db: Session = Depends(get_db)):
-    today = datetime.now()
-    current_month = today.month
-    current_year = today.year
+    try:
+        today = datetime.now()
+        current_month = today.month
+        current_year = today.year
 
-    all_emps = db.query(models.EmpDet).filter(
-        (models.EmpDet.end_date == None) | (models.EmpDet.end_date == "")
-    ).all()
+        print(f"Fetching birthdays for month: {current_month}")
 
-    birthdays = []
-    for emp in all_emps:
-        if emp.dob and emp.name:
-            dob = parse_date(emp.dob)
-            if dob and dob.month == current_month:
-                display_date = f"{dob.day:02d}-{dob.strftime('%b')}-{current_year}"
-                birthdays.append({
-                    "emp_id": emp.emp_id,
-                    "name": emp.name,
-                    "display_dob": display_date,
-                    "original_dob": emp.dob,
-                    "day": dob.day
-                })
+        # Fetch all active employees (end_date is null, empty, or "None")
+        all_emps = db.query(models.EmpDet).all()
+        
+        birthdays = []
+        for emp in all_emps:
+            # Check if employee is active
+            is_active = False
+            if emp.end_date is None or str(emp.end_date).strip() == "" or str(emp.end_date).lower() == "none":
+                is_active = True
+            
+            if is_active and emp.dob and emp.name:
+                dob = parse_date(emp.dob)
+                if dob and dob.month == current_month:
+                    display_date = f"{dob.day:02d}-{dob.strftime('%b')}-{current_year}"
+                    birthdays.append({
+                        "emp_id": emp.emp_id,
+                        "name": emp.name,
+                        "display_dob": display_date,
+                        "original_dob": str(emp.dob),
+                        "day": dob.day
+                    })
 
-    birthdays.sort(key=lambda x: x["day"])
-    return birthdays
+        birthdays.sort(key=lambda x: x["day"])
+        print(f"Found {len(birthdays)} birthdays this month")
+        return birthdays
+    except Exception as e:
+        print(f"Error in get_birthdays_this_month: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/timesheet-month/{emp_id}", response_model=List[schemas.TimesheetResponse])
 def get_timesheet_month(emp_id: str, month: Optional[str] = None, year: Optional[str] = None, db: Session = Depends(get_db)):
@@ -2542,5 +2554,5 @@ def timesheet_action(action_req: schemas.TimesheetApprovalAction, background_tas
             """
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
     except Exception as e:
-        print(f"⚠️ Email notification failed: {e}")
+        print(f" Email notification failed: {e}")
     return {"message": f"Timesheet {action_req.action} successfully"}
