@@ -1,5 +1,5 @@
 fastapi
-uvicorn
+uvicorn[standard]
 sqlalchemy
 pymysql
 python-multipart
@@ -9,3 +9,5 @@ pycryptodome
 pyotp
 cryptography
 requests
+pydantic
+python-dotenv
