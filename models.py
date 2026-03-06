@@ -18,7 +18,7 @@ class EmpDet(Base):
     alt_phone_number = Column(String(11))
     blood = Column(String(100))
     p_mail = Column(String(50))
-    mail_id = Column(String(50))
+    mail = Column("mail_id", String(50))
     address = Column(String(1000))
     p_address = Column(String(1000))
     aadhar_no = Column(String(25))
@@ -258,8 +258,7 @@ class WFHDet(Base):
     last_updated_by = Column(String(250), nullable=False)
     last_update_date = Column(DateTime, nullable=False)
     last_update_login = Column(String(250), nullable=False)
-    approved_by = Column(String(250))
-    remarks = Column(String(2000))
+
 
 
 class OverTimeDet(Base):
@@ -336,4 +335,33 @@ class TimesheetDet(Base):
     last_update_date = Column(DateTime)
     last_update_login = Column(String(255))
 
+class HolidayDet(Base):
+    __tablename__ = "xxits_holiday_det_t"
 
+    holiday_id = Column(Integer, primary_key=True, autoincrement=True)
+    Quarter = Column(Integer)
+    Month = Column(String(50))
+    Office_Holiday_Date = Column(String(100))
+    Holiday_Name = Column(String(240))
+    created_by = Column(String(100))
+    created_at = Column(DateTime)
+    last_updated_by = Column(String(100))
+    last_update_date = Column(DateTime)
+    year = Column(Integer)
+    last_update_login = Column(String(255))
+    attribute_category = Column(String(240))
+    attribute1 = Column(String(240))
+    attribute2 = Column(String(240))
+    attribute3 = Column(String(240))
+    attribute4 = Column(String(240))
+    attribute5 = Column(String(240))
+    attribute6 = Column(String(240))
+    attribute7 = Column(String(240))
+    attribute8 = Column(String(240))
+    attribute9 = Column(String(240))
+    attribute10 = Column(String(240))
+    attribute11 = Column(String(240))
+    attribute12 = Column(String(240))
+    attribute13 = Column(String(240))
+    attribute14 = Column(String(240))
+    attribute15 = Column(String(240))
