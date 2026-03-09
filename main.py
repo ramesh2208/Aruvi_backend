@@ -25,6 +25,8 @@ from cryptography.fernet import Fernet
 import models, schemas, database
 from database import engine , SessionLocal
 
+
+
 # Create tables if they don't exist
 models.Base.metadata.create_all(bind=engine)
 
@@ -109,25 +111,17 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
 
     username_input = request.username.strip().lower()
     input_pwd = request.password.strip()
+    # Allow login by Professional Email, Personal Email, or Employee ID
     print(f" Username input: {username_input}")
-    prefix = username_input.split("@")[0] if "@" in username_input else username_input
-
-    if len(prefix) <= 3:
-        # Require exact match for short inputs to prevent accidental logins with single letters
-        user = db.query(models.EmpDet).filter(
-            (func.lower(models.EmpDet.p_mail) == username_input) |
-            (func.lower(models.EmpDet.mail) == username_input) |
-            (func.upper(models.EmpDet.emp_id) == prefix.upper())
-        ).first()
-    else:
-        # Allow prefix matches for longer inputs
-        user = db.query(models.EmpDet).filter(
-            (func.lower(models.EmpDet.p_mail) == username_input) |
-            (func.lower(models.EmpDet.mail) == username_input) |
-            (func.upper(models.EmpDet.emp_id) == prefix.upper()) |
-            (func.lower(models.EmpDet.p_mail).like(f"{prefix}@%")) | # Match name part of email
-            (func.lower(models.EmpDet.name).like(f"{prefix}%"))
-        ).first()
+    user = db.query(models.EmpDet).filter(
+        or_(
+            func.lower(func.trim(models.EmpDet.p_mail)) == username_input,
+            func.lower(func.trim(models.EmpDet.mail)) == username_input,
+            func.lower(func.trim(models.EmpDet.emp_id)) == username_input,
+            # Handle cases where user might enter ITS-XXXX instead of ITS - XXXX or vice versa
+            func.lower(func.replace(func.trim(models.EmpDet.emp_id), " ", "")) == username_input.replace(" ", "")
+        )
+    ).first()
 
     if not user:
         print(f" User not found for input: {username_input}")
