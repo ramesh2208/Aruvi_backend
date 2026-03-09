@@ -2160,6 +2160,178 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+# --- CLIENT MODULE ENDPOINTS ---
+
+@app.get("/admin/clients")
+def get_admin_clients(
+    client_name: Optional[str] = None,
+    company_name: Optional[str] = None,
+    gst: Optional[str] = None,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    query = db.query(models.CompanyClient)
+    
+    if client_name:
+        query = query.filter(models.CompanyClient.client_name.ilike(f"%{client_name}%"))
+    if company_name:
+        query = query.filter(models.CompanyClient.company_name.ilike(f"%{company_name}%"))
+    if gst:
+        query = query.filter(models.CompanyClient.gst.ilike(f"%{gst}%"))
+    if status:
+        query = query.filter(models.CompanyClient.status == status)
+    
+    if search:
+        search_filter = f"%{search}%"
+        query = query.filter(
+            or_(
+                models.CompanyClient.client_name.ilike(search_filter),
+                models.CompanyClient.company_name.ilike(search_filter),
+                models.CompanyClient.client_ref_no.ilike(search_filter),
+                models.CompanyClient.gst.ilike(search_filter)
+            )
+        )
+    
+    clients = query.order_by(models.CompanyClient.creation_date.desc()).all()
+    return clients
+
+@app.get("/admin/clients/{client_id}")
+def get_client_details(client_id: int, db: Session = Depends(get_db)):
+    client = db.query(models.CompanyClient).filter(models.CompanyClient.client_id == client_id).first()
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    
+    sites = db.query(models.ClientSite).filter(models.ClientSite.client_id == client_id).all()
+    
+    result = {
+        **client.__dict__,
+        "sites": [site.__dict__ for site in sites]
+    }
+    # Remove SQLAlchemy internal state
+    result.pop('_sa_instance_state', None)
+    for site in result["sites"]:
+        site.pop('_sa_instance_state', None)
+        
+    return result
+
+@app.post("/admin/create-client")
+def create_client(request: schemas.ClientApplyRequest, db: Session = Depends(get_db)):
+    try:
+        # Check if ref no already exists
+        existing = db.query(models.CompanyClient).filter(models.CompanyClient.client_ref_no == request.client_ref_no).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Client Reference Number already exists")
+
+        new_client = models.CompanyClient(
+            client_ref_no=request.client_ref_no,
+            client_name=request.client_name,
+            company_name=request.company_name,
+            mobile_no=request.mobile_no,
+            gst_available=request.gst_available,
+            gst=request.gst,
+            website=request.website,
+            email_id=request.email_id,
+            msme_available=request.msme_available,
+            msme=request.msme,
+            pan_no=request.pan_no,
+            short_code=request.short_code,
+            currency=request.currency,
+            address=request.address,
+            status=request.status or "Active",
+            creation_date=datetime.now(),
+            last_update_date=datetime.now()
+        )
+        db.add(new_client)
+        db.flush() # To get client_id
+
+        # Add sites
+        if request.sites:
+            for site in request.sites:
+                new_site = models.ClientSite(
+                    client_id=new_client.client_id,
+                    gst_pct=site.gst_pct,
+                    short_code=site.short_code,
+                    currency=site.currency,
+                    location=site.location,
+                    ship_to=site.ship_to,
+                    status=site.status or "Active",
+                    creation_date=datetime.now(),
+                    last_update_date=datetime.now()
+                )
+                db.add(new_site)
+
+        db.commit()
+        return {"message": "Client created successfully", "client_id": new_client.client_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/admin/update-client/{client_id}")
+def update_client(client_id: int, request: schemas.ClientApplyRequest, db: Session = Depends(get_db)):
+    try:
+        client = db.query(models.CompanyClient).filter(models.CompanyClient.client_id == client_id).first()
+        if not client:
+            raise HTTPException(status_code=404, detail="Client not found")
+
+        # Update client fields
+        client.client_name = request.client_name
+        client.company_name = request.company_name
+        client.mobile_no = request.mobile_no
+        client.gst_available = request.gst_available
+        client.gst = request.gst
+        client.website = request.website
+        client.email_id = request.email_id
+        client.msme_available = request.msme_available
+        client.msme = request.msme
+        client.pan_no = request.pan_no
+        client.short_code = request.short_code
+        client.currency = request.currency
+        client.address = request.address
+        client.status = request.status
+        client.last_update_date = datetime.now()
+
+        # Update sites: Simplest approach is to delete and re-add for this scale
+        db.query(models.ClientSite).filter(models.ClientSite.client_id == client_id).delete()
+        
+        if request.sites:
+            for site in request.sites:
+                new_site = models.ClientSite(
+                    client_id=client_id,
+                    gst_pct=site.gst_pct,
+                    short_code=site.short_code,
+                    currency=site.currency,
+                    location=site.location,
+                    ship_to=site.ship_to,
+                    status=site.status or "Active",
+                    creation_date=datetime.now(),
+                    last_update_date=datetime.now()
+                )
+                db.add(new_site)
+
+        db.commit()
+        return {"message": "Client updated successfully"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/admin/delete-client/{client_id}")
+def delete_client(client_id: int, db: Session = Depends(get_db)):
+    try:
+        client = db.query(models.CompanyClient).filter(models.CompanyClient.client_id == client_id).first()
+        if not client:
+            raise HTTPException(status_code=404, detail="Client not found")
+        
+        db.query(models.ClientSite).filter(models.ClientSite.client_id == client_id).delete()
+        db.delete(client)
+        db.commit()
+        return {"message": "Client deleted successfully"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/wfh-history/{emp_id}")
 def get_wfh_history(emp_id: str, db: Session = Depends(get_db)):
     history = db.query(models.WFHDet).filter(
