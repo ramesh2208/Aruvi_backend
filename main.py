@@ -744,6 +744,61 @@ def send_email_notification(to_email: str, subject: str, body_html: str):
     except Exception as e:
         print(f" ERROR calling email API for {to_email}: {str(e)}")
         return False
+def get_email_template(receiver_name, title, content_html, sender_name="Aruvi Team"):
+    return f"""
+    <html>
+    <head>
+        <style>
+            .email-container {{
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                color: #1e293b;
+                max-width: 600px;
+                margin: 0 auto;
+                border: 1px solid #e2e8f0;
+                border-radius: 12px;
+                overflow: hidden;
+            }}
+            .header {{
+                background-color: #0f172a;
+                padding: 24px;
+                text-align: center;
+                color: white;
+            }}
+            .content {{
+                padding: 32px;
+                line-height: 1.6;
+            }}
+            .footer {{
+                background-color: #f8fafc;
+                padding: 20px;
+                text-align: center;
+                font-size: 12px;
+                color: #64748b;
+                border-top: 1px solid #e2e8f0;
+            }}
+            .highlight {{
+                color: #2563eb;
+                font-weight: bold;
+            }}
+        </style>
+    </head>
+    <body style="margin: 0; padding: 20px; background-color: #f1f5f9;">
+        <div class="email-container">
+            <div class="header">
+                <h2 style="margin: 0;">{title}</h2>
+            </div>
+            <div class="content">
+                <p>Dear {receiver_name},</p>
+                {content_html}
+                <p style="margin-top: 32px;">Best Regards,<br><strong>{sender_name}</strong></p>
+            </div>
+            <div class="footer">
+                &copy; 2026 Ilan Tech Solutions. All rights reserved.
+            </div>
+        </div>
+    </body>
+    </html>
+    """
 
 @app.post("/apply-leave")
 async def apply_leave(
@@ -902,18 +957,17 @@ async def apply_leave(
         if user and user.manager_id:
             manager = db.query(models.EmpDet).filter(models.EmpDet.emp_id == user.manager_id).first()
             if manager and manager.p_mail:
-                subject = f"Leave Request - {emp_name} ({emp_id})"
-                body = f"""
-                <html><body style="font-family: 'Times New Roman', Times, serif; color: #00008B;">
-                    <h3>New Leave Request</h3>
-                    <p><strong>Employee:</strong> {emp_name} ({emp_id})</p>
-                    <p><strong>Leave Type:</strong> {leave_type}</p>
-                    <p><strong>Dates:</strong> {from_date} to {to_date} ({days} days)</p>
+                subject = f"ITS - {emp_name} - Leave Request | {from_date} to {to_date}"
+                content = f"""
+                <p>I would like to request leave for the following dates:</p>
+                <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border-left: 4px solid #2563eb;">
+                    <p><strong>Type:</strong> {leave_type}</p>
+                    <p><strong>Duration:</strong> {from_date} to {to_date} ({days} days)</p>
                     <p><strong>Reason:</strong> {reason}</p>
-                    <hr>
-                    <p>Please review and approve/reject via the Aruvi Mobile App.</p>
-                </body></html>
+                </div>
+                <p>Kindly approve the request.</p>
                 """
+                body = get_email_template(manager.name, "New Leave Request", content, emp_name)
                 background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
     except HTTPException:
         db.rollback()
@@ -1013,17 +1067,19 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
         emp_user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == leave.emp_id).first()
         if emp_user and emp_user.p_mail:
             status_msg = request_item.action.upper()
-            color = "green" if request_item.action.lower() == "approved" else "red"
+            color = "#10B981" if request_item.action.lower() == "approved" else "#EF4444"
             subject = f"Leave Request {status_msg} - {leave.leave_type}"
-            body = f"""
-            <html><body style="font-family: 'Times New Roman', Times, serif; color: #00008B;">
-                <h3>Leave Request Update</h3>
-                <p>Dear {emp_user.name},</p>
-                <p>Your leave request for <strong>{leave.leave_type}</strong> from {leave.from_date} has been <strong style="color: {color};">{status_msg}</strong>.</p>
+            content = f"""
+            <p>Your leave request has been processed.</p>
+            <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border-left: 4px solid {color};">
+                <p><strong>Type:</strong> {leave.leave_type}</p>
+                <p><strong>Duration:</strong> {leave.from_date} to {leave.to_date} ({leave.days} days)</p>
+                <p><strong>Status:</strong> <span style="color: {color}; font-weight: bold;">{status_msg}</span></p>
                 <p><strong>Remarks:</strong> {request_item.remarks or 'N/A'}</p>
-                <p><strong>Action By:</strong> {leave.approved_by or 'Manager'}</p>
-            </body></html>
+            </div>
+            <p>Processed by: {leave.approved_by or 'Manager'}</p>
             """
+            body = get_email_template(emp_user.name, "Leave Request Update", content, "HR Team")
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
     except Exception as e:
         print(f" Email notification failed: {e}")
@@ -1471,130 +1527,67 @@ def clear_all_notifications(user_id: str, db: Session = Depends(get_db)):
     return {"message": "All notifications cleared"}
 
 
-@app.post("/apply-permission")
-def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    from datetime import datetime, time
-    target_emp_id = request.emp_id.strip()
-    user = db.query(models.EmpDet).filter(
-        (models.EmpDet.emp_id == target_emp_id) |
-        (models.EmpDet.emp_id == request.emp_id)
-    ).first()
-    if not user:
-        user = db.query(models.EmpDet).filter(func.trim(models.EmpDet.emp_id) == target_emp_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail=f"Employee {request.emp_id} not found")
+@app.post("/apply-ot")
+def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     try:
-        def parse_time_str(time_str):
-            for fmt in ("%H:%M", "%I:%M %p", "%I:%M:%S %p", "%H:%M:%S"):
-                try:
-                    return datetime.strptime(time_str, fmt).time()
-                except ValueError:
-                    continue
-            raise ValueError(f"Time format not recognized: {time_str}")
-        f_time = parse_time_str(request.f_time)
-        t_time = parse_time_str(request.t_time)
-        p_date_dt = parse_date(request.date)
-        if not p_date_dt:
-            raise HTTPException(status_code=400, detail="Invalid date format")
-        p_date = p_date_dt.date()
+        user = db.query(models.EmpDet).filter(func.trim(models.EmpDet.emp_id) == request.emp_id.strip()).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        target_emp_id = user.emp_id
+        ot_date_clean = (request.ot_date or "").strip()
+        if not ot_date_clean:
+            raise HTTPException(status_code=400, detail="Invalid OT date")
 
-        duplicate_perm = db.query(models.EmpPermission).filter(
-            func.lower(func.trim(models.EmpPermission.emp_id)) == user.emp_id.strip().lower(),
-            models.EmpPermission.date == p_date,
-            func.lower(func.trim(models.EmpPermission.status)).in_(["pending", "approved"])
+        duplicate_ot = db.query(models.OverTimeDet).filter(
+            func.lower(func.trim(models.OverTimeDet.emp_id)) == target_emp_id.strip().lower(),
+            func.lower(func.trim(models.OverTimeDet.ot_date)) == ot_date_clean.lower(),
+            func.lower(func.trim(models.OverTimeDet.status)).in_(["pending", "approved"])
         ).first()
-        if duplicate_perm:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Permission already applied for {p_date.strftime('%d-%b-%Y')}."
-            )
+        if duplicate_ot:
+            raise HTTPException(status_code=400, detail=f"OT already applied for {ot_date_clean}.")
 
-        h1, m1 = f_time.hour, f_time.minute
-        h2, m2 = t_time.hour, t_time.minute
-        diff_mins = (h2 * 60 + m2) - (h1 * 60 + m1)
-        if diff_mins < 0: diff_mins += 24 * 60
-        if diff_mins <= 0:
-            raise HTTPException(status_code=400, detail="To Time must be after From Time")
-        
-        # New Logic:
-        # 1 minutes to 60 minutes means permitted hours will be 1 hours
-        # 61 minutes to 120 minutes to permitted hours 2 hours
-        # ather then 2 hours above cosider lop hours
-        # like 2 hhours 1 minutes means consider 1 minutes lop hours and 2 hours only approved hours
-        
-        if diff_mins <= 60:
-            approved_hrs = 1.0
-            lop_hrs = 0.0
-        elif diff_mins <= 120:
-            approved_hrs = 2.0
-            lop_hrs = 0.0
-        else:
-            approved_hrs = 2.0
-            lop_hrs = (diff_mins - 120) / 60.0
-
-        duration_hrs = diff_mins / 60.0
-        
-        final_total_hours = f"{duration_hrs:.1f}"
-        final_dis_total_hours = f"{lop_hrs:.1f}"
-        final_status = request.status if request.status else "Pending"
-        new_remaining = 0.0
-        try:
-            curr_val = str(user.remaining_perm or "0").strip()
-            curr_perm = float(curr_val) if curr_val else 0.0
-            new_remaining = max(0.0, curr_perm - approved_hrs)
-            user.remaining_perm = str(new_remaining)
-        except Exception as bal_err:
-            print(f" Balance update error: {bal_err}")
-        new_perm = models.EmpPermission(
-            emp_id=user.emp_id,
-            date=p_date,
-            f_time=f_time,
-            t_time=t_time,
+        new_ot = models.OverTimeDet(
+            emp_id=target_emp_id,
+            ot_date=request.ot_date,
+            from_time=request.from_time,
+            to_time=request.to_time,
+            duration=request.duration,
             reason=request.reason,
-            total_hours=final_total_hours,
-            dis_total_hours=final_dis_total_hours,
-            available_hours=str(new_remaining),
-            permitted_permission=str(approved_hrs),
-            lop_hours=str(lop_hrs),
             applied_date=datetime.now().strftime("%d-%b-%Y"),
-            status=final_status,
+            status=request.status or "Pending",
+            created_by=target_emp_id,
             creation_date=datetime.now(),
-            last_update_date=datetime.now()
+            last_updated_by=target_emp_id,
+            last_update_date=datetime.now(),
+            last_update_login=target_emp_id
         )
-        db.add(new_perm)
+        db.add(new_ot)
         db.commit()
-        db.refresh(new_perm)
-        print(f" PERMISSION CREATED: ID={new_perm.p_id}")
+        db.refresh(new_ot)
+        
         if user and user.manager_id:
-            manager = db.query(models.EmpDet).filter(
-                func.lower(func.trim(models.EmpDet.emp_id)) == user.manager_id.strip().lower()
-            ).first()
+            manager = db.query(models.EmpDet).filter(func.trim(models.EmpDet.emp_id) == user.manager_id.strip()).first()
             if manager and manager.p_mail:
-                p_date_str = p_date.strftime("%d-%b-%Y")
-                f_time_str = f_time.strftime("%I:%M %p")
-                t_time_str = t_time.strftime("%I:%M %p")
-                customer_name = user.attribute3 if user.attribute3 else "Internal"
-                duration_str = f"{duration_hrs:.1f}"
-                subject = f"ITS - {user.name}  {customer_name} - Permission | {p_date_str} | {f_time_str} to {t_time_str} ({duration_str} Hours)"
-                body = f"""
-                <html><body style="font-family: 'Times New Roman', Times, serif; color: #00008B;">
-                    <p>Dear {manager.name},</p>
-                    <p>Good Evening! I hope you are doing well.</p>
-                    <p>I would like to request permission from <strong>{f_time_str}</strong> to <strong>{t_time_str}</strong> (<strong>{duration_str} hours</strong>) on <strong>{p_date_str}</strong> due to: {request.reason}</p>
-                    <p>Kindly approve the same to proceed.</p>
-                    <p>Thanks & Regards,<br><strong>{user.name}</strong></p>
-                </body></html>
+                subject = f"ITS - {user.name} - OT Request | {ot_date_clean} | {request.from_time} to {request.to_time}"
+                content = f"""
+                <p>I would like to request overtime work for the following details:</p>
+                <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border-left: 4px solid #f97316;">
+                    <p><strong>Date:</strong> {ot_date_clean}</p>
+                    <p><strong>Duration:</strong> {request.from_time} to {request.to_time} ({request.duration})</p>
+                    <p><strong>Reason:</strong> {request.reason}</p>
+                </div>
+                <p>Kindly approve the request.</p>
                 """
+                body = get_email_template(manager.name, "New Overtime Request", content, user.name)
                 background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
-        return {"message": "Permission request submitted successfully", "p_id": new_perm.p_id}
+        return {"message": "OT request submitted successfully", "ot_id": new_ot.ot_id}
     except HTTPException:
         db.rollback()
         raise
     except Exception as e:
-        print(f" DB ERROR in apply_permission: {str(e)}")
+        print(f" OT INSERT ERROR: {str(e)}")
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-
+        raise HTTPException(status_code=500, detail=str(e))
 @app.get("/admin/pending-permissions")
 def get_pending_permissions(manager_id: Optional[str] = None, db: Session = Depends(get_db)):
     query = db.query(models.EmpPermission, models.EmpDet).join(
@@ -1651,6 +1644,99 @@ def get_all_permission_history(manager_id: Optional[str] = None, db: Session = D
         })
     return results
 
+@app.post("/apply-permission")
+def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    try:
+        target_emp_id = (request.emp_id or "").strip()
+        user = db.query(models.EmpDet).filter(func.trim(models.EmpDet.emp_id) == target_emp_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="Employee not found")
+
+        p_date_dt = parse_date(request.date)
+        if not p_date_dt:
+            raise HTTPException(status_code=400, detail="Invalid date format")
+        p_date = p_date_dt.date()
+
+        f_time_dt = parse_time_str(request.f_time)
+        t_time_dt = parse_time_str(request.t_time)
+        if not f_time_dt or not t_time_dt:
+            raise HTTPException(status_code=400, detail="Invalid time format")
+
+        h1, m1 = f_time_dt.hour, f_time_dt.minute
+        h2, m2 = t_time_dt.hour, t_time_dt.minute
+        diff_mins = (h2 * 60 + m2) - (h1 * 60 + m1)
+        if diff_mins < 0: diff_mins += 24 * 60
+        
+        if diff_mins <= 0:
+            raise HTTPException(status_code=400, detail="To Time must be after From Time")
+
+        duration_hrs = diff_mins / 60.0
+        approved_hrs = min(duration_hrs, 2.0)
+        lop_hrs = max(0.0, duration_hrs - 2.0)
+
+        curr_val = str(user.remaining_perm or "0").strip()
+        try:
+            curr_perm = float(curr_val) if curr_val else 0.0
+        except:
+            curr_perm = 0.0
+        
+        new_remaining = max(0.0, curr_perm - approved_hrs)
+        user.remaining_perm = str(round(new_remaining, 2))
+
+        duplicate_perm = db.query(models.EmpPermission).filter(
+            func.lower(func.trim(models.EmpPermission.emp_id)) == target_emp_id.lower(),
+            models.EmpPermission.date == p_date,
+            func.lower(func.trim(models.EmpPermission.status)).in_(["pending", "approved"])
+        ).first()
+        if duplicate_perm:
+            raise HTTPException(status_code=400, detail=f"Permission already applied for {request.date}.")
+
+        new_perm = models.EmpPermission(
+            emp_id=user.emp_id,
+            date=p_date,
+            f_time=f_time_dt,
+            t_time=t_time_dt,
+            reason=request.reason,
+            total_hours=f"{duration_hrs:.2f}",
+            dis_total_hours=f"{lop_hrs:.2f}",
+            available_hours=str(round(new_remaining, 2)),
+            status="Pending",
+            applied_date=datetime.now().strftime("%d-%b-%Y"),
+            permitted_permission=str(round(approved_hrs, 2)),
+            lop_hours=str(round(lop_hrs, 2)),
+            creation_date=datetime.now(),
+            last_update_date=datetime.now()
+        )
+        db.add(new_perm)
+        db.commit()
+        db.refresh(new_perm)
+
+        if user and user.manager_id:
+            manager = db.query(models.EmpDet).filter(func.trim(models.EmpDet.emp_id) == user.manager_id.strip()).first()
+            if manager and manager.p_mail:
+                subject = f"ITS - {user.name} - Permission Request | {request.date} | {request.f_time} to {request.t_time}"
+                content = f"""
+                <p>I would like to request permission for the following details:</p>
+                <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border-left: 4px solid #3b82f6;">
+                    <p><strong>Date:</strong> {request.date}</p>
+                    <p><strong>Duration:</strong> {request.f_time} to {request.t_time} ({duration_hrs:.2f} hrs)</p>
+                    <p><strong>Approved:</strong> {approved_hrs:.2f} hrs, <strong>LOP:</strong> {lop_hrs:.2f} hrs</p>
+                    <p><strong>Reason:</strong> {request.reason}</p>
+                </div>
+                <p>Kindly approve the request.</p>
+                """
+                body = get_email_template(manager.name, "New Permission Request", content, user.name)
+                background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
+
+        return {"message": "Permission applied successfully", "p_id": new_perm.p_id}
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Database Error: {str(e)}")
+
+
 @app.post("/admin/approve-permission")
 def approve_permission(request: schemas.PermissionApprovalAction, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     perm = db.query(models.EmpPermission).filter(models.EmpPermission.p_id == request.p_id).first()
@@ -1688,22 +1774,23 @@ def approve_permission(request: schemas.PermissionApprovalAction, background_tas
         if emp_user and emp_user.p_mail:
             status_msg = request.action.upper()
             perm_date = perm.date.strftime("%d-%b-%Y") if perm.date else "N/A"
-            color = "green" if request.action.lower() == "approved" else "red"
+            color = "#10B981" if request.action.lower() == "approved" else "#EF4444"
             manager_name = admin_user.name if admin_user else "Manager"
             f_time_str = perm.f_time.strftime("%I:%M %p") if perm.f_time else "N/A"
             t_time_str = perm.t_time.strftime("%I:%M %p") if perm.t_time else "N/A"
+            
             subject = f"Permission Request {status_msg} - {perm_date}"
-            body = f"""
-            <html><body style="font-family: 'Times New Roman', Times, serif; color: #00008B;">
-                <h3>Permission Request Update</h3>
-                <p>Dear {emp_user.name},</p>
-                <p>Your permission request for <strong>{perm_date}</strong> (<strong>{f_time_str}</strong> to <strong>{t_time_str}</strong>) has been <strong style="color: {color};">{status_msg}</strong>.</p>
+            content = f"""
+            <p>Your permission request has been processed.</p>
+            <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border-left: 4px solid {color};">
+                <p><strong>Date:</strong> {perm_date}</p>
+                <p><strong>Time:</strong> {f_time_str} to {t_time_str}</p>
+                <p><strong>Status:</strong> <span style="color: {color}; font-weight: bold;">{status_msg}</span></p>
                 <p><strong>Remarks:</strong> {request.remarks or 'N/A'}</p>
-                <p><strong>Action By:</strong> {manager_name}</p>
-                <br>
-                <p>Thanks & Regards,<br>Ilan Tech Solutions</p>
-            </body></html>
+            </div>
+            <p>Processed by: {manager_name}</p>
             """
+            body = get_email_template(emp_user.name, "Permission Request Update", content, "HR Team")
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
     except Exception as e:
         print(f" Email notification failed: {e}")
@@ -1775,87 +1862,72 @@ def approve_ot(request: schemas.OverTimeApprovalAction, background_tasks: Backgr
         emp_user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == ot.emp_id).first()
         if emp_user and emp_user.p_mail:
             status_msg = request.action.upper()
-            color = "green" if request.action.lower() == "approved" else "red"
+            color = "#10B981" if request.action.lower() == "approved" else "#EF4444"
             manager_name = admin_user.name if admin_user else "Manager"
+            
             subject = f"OT Request {status_msg} - {ot.ot_date}"
-            body = f"""
-            <html><body style="font-family: 'Times New Roman', Times, serif; color: #00008B;">
-                <h3>OT Request Update</h3>
-                <p>Dear {emp_user.name},</p>
-                <p>Your Overtime request for <strong>{ot.ot_date}</strong> ({ot.duration}) has been <strong style="color: {color};">{status_msg}</strong>.</p>
+            content = f"""
+            <p>Your Overtime request has been processed.</p>
+            <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border-left: 4px solid {color};">
+                <p><strong>Date:</strong> {ot.ot_date}</p>
+                <p><strong>Duration:</strong> {ot.duration}</p>
+                <p><strong>Status:</strong> <span style="color: {color}; font-weight: bold;">{status_msg}</span></p>
                 <p><strong>Remarks:</strong> {request.remarks or 'N/A'}</p>
-                <p><strong>Action By:</strong> {manager_name}</p>
-                <br><p>Thanks & Regards,<br>Ilan Tech Solutions</p>
-            </body></html>
+            </div>
+            <p>Processed by: {manager_name}</p>
             """
+            body = get_email_template(emp_user.name, "OT Request Update", content, "HR Team")
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
     except Exception as e:
         print(f" Email notification failed: {e}")
     return {"message": f"OT request {request.action.lower()} successfully"}
 
-@app.post("/apply-ot")
-def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+@app.post("/apply-wfh")
+def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     try:
         user = db.query(models.EmpDet).filter(func.trim(models.EmpDet.emp_id) == request.emp_id.strip()).first()
         if not user:
             raise HTTPException(status_code=404, detail="Employee not found")
-        target_emp_id = user.emp_id
-        ot_date_clean = (request.ot_date or "").strip()
-        if not ot_date_clean:
-            raise HTTPException(status_code=400, detail="Invalid OT date")
+        
+        from_date_dt = parse_date(request.from_date)
+        to_date_dt = parse_date(request.to_date)
+        if not from_date_dt or not to_date_dt:
+            raise HTTPException(status_code=400, detail="Invalid date format")
 
-        duplicate_ot = db.query(models.OverTimeDet).filter(
-            func.lower(func.trim(models.OverTimeDet.emp_id)) == target_emp_id.strip().lower(),
-            func.lower(func.trim(models.OverTimeDet.ot_date)) == ot_date_clean.lower(),
-            func.lower(func.trim(models.OverTimeDet.status)).in_(["pending", "approved"])
-        ).first()
-        if duplicate_ot:
-            raise HTTPException(status_code=400, detail=f"OT already applied for {ot_date_clean}.")
-
-        new_ot = models.OverTimeDet(
-            emp_id=target_emp_id,
-            ot_date=request.ot_date,
-            from_time=request.from_time,
-            to_time=request.to_time,
-            duration=request.duration,
+        new_wfh = models.WFHDet(
+            emp_id=user.emp_id,
+            from_date=request.from_date,
+            to_date=request.to_date,
+            days=request.days,
             reason=request.reason,
-            applied_date=datetime.now().strftime("%d-%b-%Y"),
-            status=request.status or "Pending",
-            created_by=target_emp_id,
+            status="Pending",
+            created_by=user.emp_id,
             creation_date=datetime.now(),
-            last_updated_by=target_emp_id,
-            last_update_date=datetime.now(),
-            last_update_login=target_emp_id
+            last_updated_by=user.emp_id,
+            last_update_date=datetime.now()
         )
-        db.add(new_ot)
+        db.add(new_wfh)
         db.commit()
-        db.refresh(new_ot)
+        db.refresh(new_wfh)
+
         if user and user.manager_id:
             manager = db.query(models.EmpDet).filter(func.trim(models.EmpDet.emp_id) == user.manager_id.strip()).first()
             if manager and manager.p_mail:
-                try:
-                    ot_date_dt = parse_date(request.ot_date)
-                    ot_date_str = ot_date_dt.strftime("%d-%b-%Y") if ot_date_dt else request.ot_date
-                except:
-                    ot_date_str = request.ot_date
-                customer_name = user.attribute3 if user.attribute3 else "Internal"
-                subject = f"ITS - {user.name}  {customer_name} - Overtime | {ot_date_str} | {request.from_time} to {request.to_time} ({request.duration})"
-                body = f"""
-                <html><body style="font-family: 'Times New Roman', Times, serif; color: #00008B;">
-                    <p>Dear {manager.name} ,</p>
-                    <p>Good Evening! I hope you are doing well. </p>
-                    <p>I would like to request permission to do overtime work on {ot_date_str} from {request.from_time} to {request.to_time} ({request.duration}) for {request.reason}</p>
-                    <p>Kindly, Approve the same to proceed.</p>
-                    <p>Thanks & Regards,<br><strong>{user.name}</strong></p>
-                </body></html>
+                subject = f"ITS - {user.name} - WFH Request | {request.from_date} to {request.to_date}"
+                content = f"""
+                <p>I would like to request Work From Home for the following dates:</p>
+                <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border-left: 4px solid #8b5cf6;">
+                    <p><strong>From:</strong> {request.from_date}</p>
+                    <p><strong>To:</strong> {request.to_date}</p>
+                    <p><strong>Days:</strong> {request.days}</p>
+                    <p><strong>Reason:</strong> {request.reason}</p>
+                </div>
+                <p>Kindly approve the request.</p>
                 """
+                body = get_email_template(manager.name, "New WFH Request", content, user.name)
                 background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
-        return {"message": "OT request submitted successfully", "ot_id": new_ot.ot_id}
-    except HTTPException:
-        db.rollback()
-        raise
+        return {"message": "WFH request submitted successfully", "wfh_id": new_wfh.wfh_id}
     except Exception as e:
-        print(f" OT INSERT ERROR: {str(e)}")
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1965,19 +2037,20 @@ def approve_wfh(request: schemas.WFHApprovalAction, background_tasks: Background
         emp_user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == wfh.emp_id).first()
         if emp_user and emp_user.p_mail:
             status_msg = request.action.upper()
-            color = "green" if request.action.lower() == "approved" else "red"
+            color = "#10B981" if request.action.lower() == "approved" else "#EF4444"
             manager_name = admin_user.name if admin_user else "Manager"
+            
             subject = f"WFH Request {status_msg} - {wfh.from_date}"
-            body = f"""
-            <html><body style="font-family: 'Times New Roman', Times, serif; color: #00008B;">
-                <h3>WFH Request Update</h3>
-                <p>Dear {emp_user.name},</p>
-                <p>Your Work From Home request for <strong>{wfh.from_date}</strong> has been <strong style="color: {color};">{status_msg}</strong>.</p>
+            content = f"""
+            <p>Your Work From Home request has been processed.</p>
+            <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border-left: 4px solid {color};">
+                <p><strong>Duration:</strong> {wfh.from_date} to {wfh.to_date}</p>
+                <p><strong>Status:</strong> <span style="color: {color}; font-weight: bold;">{status_msg}</span></p>
                 <p><strong>Remarks:</strong> {request.remarks or 'N/A'}</p>
-                <p><strong>Action By:</strong> {manager_name}</p>
-                <br><p>Thanks & Regards,<br>Ilan Tech Solutions</p>
-            </body></html>
+            </div>
+            <p>Processed by: {manager_name}</p>
             """
+            body = get_email_template(emp_user.name, "WFH Request Update", content, "HR Team")
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
     except Exception as e:
         print(f" Email notification failed: {e}")
