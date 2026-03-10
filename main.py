@@ -2160,6 +2160,178 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+# --- CLIENT MODULE ENDPOINTS ---
+
+@app.get("/admin/clients")
+def get_admin_clients(
+    client_name: Optional[str] = None,
+    company_name: Optional[str] = None,
+    gst: Optional[str] = None,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    query = db.query(models.CompanyClient)
+    
+    if client_name:
+        query = query.filter(models.CompanyClient.client_name.ilike(f"%{client_name}%"))
+    if company_name:
+        query = query.filter(models.CompanyClient.company_name.ilike(f"%{company_name}%"))
+    if gst:
+        query = query.filter(models.CompanyClient.gst.ilike(f"%{gst}%"))
+    if status:
+        query = query.filter(models.CompanyClient.status == status)
+    
+    if search:
+        search_filter = f"%{search}%"
+        query = query.filter(
+            or_(
+                models.CompanyClient.client_name.ilike(search_filter),
+                models.CompanyClient.company_name.ilike(search_filter),
+                models.CompanyClient.client_ref_no.ilike(search_filter),
+                models.CompanyClient.gst.ilike(search_filter)
+            )
+        )
+    
+    clients = query.order_by(models.CompanyClient.creation_date.desc()).all()
+    return clients
+
+@app.get("/admin/clients/{client_id}")
+def get_client_details(client_id: int, db: Session = Depends(get_db)):
+    client = db.query(models.CompanyClient).filter(models.CompanyClient.client_id == client_id).first()
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    
+    sites = db.query(models.ClientSite).filter(models.ClientSite.client_id == client_id).all()
+    
+    result = {
+        **client.__dict__,
+        "sites": [site.__dict__ for site in sites]
+    }
+    # Remove SQLAlchemy internal state
+    result.pop('_sa_instance_state', None)
+    for site in result["sites"]:
+        site.pop('_sa_instance_state', None)
+        
+    return result
+
+@app.post("/admin/create-client")
+def create_client(request: schemas.ClientApplyRequest, db: Session = Depends(get_db)):
+    try:
+        # Check if ref no already exists
+        existing = db.query(models.CompanyClient).filter(models.CompanyClient.client_ref_no == request.client_ref_no).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Client Reference Number already exists")
+
+        new_client = models.CompanyClient(
+            client_ref_no=request.client_ref_no,
+            client_name=request.client_name,
+            company_name=request.company_name,
+            mobile_no=request.mobile_no,
+            gst_available=request.gst_available,
+            gst=request.gst,
+            website=request.website,
+            email_id=request.email_id,
+            msme_available=request.msme_available,
+            msme=request.msme,
+            pan_no=request.pan_no,
+            short_code=request.short_code,
+            currency=request.currency,
+            address=request.address,
+            status=request.status or "Active",
+            creation_date=datetime.now(),
+            last_update_date=datetime.now()
+        )
+        db.add(new_client)
+        db.flush() # To get client_id
+
+        # Add sites
+        if request.sites:
+            for site in request.sites:
+                new_site = models.ClientSite(
+                    client_id=new_client.client_id,
+                    gst_pct=site.gst_pct,
+                    short_code=site.short_code,
+                    currency=site.currency,
+                    location=site.location,
+                    ship_to=site.ship_to,
+                    status=site.status or "Active",
+                    creation_date=datetime.now(),
+                    last_update_date=datetime.now()
+                )
+                db.add(new_site)
+
+        db.commit()
+        return {"message": "Client created successfully", "client_id": new_client.client_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/admin/update-client/{client_id}")
+def update_client(client_id: int, request: schemas.ClientApplyRequest, db: Session = Depends(get_db)):
+    try:
+        client = db.query(models.CompanyClient).filter(models.CompanyClient.client_id == client_id).first()
+        if not client:
+            raise HTTPException(status_code=404, detail="Client not found")
+
+        # Update client fields
+        client.client_name = request.client_name
+        client.company_name = request.company_name
+        client.mobile_no = request.mobile_no
+        client.gst_available = request.gst_available
+        client.gst = request.gst
+        client.website = request.website
+        client.email_id = request.email_id
+        client.msme_available = request.msme_available
+        client.msme = request.msme
+        client.pan_no = request.pan_no
+        client.short_code = request.short_code
+        client.currency = request.currency
+        client.address = request.address
+        client.status = request.status
+        client.last_update_date = datetime.now()
+
+        # Update sites: Simplest approach is to delete and re-add for this scale
+        db.query(models.ClientSite).filter(models.ClientSite.client_id == client_id).delete()
+        
+        if request.sites:
+            for site in request.sites:
+                new_site = models.ClientSite(
+                    client_id=client_id,
+                    gst_pct=site.gst_pct,
+                    short_code=site.short_code,
+                    currency=site.currency,
+                    location=site.location,
+                    ship_to=site.ship_to,
+                    status=site.status or "Active",
+                    creation_date=datetime.now(),
+                    last_update_date=datetime.now()
+                )
+                db.add(new_site)
+
+        db.commit()
+        return {"message": "Client updated successfully"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/admin/delete-client/{client_id}")
+def delete_client(client_id: int, db: Session = Depends(get_db)):
+    try:
+        client = db.query(models.CompanyClient).filter(models.CompanyClient.client_id == client_id).first()
+        if not client:
+            raise HTTPException(status_code=404, detail="Client not found")
+        
+        db.query(models.ClientSite).filter(models.ClientSite.client_id == client_id).delete()
+        db.delete(client)
+        db.commit()
+        return {"message": "Client deleted successfully"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/wfh-history/{emp_id}")
 def get_wfh_history(emp_id: str, db: Session = Depends(get_db)):
     history = db.query(models.WFHDet).filter(
@@ -2623,3 +2795,85 @@ def timesheet_action(action_req: schemas.TimesheetApprovalAction, background_tas
     except Exception as e:
         print(f" Email notification failed: {e}")
     return {"message": f"Timesheet {action_req.action} successfully"}
+
+@app.get("/admin/projects", response_model=List[schemas.ProjectResponse])
+def get_projects(db: Session = Depends(get_db)):
+    return db.query(models.Project).all()
+
+@app.get("/admin/projects/{pro_id}", response_model=schemas.ProjectResponse)
+def get_project(pro_id: int, db: Session = Depends(get_db)):
+    project = db.query(models.Project).filter(models.Project.pro_id == pro_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+@app.post("/admin/projects", response_model=schemas.ProjectResponse)
+def create_project(project_req: schemas.ProjectCreateRequest, db: Session = Depends(get_db)):
+    now = datetime.now()
+    new_project = models.Project(
+        project_ref_no=project_req.project_ref_no,
+        project_name=project_req.project_name,
+        project_type=project_req.project_type,
+        team_size=project_req.team_size,
+        budget=project_req.budget,
+        start_date=project_req.start_date,
+        end_date=project_req.end_date,
+        project_manager=project_req.project_manager,
+        status=project_req.status,
+        duration=project_req.duration,
+        description=project_req.description,
+        client_ref_no=project_req.client_ref_no,
+        attribute1=project_req.attribute1 or "",
+        attribute2=project_req.attribute2 or "",
+        attribute3=project_req.attribute3 or "",
+        attribute4=project_req.attribute4 or "",
+        attribute5="", attribute6="", attribute7="", attribute8="",
+        attribute9="", attribute10="", attribute11="", attribute12="",
+        attribute13="", attribute14="", attribute15="",
+        creation_date=now,
+        dom_id=project_req.dom_id,
+        last_update_date=now,
+        created_by=project_req.created_by,
+        last_updated_by=project_req.created_by or "Admin",
+        last_update_login=project_req.created_by or "Admin",
+        files=project_req.files,
+        project_priority=project_req.project_priority
+    )
+    db.add(new_project)
+    db.commit()
+    db.refresh(new_project)
+    return new_project
+
+@app.put("/admin/projects/{pro_id}", response_model=schemas.ProjectResponse)
+def update_project(pro_id: int, project_req: schemas.ProjectCreateRequest, db: Session = Depends(get_db)):
+    now = datetime.now()
+    project = db.query(models.Project).filter(models.Project.pro_id == pro_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    project.project_ref_no = project_req.project_ref_no
+    project.project_name = project_req.project_name
+    project.project_type = project_req.project_type
+    project.team_size = project_req.team_size
+    project.budget = project_req.budget
+    project.start_date = project_req.start_date
+    project.end_date = project_req.end_date
+    project.project_manager = project_req.project_manager
+    project.status = project_req.status
+    project.duration = project_req.duration
+    project.description = project_req.description
+    project.client_ref_no = project_req.client_ref_no
+    project.attribute1 = project_req.attribute1
+    project.attribute2 = project_req.attribute2
+    project.attribute3 = project_req.attribute3
+    project.attribute4 = project_req.attribute4
+    project.dom_id = project_req.dom_id
+    project.last_update_date = now
+    project.last_updated_by = project_req.created_by or "Admin"
+    project.last_update_login = project_req.created_by or "Admin"
+    project.files = project_req.files
+    project.project_priority = project_req.project_priority
+    
+    db.commit()
+    db.refresh(project)
+    return project
