@@ -211,29 +211,42 @@ class ProjectCreateRequest(BaseModel):
     duration: str
     description: Optional[str] = None
     client_ref_no: str
-    attribute1: str
-    attribute2: str
-    attribute3: str
-    attribute4: str
+    attribute1: Optional[str] = ""
+    attribute2: Optional[str] = ""
+    attribute3: Optional[str] = ""
+    attribute4: Optional[str] = ""
+    attribute5: Optional[str] = ""
+    attribute6: Optional[str] = ""
+    attribute7: Optional[str] = ""
+    attribute8: Optional[str] = ""
+    attribute9: Optional[str] = ""
+    attribute10: Optional[str] = ""
+    attribute11: Optional[str] = ""
+    attribute12: Optional[str] = ""
+    attribute13: Optional[str] = ""
+    attribute14: Optional[str] = ""
+    attribute15: Optional[str] = ""
     dom_id: str
     created_by: Optional[str] = None
     project_priority: Optional[str] = None
     files: Optional[str] = None
 
 class ProjectResponse(BaseModel):
+    model_config = {"from_attributes": True}
+
     pro_id: int
     project_ref_no: str
     project_name: Optional[str] = None
     project_type: Optional[str] = None
-    team_size: int
-    budget: str
-    start_date: str
-    end_date: str
-    project_manager: str
-    status: str
-    duration: str
+    team_size: Optional[int] = None
+    budget: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    project_manager: Optional[str] = None
+    status: Optional[str] = None
+    duration: Optional[str] = None
     description: Optional[str] = None
-    client_ref_no: str
+    client_ref_no: Optional[str] = None
     project_priority: Optional[str] = None
     dom_id: Optional[str] = None
     files: Optional[str] = None
@@ -254,5 +267,6 @@ class ProjectResponse(BaseModel):
     attribute15: Optional[str] = None
     created_by: Optional[str] = None
     last_updated_by: Optional[str] = None
-    creation_date: datetime
-    last_update_date: datetime
+    creation_date: Optional[Any] = None
+    last_update_date: Optional[Any] = None
+
