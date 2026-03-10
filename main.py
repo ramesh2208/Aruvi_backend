@@ -2990,3 +2990,157 @@ def get_ot_history(emp_id: str, db: Session = Depends(get_db)):
     return db.query(models.OverTimeDet).filter(
         func.lower(func.trim(models.OverTimeDet.emp_id)) == emp_id.lower()
     ).order_by(models.OverTimeDet.ot_id.desc()).all()
+
+
+@app.get("/admin/roles", response_model=List[schemas.RoleResponse])
+def get_roles(db: Session = Depends(get_db)):
+    return db.query(models.Role).all()
+
+
+@app.get("/admin/departments", response_model=List[schemas.DepartmentResponse])
+def get_departments(dpt_id: Optional[str] = None, db: Session = Depends(get_db)):
+    query = db.query(models.Department)
+    if dpt_id:
+        # Cast to int for safety
+        ids = [int(i.strip()) for i in dpt_id.split(",") if i.strip().isdigit()]
+        query = query.filter(models.Department.dpt_id.in_(ids))
+    return query.all()
+
+
+@app.get("/admin/domains", response_model=List[schemas.DomainResponse])
+def get_domains(dom_id: Optional[str] = None, db: Session = Depends(get_db)):
+    query = db.query(models.Domain)
+    if dom_id:
+        # Cast to int for safety
+        ids = [int(i.strip()) for i in dom_id.split(",") if i.strip().isdigit()]
+        query = query.filter(models.Domain.dom_id.in_(ids))
+    return query.all()
+
+
+@app.get("/admin/employees/brief", response_model=List[schemas.EmployeeBriefResponse])
+def get_employees_brief(db: Session = Depends(get_db)):
+    # Include role_id, dpt_id, dom_id for frontend filtering
+    employees = db.query(models.EmpDet.emp_id, models.EmpDet.name, models.EmpDet.role_id, models.EmpDet.dpt_id, models.EmpDet.dom_id).all()
+    return [{"emp_id": e.emp_id, "name": e.name, "role_id": e.role_id, "dpt_id": e.dpt_id, "dom_id": e.dom_id} for e in employees]
+
+
+@app.get("/admin/projects/{pro_id}/allocations", response_model=List[schemas.ProjectAllocationResponse])
+def get_project_allocations(pro_id: int, db: Session = Depends(get_db)):
+    allocs = db.query(models.ProjectAllocation).filter(
+        models.ProjectAllocation.pro_id == pro_id).all()
+    res = []
+    for a in allocs:
+        # Enrich with names
+        emp = db.query(models.EmpDet.name).filter(models.EmpDet.emp_id == a.emp_id).first()
+        role = db.query(models.Role.role).filter(models.Role.role_id == a.role_id).first()
+        dept = db.query(models.Department.department).filter(
+            models.Department.dpt_id == a.dpt_id).first()
+        dom = db.query(models.Domain.domain).filter(models.Domain.dom_id == a.dom_id).first()
+
+        res.append(schemas.ProjectAllocationResponse(
+            assign_id=a.assign_id,
+            emp_id=a.emp_id,
+            role_id=a.role_id,
+            dom_id=a.dom_id,
+            dpt_id=a.dpt_id,
+            lead_id=a.lead_id,
+            from_date=a.from_date,
+            to_date=a.to_date,
+            task_description=a.task_description,
+            allocation_pct=a.allocation_pct,
+            emp_name=emp[0] if emp else "Unknown",
+            role_name=role[0] if role else "Unknown",
+            dept_name=dept[0] if dept else "Unknown",
+            dom_name=dom[0] if dom else "Unknown"
+        ))
+    return res
+
+
+@app.post("/admin/projects/{pro_id}/allocations", response_model=schemas.ProjectAllocationResponse)
+def create_project_allocation(pro_id: int, alloc_req: schemas.ProjectAllocationCreate, db: Session = Depends(get_db)):
+    now = datetime.now()
+    new_alloc = models.ProjectAllocation(
+        pro_id=pro_id,
+        emp_id=alloc_req.emp_id,
+        role_id=alloc_req.role_id,
+        dom_id=alloc_req.dom_id,
+        dpt_id=alloc_req.dpt_id,
+        lead_id=alloc_req.lead_id,
+        from_date=alloc_req.from_date,
+        to_date=alloc_req.to_date,
+        task_description=alloc_req.task_description,
+        allocation_pct=alloc_req.allocation_pct,
+        created_by=alloc_req.created_by,
+        creation_date=now,
+        last_updated_by=alloc_req.created_by or "Admin",
+        last_update_date=now
+    )
+    db.add(new_alloc)
+    db.commit()
+    db.refresh(new_alloc)
+    return new_alloc
+
+
+@app.get("/admin/allocations", response_model=List[schemas.ProjectAllocationResponse])
+def get_all_allocations(db: Session = Depends(get_db)):
+    allocs = db.query(models.ProjectAllocation).all()
+    res = []
+    for a in allocs:
+        emp = db.query(models.EmpDet.name).filter(models.EmpDet.emp_id == a.emp_id).first()
+        role = db.query(models.Role.role).filter(models.Role.role_id == a.role_id).first()
+        dept = db.query(models.Department.department).filter(
+            models.Department.dpt_id == a.dpt_id).first()
+        dom = db.query(models.Domain.domain).filter(models.Domain.dom_id == a.dom_id).first()
+        proj = db.query(models.Project.project_name).filter(models.Project.pro_id == a.pro_id).first()
+
+        res.append(schemas.ProjectAllocationResponse(
+            assign_id=a.assign_id,
+            emp_id=a.emp_id,
+            role_id=a.role_id,
+            dom_id=a.dom_id,
+            dpt_id=a.dpt_id,
+            lead_id=a.lead_id,
+            from_date=a.from_date,
+            to_date=a.to_date,
+            task_description=a.task_description,
+            allocation_pct=a.allocation_pct,
+            emp_name=emp[0] if emp else "Unknown",
+            role_name=role[0] if role else "Unknown",
+            dept_name=dept[0] if dept else "Unknown",
+            dom_name=dom[0] if dom else "Unknown",
+            project_name=proj[0] if proj else "Unknown"
+        ))
+    return res
+
+
+@app.get("/admin/employees/{emp_id}/allocations", response_model=List[schemas.ProjectAllocationResponse])
+def get_employee_allocations(emp_id: str, db: Session = Depends(get_db)):
+    allocs = db.query(models.ProjectAllocation).filter(
+        models.ProjectAllocation.emp_id == emp_id).all()
+    res = []
+    for a in allocs:
+        emp = db.query(models.EmpDet.name).filter(models.EmpDet.emp_id == a.emp_id).first()
+        role = db.query(models.Role.role).filter(models.Role.role_id == a.role_id).first()
+        dept = db.query(models.Department.department).filter(
+            models.Department.dpt_id == a.dpt_id).first()
+        dom = db.query(models.Domain.domain).filter(models.Domain.dom_id == a.dom_id).first()
+        proj = db.query(models.Project.project_name).filter(models.Project.pro_id == a.pro_id).first()
+
+        res.append(schemas.ProjectAllocationResponse(
+            assign_id=a.assign_id,
+            emp_id=a.emp_id,
+            role_id=a.role_id,
+            dom_id=a.dom_id,
+            dpt_id=a.dpt_id,
+            lead_id=a.lead_id,
+            from_date=a.from_date,
+            to_date=a.to_date,
+            task_description=a.task_description,
+            allocation_pct=a.allocation_pct,
+            emp_name=emp[0] if emp else "Unknown",
+            role_name=role[0] if role else "Unknown",
+            dept_name=dept[0] if dept else "Unknown",
+            dom_name=dom[0] if dom else "Unknown",
+            project_name=proj[0] if proj else "Unknown"
+        ))
+    return res
