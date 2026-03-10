@@ -270,3 +270,58 @@ class ProjectResponse(BaseModel):
     creation_date: Optional[Any] = None
     last_update_date: Optional[Any] = None
 
+
+class RoleResponse(BaseModel):
+    model_config = {"from_attributes": True}
+    role_id: int
+    role: str
+    dpt_id: Optional[str] = None
+    dom_id: Optional[str] = None
+
+class DepartmentResponse(BaseModel):
+    model_config = {"from_attributes": True}
+    dpt_id: int
+    department: str
+
+class DomainResponse(BaseModel):
+    model_config = {"from_attributes": True}
+    dom_id: int
+    domain: str
+
+class EmployeeBriefResponse(BaseModel):
+    emp_id: str
+    name: str
+    role_id: Optional[str] = None
+    dpt_id: Optional[str] = None
+    dom_id: Optional[str] = None
+
+class ProjectAllocationCreate(BaseModel):
+    pro_id: int
+    emp_id: str
+    role_id: int
+    dom_id: int
+    dpt_id: int
+    lead_id: str
+    from_date: str
+    to_date: str
+    task_description: Optional[str] = None
+    allocation_pct: str
+    created_by: Optional[str] = None
+
+class ProjectAllocationResponse(BaseModel):
+    model_config = {"from_attributes": True}
+    assign_id: int
+    emp_id: str
+    role_id: int
+    dom_id: int
+    dpt_id: int
+    lead_id: str
+    from_date: str
+    to_date: str
+    task_description: Optional[str] = None
+    allocation_pct: str
+    emp_name: Optional[str] = None
+    role_name: Optional[str] = None
+    dept_name: Optional[str] = None
+    dom_name: Optional[str] = None
+    project_name: Optional[str] = None
