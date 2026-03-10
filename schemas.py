@@ -80,9 +80,12 @@ class OverTimeApprovalAction(BaseModel):
 
 class WFHApplyRequest(BaseModel):
     emp_id: str
-    date: str # DD-Mon-YYYY
+    from_date: Optional[str] = None  # preferred DB column naming
+    date: Optional[str] = None       # backward-compatible alias for from_date
     reason: str
     status: Optional[str] = "Pending"
+    to_date: Optional[str] = None   # to_date (if not given, defaults to date)
+    days: Optional[float] = None    # if not given, auto-calculated on backend
 
 class WFHApprovalAction(BaseModel):
     wfh_id: int
@@ -103,6 +106,9 @@ class EmployeeProfileResponse(BaseModel):
     domain: Optional[str] = None
     department: Optional[str] = None
     role: Optional[str] = None
+    email: Optional[str] = None
+    p_mail: Optional[str] = None
+    mail: Optional[str] = None
     personal_mail: Optional[str] = None
     professional_mail: Optional[str] = None
     permanent_address: Optional[str] = None
@@ -150,3 +156,103 @@ class ResetPasswordRequest(BaseModel):
     email: str
     otp: str
     new_password: str
+
+class ClientSiteSchema(BaseModel):
+    site_id: Optional[int] = None
+    client_id: Optional[int] = None
+    gst_pct: Optional[str] = None
+    short_code: Optional[str] = None
+    currency: Optional[str] = None
+    location: Optional[str] = None
+    ship_to: Optional[str] = None
+    status: Optional[str] = "Active"
+
+class ClientApplyRequest(BaseModel):
+    client_ref_no: str
+    client_name: str
+    company_name: str
+    mobile_no: Optional[str] = None
+    gst_available: Optional[str] = "No"
+    gst: Optional[str] = None
+    website: Optional[str] = None
+    email_id: Optional[str] = None
+    msme_available: Optional[str] = "No"
+    msme: Optional[str] = None
+    pan_no: Optional[str] = None
+    short_code: Optional[str] = None
+    currency: Optional[str] = None
+    address: Optional[str] = None
+    status: Optional[str] = "Active"
+    sites: Optional[List[ClientSiteSchema]] = []
+
+class ClientResponse(BaseModel):
+    client_id: int
+    client_ref_no: str
+    client_name: str
+    company_name: str
+    mobile_no: Optional[str] = None
+    gst: Optional[str] = None
+    status: str
+    email_id: Optional[str] = None
+    address: Optional[str] = None
+    sites: Optional[List[ClientSiteSchema]] = []
+    creation_date: Optional[datetime] = None
+
+class ProjectCreateRequest(BaseModel):
+    project_ref_no: str
+    project_name: str
+    project_type: Optional[str] = None
+    team_size: int
+    budget: str
+    start_date: str
+    end_date: str
+    project_manager: str
+    status: str
+    duration: str
+    description: Optional[str] = None
+    client_ref_no: str
+    attribute1: str
+    attribute2: str
+    attribute3: str
+    attribute4: str
+    dom_id: str
+    created_by: Optional[str] = None
+    project_priority: Optional[str] = None
+    files: Optional[str] = None
+
+class ProjectResponse(BaseModel):
+    pro_id: int
+    project_ref_no: str
+    project_name: Optional[str] = None
+    project_type: Optional[str] = None
+    team_size: int
+    budget: str
+    start_date: str
+    end_date: str
+    project_manager: str
+    status: str
+    duration: str
+    description: Optional[str] = None
+    client_ref_no: str
+    project_priority: Optional[str] = None
+    dom_id: Optional[str] = None
+    files: Optional[str] = None
+    attribute1: Optional[str] = None
+    attribute2: Optional[str] = None
+    attribute3: Optional[str] = None
+    attribute4: Optional[str] = None
+    attribute5: Optional[str] = None
+    attribute6: Optional[str] = None
+    attribute7: Optional[str] = None
+    attribute8: Optional[str] = None
+    attribute9: Optional[str] = None
+    attribute10: Optional[str] = None
+    attribute11: Optional[str] = None
+    attribute12: Optional[str] = None
+    attribute13: Optional[str] = None
+    attribute14: Optional[str] = None
+    attribute15: Optional[str] = None
+    created_by: Optional[str] = None
+    last_updated_by: Optional[str] = None
+    creation_date: datetime
+    last_update_date: datetime
