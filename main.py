@@ -2813,6 +2813,29 @@ def timesheet_action(action_req: schemas.TimesheetApprovalAction, background_tas
     return {"message": f"Timesheet {action_req.action} successfully"}
 
 
+@app.get("/admin/projects/next-ref")
+def get_next_project_ref(db: Session = Depends(get_db)):
+    import re
+    all_refs = db.query(models.Project.project_ref_no).all()
+    max_num = 0
+    prefix = "ITS-PRO-"
+    
+    for (ref_no,) in all_refs:
+        if ref_no and ref_no.startswith(prefix):
+            try:
+                # Extract number using regex to be safe
+                match = re.search(r'(\d+)', ref_no[len(prefix):])
+                if match:
+                    num = int(match.group(1))
+                    if num > max_num:
+                        max_num = num
+            except:
+                continue
+    
+    next_num = max_num + 1
+    return {"next_ref": f"{prefix}{next_num:04d}"}
+
+
 @app.get("/admin/projects", response_model=List[schemas.ProjectResponse])
 def get_projects(db: Session = Depends(get_db)):
     return db.query(models.Project).all()
@@ -2846,9 +2869,17 @@ def create_project(project_req: schemas.ProjectCreateRequest, db: Session = Depe
         attribute2=project_req.attribute2 or "",
         attribute3=project_req.attribute3 or "",
         attribute4=project_req.attribute4 or "",
-        attribute5="", attribute6="", attribute7="", attribute8="",
-        attribute9="", attribute10="", attribute11="", attribute12="",
-        attribute13="", attribute14="", attribute15="",
+        attribute5=project_req.attribute5 or "",
+        attribute6=project_req.attribute6 or "",
+        attribute7=project_req.attribute7 or "",
+        attribute8=project_req.attribute8 or "",
+        attribute9=project_req.attribute9 or "",
+        attribute10=project_req.attribute10 or "",
+        attribute11=project_req.attribute11 or "",
+        attribute12=project_req.attribute12 or "",
+        attribute13=project_req.attribute13 or "",
+        attribute14=project_req.attribute14 or "",
+        attribute15=project_req.attribute15 or "",
         creation_date=now,
         dom_id=project_req.dom_id,
         last_update_date=now,
@@ -2888,6 +2919,17 @@ def update_project(pro_id: int, project_req: schemas.ProjectCreateRequest,
     project.attribute2 = project_req.attribute2
     project.attribute3 = project_req.attribute3
     project.attribute4 = project_req.attribute4
+    project.attribute5 = project_req.attribute5
+    project.attribute6 = project_req.attribute6
+    project.attribute7 = project_req.attribute7
+    project.attribute8 = project_req.attribute8
+    project.attribute9 = project_req.attribute9
+    project.attribute10 = project_req.attribute10
+    project.attribute11 = project_req.attribute11
+    project.attribute12 = project_req.attribute12
+    project.attribute13 = project_req.attribute13
+    project.attribute14 = project_req.attribute14
+    project.attribute15 = project_req.attribute15
     project.dom_id = project_req.dom_id
     project.last_update_date = now
     project.last_updated_by = project_req.created_by or "Admin"
