@@ -191,12 +191,16 @@ class ClientResponse(BaseModel):
     client_name: str
     company_name: str
     mobile_no: Optional[str] = None
-    gst: Optional[str] = None
-    status: str
     email_id: Optional[str] = None
+    gst_available: Optional[str] = None
+    gst: Optional[str] = None
+    msme_available: Optional[str] = None
+    msme: Optional[str] = None
+    pan_no: Optional[str] = None
     address: Optional[str] = None
+    status: Optional[str] = "Active"
     sites: Optional[List[ClientSiteSchema]] = []
-    creation_date: Optional[datetime] = None
+    creation_date: Optional[Any] = None
 
 class ProjectCreateRequest(BaseModel):
     project_ref_no: str
