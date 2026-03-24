@@ -123,7 +123,7 @@ def test_mail_formats(db: Session = Depends(get_db)):
     # Test 2: JSON with is_html field
     try:
         r = requests.post(url, json={
-            "to_email": "your-own-email@test.com",
+            "to_email": "ramesh.p@ilantechsolutions.com",
             "subject": "Test 2 - JSON + is_html",
             "body": html_body,
             "is_html": True
@@ -135,7 +135,7 @@ def test_mail_formats(db: Session = Depends(get_db)):
     # Test 3: Form data with content_type
     try:
         r = requests.post(url, data={
-            "to_email": "your-own-email@test.com",
+            "to_email": "ramesh.p@ilantechsolutions.com",
             "subject": "Test 3 - Form + content_type",
             "body": html_body,
             "content_type": "text/html"
@@ -147,7 +147,7 @@ def test_mail_formats(db: Session = Depends(get_db)):
     # Test 4: Form data plain (no extra field)
     try:
         r = requests.post(url, data={
-            "to_email": "your-own-email@test.com",
+            "to_email": "ramesh.p@ilantechsolutions.com",
             "subject": "Test 4 - Form plain",
             "body": html_body,
         }, headers={"x-api-key": api_key}, timeout=10)
