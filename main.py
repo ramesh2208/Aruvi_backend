@@ -97,7 +97,65 @@ def get_db():
     finally:
         db.close()
 
+@app.get("/debug/test-mail")
+def test_mail_formats(db: Session = Depends(get_db)):
+    """
+    Call this endpoint from your browser to test which format the mail API accepts.
+    Visit: http://your-server/debug/test-mail
+    """
+    url = "http://devbms.ilantechsolutions.com/attendance/send-mail/"
+    api_key = "my_secret_key_123"
+    html_body = "<h1 style='color:red'>HTML Test</h1><p>If you see this styled, HTML works.</p>"
+    results = {}
 
+    # Test 1: JSON with content_type field
+    try:
+        r = requests.post(url, json={
+            "to_email": "ramesh.p@ilantechsolutions.com",  # ← put your real email here
+            "subject": "Test 1 - JSON + content_type",
+            "body": html_body,
+            "content_type": "text/html"
+        }, headers={"x-api-key": api_key}, timeout=10)
+        results["test1_json_content_type"] = {"status": r.status_code, "response": r.text[:300]}
+    except Exception as e:
+        results["test1_json_content_type"] = {"error": str(e)}
+
+    # Test 2: JSON with is_html field
+    try:
+        r = requests.post(url, json={
+            "to_email": "your-own-email@test.com",
+            "subject": "Test 2 - JSON + is_html",
+            "body": html_body,
+            "is_html": True
+        }, headers={"x-api-key": api_key}, timeout=10)
+        results["test2_json_is_html"] = {"status": r.status_code, "response": r.text[:300]}
+    except Exception as e:
+        results["test2_json_is_html"] = {"error": str(e)}
+
+    # Test 3: Form data with content_type
+    try:
+        r = requests.post(url, data={
+            "to_email": "your-own-email@test.com",
+            "subject": "Test 3 - Form + content_type",
+            "body": html_body,
+            "content_type": "text/html"
+        }, headers={"x-api-key": api_key}, timeout=10)
+        results["test3_form_content_type"] = {"status": r.status_code, "response": r.text[:300]}
+    except Exception as e:
+        results["test3_form_content_type"] = {"error": str(e)}
+
+    # Test 4: Form data plain (no extra field)
+    try:
+        r = requests.post(url, data={
+            "to_email": "your-own-email@test.com",
+            "subject": "Test 4 - Form plain",
+            "body": html_body,
+        }, headers={"x-api-key": api_key}, timeout=10)
+        results["test4_form_plain"] = {"status": r.status_code, "response": r.text[:300]}
+    except Exception as e:
+        results["test4_form_plain"] = {"error": str(e)}
+
+    return results
 def parse_date(d):
     if not d:
         return None
