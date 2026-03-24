@@ -55,6 +55,10 @@ def migrate_wfh_table():
 
 
 migrate_wfh_table()
+
+@app.get("/")
+def read_root():
+    return {"status": "online", "message": "Aruvi Backend is active"}
  
 def migrate_revision_column():
     from sqlalchemy import text
@@ -97,65 +101,7 @@ def get_db():
     finally:
         db.close()
 
-@app.get("/debug/test-mail")
-def test_mail_formats(db: Session = Depends(get_db)):
-    """
-    Call this endpoint from your browser to test which format the mail API accepts.
-    Visit: http://your-server/debug/test-mail
-    """
-    url = "http://devbms.ilantechsolutions.com/attendance/send-mail/"
-    api_key = "my_secret_key_123"
-    html_body = "<h1 style='color:red'>HTML Test</h1><p>If you see this styled, HTML works.</p>"
-    results = {}
 
-    # Test 1: JSON with content_type field
-    try:
-        r = requests.post(url, json={
-            "to_email": "ramesh.p@ilantechsolutions.com",  # ← put your real email here
-            "subject": "Test 1 - JSON + content_type",
-            "body": html_body,
-            "content_type": "text/html"
-        }, headers={"x-api-key": api_key}, timeout=10)
-        results["test1_json_content_type"] = {"status": r.status_code, "response": r.text[:300]}
-    except Exception as e:
-        results["test1_json_content_type"] = {"error": str(e)}
-
-    # Test 2: JSON with is_html field
-    try:
-        r = requests.post(url, json={
-            "to_email": "ramesh.p@ilantechsolutions.com",
-            "subject": "Test 2 - JSON + is_html",
-            "body": html_body,
-            "is_html": True
-        }, headers={"x-api-key": api_key}, timeout=10)
-        results["test2_json_is_html"] = {"status": r.status_code, "response": r.text[:300]}
-    except Exception as e:
-        results["test2_json_is_html"] = {"error": str(e)}
-
-    # Test 3: Form data with content_type
-    try:
-        r = requests.post(url, data={
-            "to_email": "ramesh.p@ilantechsolutions.com",
-            "subject": "Test 3 - Form + content_type",
-            "body": html_body,
-            "content_type": "text/html"
-        }, headers={"x-api-key": api_key}, timeout=10)
-        results["test3_form_content_type"] = {"status": r.status_code, "response": r.text[:300]}
-    except Exception as e:
-        results["test3_form_content_type"] = {"error": str(e)}
-
-    # Test 4: Form data plain (no extra field)
-    try:
-        r = requests.post(url, data={
-            "to_email": "ramesh.p@ilantechsolutions.com",
-            "subject": "Test 4 - Form plain",
-            "body": html_body,
-        }, headers={"x-api-key": api_key}, timeout=10)
-        results["test4_form_plain"] = {"status": r.status_code, "response": r.text[:300]}
-    except Exception as e:
-        results["test4_form_plain"] = {"error": str(e)}
-
-    return results
 def parse_date(d):
     if not d:
         return None
@@ -813,7 +759,7 @@ def send_email_notification(to_email: str, subject: str, body_html: str):
         "to_email": to_email,
         "subject": subject,
         "body": body_html,
-         "content_type": "text/html"
+        "content_type": "text/html", 
     }
 
     headers = {
@@ -1054,18 +1000,22 @@ async def apply_leave(
         if user and user.manager_id:
             manager = db.query(models.EmpDet).filter(models.EmpDet.emp_id == user.manager_id).first()
             if manager and manager.p_mail:
-                subject = f"ITS - {emp_name} - {leave_type} Request | {from_date} to {to_date}"
+                subject = f"ITS-{emp_name}-{leave_type} Request on {from_date}"
                 content = f"""
-                <p>I would like to request leave for the following dates:</p>
-                <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border-left: 4px solid #2563eb;">
-                    <p><strong>Type:</strong> {leave_type}</p>
-                    <p><strong>Duration:</strong> {from_date} to {to_date} ({days} days)</p>
-                    <p><strong>Reason:</strong> {reason}</p>
-                </div>
-                <p>Kindly approve the request.</p>
+                <p>Good Day!</p>
+                <p>I hope this mail finds you well.</p>
+                <p>I am requesting a <strong>{leave_type}</strong> from {from_date} to {to_date} ({requested_days} days) for the following reason: {reason}</p>
+                <p>Thank you for considering my request. Looking forward to your approval.</p>
                 """
-                body = get_email_template(manager.name, "New Leave Request", content, emp_name)
+                body = get_email_template(manager.name, f"{leave_type} Request", content, emp_name)
+                
+                # Send to Manager
                 background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
+                
+                # Also notify Admin/HR
+                admin_emails = ["info@ilantechsolutions.com", "hr@ilantechsolutions.com"]
+                for admin_email in admin_emails:
+                    background_tasks.add_task(send_email_notification, admin_email, f"ADMIN: {subject}", body)
     except HTTPException:
         db.rollback()
         raise
@@ -1187,18 +1137,27 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
         if emp_user and emp_user.p_mail:
             status_msg = request_item.action.upper()
             color = "#10B981" if request_item.action.lower() == "approved" else "#EF4444"
-            subject = f"Leave Request {status_msg} - {leave.leave_type}"
-            content = f"""
-            <p>Your leave request has been processed.</p>
-            <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border-left: 4px solid {color};">
-                <p><strong>Type:</strong> {leave.leave_type}</p>
-                <p><strong>Duration:</strong> {leave.from_date} to {leave.to_date} ({leave.days} days)</p>
-                <p><strong>Status:</strong> <span style="color: {color}; font-weight: bold;">{status_msg}</span></p>
-                <p><strong>Remarks:</strong> {request_item.remarks or 'N/A'}</p>
+            subject = f"RE: ITS-{emp_user.name}-{leave.leave_type} Request on {leave.from_date}"
+            
+            # Reconstruction of original request for threading
+            original_request_box = f"""
+            <div style="margin-top: 30px; padding-top: 20px; border-top: 2px solid #e2e8f0; color: #64748b;">
+                <p style="font-size: 12px; font-weight: bold; margin-bottom: 10px;">--- Original Request ---</p>
+                <p>Dear {leave.approver or 'Manager'},</p>
+                <p>Good Day!</p>
+                <p>I hope this mail finds you well.</p>
+                <p>I am requesting a <strong>{leave.leave_type}</strong> from {leave.from_date} to {leave.to_date} ({leave.days} days) due to: {leave.reason}</p>
             </div>
-            <p>Processed by: {leave.approved_by or 'Manager'}</p>
             """
-            body = get_email_template(emp_user.name, "Leave Request Update", content, "HR Team")
+
+            content = f"""
+            <p>Good Day!</p>
+            <p>This is <strong>{status_msg}</strong>. {request_item.remarks or ''}</p>
+            {original_request_box}
+            """
+            
+            # Send using the approver name as the sender in the template
+            body = get_email_template(emp_user.name, f"Leave Request {status_msg}", content, leave.approved_by or "Manager")
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
     except Exception as e:
         print(f" Email notification failed: {e}")
