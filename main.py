@@ -21,8 +21,10 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 import pyotp
 from cryptography.fernet import Fernet
+
 import models, schemas, database
 from database import engine, SessionLocal
+
 
 # Create tables if they don't exist
 models.Base.metadata.create_all(bind=engine)
@@ -53,10 +55,7 @@ def migrate_wfh_table():
 
 
 migrate_wfh_table()
-
-@app.get("/")
-def read_root():
-    return {"status": "online", "message": "Aruvi Backend is active"}
+ 
  
 def migrate_revision_column():
     from sqlalchemy import text
@@ -90,6 +89,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/")
+def read_root():
+    return {"status": "online", "message": "Aruvi Backend is active"}
 
 
 def get_db():
