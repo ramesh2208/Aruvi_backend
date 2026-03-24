@@ -55,6 +55,26 @@ def migrate_wfh_table():
 
 
 migrate_wfh_table()
+ 
+def migrate_revision_column():
+    from sqlalchemy import text
+    db = SessionLocal()
+    try:
+        try:
+            db.execute(text("SELECT revision FROM xxits_aruvi_emp_leave_t LIMIT 1"))
+        except Exception:
+            print(" Migration: Adding revision to xxits_aruvi_emp_leave_t")
+            db.execute(text("ALTER TABLE xxits_aruvi_emp_leave_t ADD COLUMN revision VARCHAR(240)"))
+            db.commit()
+        # Always ensure NULLs are converted to '0'
+        db.execute(text("UPDATE xxits_aruvi_emp_leave_t SET revision = '0' WHERE revision IS NULL OR revision = ''"))
+        db.commit()
+    except Exception as e:
+        print(f" Migration Error (Revision): {e}")
+    finally:
+        db.close()
+
+migrate_revision_column()
 
 # In-memory OTP storage
 otp_store = {}
@@ -256,7 +276,7 @@ def forgot_password(request: schemas.ForgotPasswordRequest, background_tasks: Ba
     </html>
     """
 
-    background_tasks.add_task(send_email_notification, email, f"ITS - Password Reset Code : {otp} Enclosed", body)
+    background_tasks.add_task(send_email_notification, email, f"ITS - Password Reset Mail", body)
     return {"message": "OTP sent successfully"}
 
 
@@ -592,43 +612,11 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         total_hours_float = hours + (minutes / 60)
 
         if total_hours_float < 4:
-            checkin_record.status = "CL"
-            try:
-                months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                          'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-                today_formatted = f"{today_date.day:02d}-{months[today_date.month - 1]}-{today_date.year}"
-                auto_leave = models.EmpLeave(
-                    emp_id=emp_id,
-                    leave_type="Casual Leave",
-                    from_date=today_formatted,
-                    to_date=today_formatted,
-                    days="1.0",
-                    reason=f"Auto-deducted: Worked only {hours}h {minutes}m (below 4 hours)",
-                    status="Approved",
-                    created_by=emp_id,
-                    creation_date=now,
-                    last_updated_by=emp_id,
-                    last_update_date=now,
-                    applied_date=today_formatted,
-                    mail_message_id="",
-                    hr_action="",
-                    hr_approval="",
-                    admin_approval="",
-                    lop_days="0",
-                    remarks="",
-                    approved_by="System",
-                    reporting_manager="",
-                    approver="",
-                    revision="1",
-                    attribute_category="",
-                    last_update_login=emp_id
-                )
-                db.add(auto_leave)
-                print(f" Auto-deducted 1 CL for {emp_id} - worked {total_hours_float:.2f} hours")
-            except Exception as e:
-                print(f" Could not auto-deduct leave: {e}")
+            checkin_record.status = "LT4"
         elif total_hours_float < 6:
-            checkin_record.status = "0.5P"
+            checkin_record.status = "LT6"
+        elif total_hours_float < 8:
+            checkin_record.status = "LT8"
         else:
             checkin_record.status = "P"
 
@@ -673,10 +661,15 @@ def get_attendance_month(emp_id: str, month: int, year: int, db: Session = Depen
     from sqlalchemy import extract
     emp_id = emp_id.strip()
     logs = db.query(models.CheckIn).filter(
-        models.CheckIn.emp_id == emp_id,
+        func.trim(models.CheckIn.emp_id) == emp_id,
         extract('month', models.CheckIn.t_date) == month,
         extract('year', models.CheckIn.t_date) == year
     ).all()
+    # Normalize date to YYYY-MM-DD string for frontend consistency
+    for log in logs:
+        if hasattr(log, 't_date') and log.t_date:
+            if not isinstance(log.t_date, str):
+                log.t_date = log.t_date.strftime("%Y-%m-%d")
     return logs
 
 
@@ -743,7 +736,8 @@ def get_leave_history(emp_id: str, db: Session = Depends(get_db)):
             "days": row.days,
             "reason": row.reason,
             "status": row.status,
-            "remarks": row.remarks
+            "remarks": row.remarks,
+            "revision": row.revision
         }
         for row in history
     ]
@@ -788,55 +782,37 @@ def send_email_notification(to_email: str, subject: str, body_html: str):
 def get_email_template(receiver_name, title, content_html, sender_name="Aruvi Team"):
     return f"""
     <html>
-    <head>
-        <style>
-            .email-container {{
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                color: #1e293b;
-                max-width: 600px;
-                margin: 0 auto;
-                border: 1px solid #e2e8f0;
-                border-radius: 12px;
-                overflow: hidden;
-            }}
-            .header {{
-                background-color: #0f172a;
-                padding: 24px;
-                text-align: center;
-                color: white;
-            }}
-            .content {{
-                padding: 32px;
-                line-height: 1.6;
-            }}
-            .footer {{
-                background-color: #f8fafc;
-                padding: 20px;
-                text-align: center;
-                font-size: 12px;
-                color: #64748b;
-                border-top: 1px solid #e2e8f0;
-            }}
-            .highlight {{
-                color: #2563eb;
-                font-weight: bold;
-            }}
-        </style>
-    </head>
-    <body style="margin: 0; padding: 20px; background-color: #f1f5f9;">
-        <div class="email-container">
-            <div class="header">
-                <h2 style="margin: 0;">{title}</h2>
-            </div>
-            <div class="content">
-                <p>Dear {receiver_name},</p>
-                {content_html}
-                <p style="margin-top: 32px;">Best Regards,<br><strong>{sender_name}</strong></p>
-            </div>
-            <div class="footer">
-                &copy; 2026 Ilan Tech Solutions. All rights reserved.
-            </div>
-        </div>
+    <body style="margin: 0; padding: 0; background-color: #f1f5f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
+        <table border="0" cellpadding="0" cellspacing="0" width="100%" style="table-layout: fixed;">
+            <tr>
+                <td align="center" style="padding: 20px 0;">
+                    <table border="0" cellpadding="0" cellspacing="0" width="600" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; border-collapse: separate;">
+                        <!-- Header -->
+                        <tr>
+                            <td align="center" style="background-color: #0f172a; padding: 30px 20px;">
+                                <h2 style="margin: 0; color: #ffffff; font-size: 24px; font-weight: 600;">{title}</h2>
+                            </td>
+                        </tr>
+                        <!-- Content -->
+                        <tr>
+                            <td style="padding: 40px 30px; line-height: 1.6; color: #1e293b;">
+                                <p style="margin: 0 0 20px 0; font-size: 16px;">Dear <strong>{receiver_name}</strong>,</p>
+                                <div style="font-size: 15px;">
+                                    {content_html}
+                                </div>
+                                <p style="margin: 30px 0 0 0; font-size: 16px;">Best Regards,<br><strong style="color: #0f172a;">{sender_name}</strong></p>
+                            </td>
+                        </tr>
+                        <!-- Footer -->
+                        <tr>
+                            <td align="center" style="background-color: #f8fafc; padding: 20px; border-top: 1px solid #e2e8f0; font-size: 12px; color: #64748b;">
+                                &copy; 2026 Ilan Tech Solutions. All rights reserved.
+                            </td>
+                        </tr>
+                    </table>
+                </td>
+            </tr>
+        </table>
     </body>
     </html>
     """
@@ -861,8 +837,14 @@ async def apply_leave(
     normalized_leave_type = (leave_type or "").strip().lower()
     requested_days = float(days or 0)
 
+    # Validation: Sick Leave more than 2 days requires attachment
+    if normalized_leave_type == "sick leave" and requested_days > 2:
+        if not attachments or len(attachments) == 0:
+            raise HTTPException(status_code=400, detail="Attachment is mandatory for Sick Leave requests lasting more than 2 days.")
+
     attachment_paths = []
     if attachments:
+        print(f" Received {len(attachments)} attachments for leave request.")
         images = [f for f in attachments if f.content_type and f.content_type.startswith('image/')]
         if len(images) > 0 and (len(images) < 5 or len(images) > 8):
             raise HTTPException(status_code=400, detail="Please upload between 5 to 8 images.")
@@ -870,19 +852,26 @@ async def apply_leave(
         upload_dir = "uploads/leave_attachments"
         os.makedirs(upload_dir, exist_ok=True)
 
-        for file in attachments:
+        for i, file in enumerate(attachments):
+            if not file.filename:
+                continue
             file_extension = file.filename.split('.')[-1]
-            file_name = f"{emp_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{len(attachment_paths)}.{file_extension}"
+            file_name = f"{emp_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{i}.{file_extension}"
             file_path = os.path.join(upload_dir, file_name)
+            
+            # Save file
             with open(file_path, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
-            attachment_paths.append(file_path)
+            
+            # Use forward slashes for DB storage to avoid escaping issues
+            db_path = f"uploads/leave_attachments/{file_name}"
+            attachment_paths.append(db_path)
+            print(f" Saved attachment {i} to {db_path}")
 
     attr14_paths = ",".join(attachment_paths) if attachment_paths else None
     primary_attachment_path = attachment_paths[0] if attachment_paths else None
 
-    print(
-        f" Processing Leave Request for: {emp_id}, Type: {leave_type}, Days: {days}, Attachments: {len(attachment_paths)}")
+    print(f" Processing Leave Request for: {emp_id}, Type: {leave_type}, Days: {days}, Primary File: {primary_attachment_path}")
     try:
         req_from = parse_date(from_date)
         req_to = parse_date(to_date)
@@ -976,7 +965,7 @@ async def apply_leave(
             approved_by="",
             reporting_manager="",
             approver="",
-            revision="1",
+            revision="0",
             attribute_category="",
             attribute1="", attribute2="", attribute3="", attribute4="", attribute5="",
             last_update_login="",
@@ -991,8 +980,17 @@ async def apply_leave(
             balance_row.availed_leave = float(balance_row.availed_leave or 0) + days_count
             if balance_row.available_leave is not None:
                 balance_row.available_leave = float(balance_row.available_leave or 0) - days_count
+        
         db.commit()
         db.refresh(new_leave)
+
+        # Verification Log
+        saved_leave = db.query(models.EmpLeave).filter(models.EmpLeave.l_id == new_leave.l_id).first()
+        if saved_leave:
+            print(f" SUCCESS: Leave record verified in DB. ID: {saved_leave.l_id}, File: {saved_leave.file}")
+        else:
+            print(f" CRITICAL ERROR: Leave record NOT FOUND in DB after commit! ID requested: {new_leave.l_id}")
+
         print(f" Leave Applied Successfully. ID: {new_leave.l_id} for Emp: {new_leave.emp_id}")
         if user and user.manager_id:
             manager = db.query(models.EmpDet).filter(models.EmpDet.emp_id == user.manager_id).first()
@@ -1073,7 +1071,8 @@ def get_all_leave_history(manager_id: Optional[str] = None, db: Session = Depend
             "reason": leave.reason,
             "remarks": leave.remarks or "",
             "status": leave.status,
-            "file": leave.file
+            "file": leave.file,
+            "revision": leave.revision
         })
     return results
 
@@ -1099,6 +1098,19 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
     if admin_user:
         leave.approved_by = admin_user.name
         leave.approver = admin_user.name
+    
+    # Robust revision increment
+    try:
+        val = str(leave.revision or "0")
+        current_rev = int(''.join(filter(str.isdigit, val))) if any(c.isdigit() for c in val) else 0
+    except (ValueError, TypeError):
+        current_rev = 0
+        
+    next_rev = current_rev + 1
+    leave.revision = str(next_rev)
+    db.add(leave)
+    print(f"DEBUG: Leave ID {leave.l_id} revision updated to {next_rev}")
+    
     if request_item.action == 'Rejected' and old_status != 'Rejected':
         l_type_key = leave.leave_type.strip().lower().split(' ')[0]
         balance = db.query(models.LeaveDet).filter(
@@ -1711,9 +1723,16 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
         if diff_mins <= 0:
             raise HTTPException(status_code=400, detail="To Time must be after From Time")
 
-        duration_hrs = diff_mins / 60.0
-        approved_hrs = min(duration_hrs, 2.0)
-        lop_hrs = max(0.0, duration_hrs - 2.0)
+        # Revised Permission Logic based on user request (Point 4)
+        if diff_mins <= 60:
+            approved_hrs = 1.0
+            lop_hrs = 0.0
+        elif diff_mins <= 120:
+            approved_hrs = 2.0
+            lop_hrs = 0.0
+        else:
+            approved_hrs = 2.0
+            lop_hrs = (diff_mins - 120.0) / 60.0
 
         curr_val = str(user.remaining_perm or "0").strip()
         try:
@@ -2594,6 +2613,22 @@ def get_admin_timesheet_employees(month: Optional[str] = None, year: Optional[st
         results.append({
             "id": emp.emp_id, "name": emp.name or "Unknown",
             "department": domain_name, "requests": pending_map.get(cid, 0)
+        })
+    return results
+
+
+@app.get("/holidays")
+def get_holidays(db: Session = Depends(get_db)):
+    current_year = datetime.now().year
+    holidays = db.query(models.HolidayDet).filter(models.HolidayDet.year == current_year).all()
+    results = []
+    for h in holidays:
+        results.append({
+            "id": h.holiday_id,
+            "date": h.Office_Holiday_Date,
+            "name": h.Holiday_Name,
+            "year": h.year,
+            "month": h.Month
         })
     return results
 
