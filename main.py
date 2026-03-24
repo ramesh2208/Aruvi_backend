@@ -661,7 +661,7 @@ def get_attendance_month(emp_id: str, month: int, year: int, db: Session = Depen
     from sqlalchemy import extract
     emp_id = emp_id.strip()
     logs = db.query(models.CheckIn).filter(
-        func.trim(models.CheckIn.emp_id) == emp_id,
+        func.lower(func.trim(models.CheckIn.emp_id)) == emp_id.lower(),
         extract('month', models.CheckIn.t_date) == month,
         extract('year', models.CheckIn.t_date) == year
     ).all()
@@ -995,7 +995,7 @@ async def apply_leave(
         if user and user.manager_id:
             manager = db.query(models.EmpDet).filter(models.EmpDet.emp_id == user.manager_id).first()
             if manager and manager.p_mail:
-                subject = f"ITS - {emp_name} - Leave Request | {from_date} to {to_date}"
+                subject = f"ITS - {emp_name} - {leave_type} Request | {from_date} to {to_date}"
                 content = f"""
                 <p>I would like to request leave for the following dates:</p>
                 <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border-left: 4px solid #2563eb;">
