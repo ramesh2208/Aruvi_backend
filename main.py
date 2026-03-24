@@ -754,7 +754,8 @@ def send_email_notification(to_email: str, subject: str, body_html: str):
     payload = {
         "to_email": to_email,
         "subject": subject,
-        "body": body_html
+        "body": body_html,
+         "content_type": "text/html"
     }
 
     headers = {
