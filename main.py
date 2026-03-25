@@ -995,18 +995,21 @@ async def apply_leave(
         if user and user.manager_id:
             manager = db.query(models.EmpDet).filter(models.EmpDet.emp_id == user.manager_id).first()
             if manager and manager.p_mail:
-                subject = f"ITS-{emp_name}-{leave_type} Request on {from_date}"
+                subject = f"ITS - {emp_name} - {leave_type} Request | {from_date}"
+                
+                if from_date == to_date:
+                    date_phrase = f"on <strong>{from_date}</strong>"
+                else:
+                    date_phrase = f"from <strong>{from_date}</strong> to <strong>{to_date}</strong>"
+
                 content = f"""
-                <p>An employee has submitted a new leave request. Please review the details below:</p>
-                <div style="font-size: 18px; font-weight: 700; color: #4f46e5; margin: 20px 0;">
-                    {leave_type} Application<br>
-                    <span style="font-size: 14px; font-weight: 500; color: #64748b;">{from_date} to {to_date} ({requested_days} days)</span>
-                </div>
-                <p><strong>Employee:</strong> {emp_name}</p>
+                <p>Good Day!</p>
+                <p>I hope this mail finds you well.</p>
+                <p>I am requesting {leave_type.lower()} {date_phrase} ({requested_days} days).</p>
                 <p><strong>Reason:</strong> {reason}</p>
-                <p style="margin-top: 25px;">Please log in to the Aruvi portal to approve or reject this request.</p>
+                <p>Thank you for considering my request. Looking forward to your approval.</p>
                 """
-                body = get_email_template(manager.name, "New Leave Request", content, emp_name)
+                body = get_email_template(manager.name, "Leave Request", content, emp_name)
                 
                 # Send to Manager
                 background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
@@ -1803,17 +1806,23 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                 func.trim(models.EmpDet.emp_id) == user.manager_id.strip()).first()
             if manager and manager.p_mail:
                 subject = f"ITS - {user.name} - Permission Request | {request.date} | {request.f_time} to {request.t_time}"
+
+                # Format time nicely for email display
+                try:
+                    f_display = f_time_dt.strftime("%I:%M %p").lstrip('0')
+                    t_display = t_time_dt.strftime("%I:%M %p").lstrip('0')
+                except:
+                    f_display = request.f_time
+                    t_display = request.t_time
+
                 content = f"""
-                <p>An employee has requested permission. Details below:</p>
-                <div style="font-size: 18px; font-weight: 700; color: #4f46e5; margin: 20px 0;">
-                    Permission Request: {request.date}<br>
-                    <span style="font-size: 14px; font-weight: 500; color: #64748b;">{request.f_time} to {request.t_time} ({total_hrs_val:.2f} hrs)</span>
-                </div>
-                <p><strong>Employee:</strong> {user.name}</p>
+                <p>Good Day!</p>
+                <p>I hope this mail finds you well.</p>
+                <p>I would like to request permission on <strong>{request.date}</strong> from <strong>{f_display}</strong> to <strong>{t_display}</strong>.</p>
                 <p><strong>Reason:</strong> {request.reason}</p>
-                <p style="margin-top: 25px;">Kindly review and approve via the portal.</p>
+                <p>Thank you for considering my request. Looking forward to your approval.</p>
                 """
-                body = get_email_template(manager.name, "New Permission Request", content, user.name)
+                body = get_email_template(manager.name, "Permission Request", content, user.name)
                 background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
 
         return {"message": "Permission applied successfully", "p_id": new_perm.p_id}
@@ -1863,21 +1872,27 @@ def approve_permission(request: schemas.PermissionApprovalAction, background_tas
             func.lower(func.trim(models.EmpDet.emp_id)) == perm.emp_id.strip().lower()
         ).first()
         if emp_user and emp_user.p_mail:
-            status_msg = request.action.upper()
+            status_msg = request.action  # 'Approved' or 'Rejected'
             perm_date = perm.date.strftime("%d-%b-%Y") if perm.date else "N/A"
-            color = "#10B981" if request.action.lower() == "approved" else "#EF4444"
             manager_name = admin_user.name if admin_user else "Manager"
-            f_time_str = perm.f_time.strftime("%I:%M %p") if perm.f_time else "N/A"
-            t_time_str = perm.t_time.strftime("%I:%M %p") if perm.t_time else "N/A"
+            f_time_str = perm.f_time.strftime("%I:%M %p").lstrip('0') if perm.f_time else "N/A"
+            t_time_str = perm.t_time.strftime("%I:%M %p").lstrip('0') if perm.t_time else "N/A"
 
-            subject = f"Permission Request {status_msg} - {perm_date}"
+            subject = f"ITS - Permission Request {status_msg} - {perm_date}"
+
+            if status_msg.lower() == "approved":
+                action_line = f"I am pleased to inform you that your permission request on <strong>{perm_date}</strong> from <strong>{f_time_str}</strong> to <strong>{t_time_str}</strong> has been <strong style='color:#10B981;'>Approved</strong>."
+            else:
+                action_line = f"We regret to inform you that your permission request on <strong>{perm_date}</strong> from <strong>{f_time_str}</strong> to <strong>{t_time_str}</strong> has been <strong style='color:#EF4444;'>Rejected</strong>."
+
             content = f"""
-            <p>Your permission request has been <strong>{status_msg}</strong>.</p>
-            <p><strong>Date:</strong> {perm_date}</p>
-            <p><strong>Time:</strong> {f_time_str} to {t_time_str}</p>
-            <p><strong>Remarks:</strong> {request.remarks or 'N/A'}</p>
+            <p>Good Day!</p>
+            <p>I hope this mail finds you well.</p>
+            <p>{action_line}</p>
+            {f'<p><strong>Remarks:</strong> {request.remarks}</p>' if request.remarks else ''}
+            <p>Please reach out if you have any questions.</p>
             """
-            body = get_email_template(emp_user.name, "Permission Request Update", content, "HR Team")
+            body = get_email_template(emp_user.name, f"Permission Request {status_msg}", content, manager_name)
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
     except Exception as e:
         print(f" Email notification failed: {e}")
