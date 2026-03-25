@@ -136,11 +136,20 @@ def parse_date(d):
 
 # FIX: Added missing parse_time_str function
 def parse_time_str(t_str: str):
-    """Parse time string like '09:30' or '09:30:00' into a datetime object (date part set to 1900-01-01)"""
+    """Parse time string into a datetime object (date part set to 1900-01-01)
+       Supports 24h (09:30, 09:30:00) and 12h (9:30 AM, 9:30:00 AM) formats.
+    """
     if not t_str:
         return None
     t_str = t_str.strip()
-    for fmt in ("%H:%M:%S", "%H:%M"):
+    # Try various formats including AM/PM
+    formats = (
+        "%H:%M:%S", "%H:%M", 
+        "%I:%M:%S %p", "%I:%M %p", 
+        "%I:%M:%S%p", "%I:%M%p",
+        "%H:%M %p" # Some systems might send 24h with AM/PM (weird but possible)
+    )
+    for fmt in formats:
         try:
             dt = datetime.strptime(t_str, fmt)
             return dt.replace(year=1900, month=1, day=1)
@@ -260,28 +269,14 @@ def forgot_password(request: schemas.ForgotPasswordRequest, background_tasks: Ba
     otp_store[email] = {"otp": otp, "expires_at": datetime.now() + timedelta(minutes=5)}
     print(f" Generated OTP: {otp}")
 
-    body = f"""
-    <html>
-    <body style="font-family: 'Times New Roman', Times, serif; line-height: 1.6; color: #00008B;">
-        <div style="max-width: 600px; margin: auto; padding: 20px;">
-            <p>Dear {user.name or 'User'},</p>
-            <p>We received a request to change the password for your account.</p>
-            <p>To complete this process, please use the One-Time Password (OTP) provided below.</p>
-            <p><strong>Your OTP: <span style="font-size: 20px; color: #000;">{otp}</span></strong></p>
-            <p>This OTP is valid for 5 minutes and can only be used once.</p>
-            <p><strong>Note:</strong></p>
-            <ol>
-                <li>If you did not request a password change, please contact our support team immediately at <a href="mailto:info@ilantechsolutions.com">info@ilantechsolutions.com</a> or call +91 78459 37740.</li>
-                <li>For your security, please do not share this OTP with anyone.</li>
-            </ol>
-            <p>Thanks & Regards,<br>
-            <strong>Ilan Tech Solutions Private Limited</strong><br>
-            Website: <a href="http://www.ilantechsolutions.com">www.ilantechsolutions.com</a></p>
-        </div>
-    </body>
-    </html>
+    content = f"""
+    <p>We received a request to change the password for your account.</p>
+    <p>To complete this process, please use the One-Time Password (OTP) provided below:</p>
+    <div style="font-size: 24px; font-weight: 700; color: #4f46e5; margin: 20px 0; letter-spacing: 4px;">{otp}</div>
+    <p>This OTP is valid for <strong>5 minutes</strong> and can only be used once.</p>
+    <p style="margin-top: 25px; font-size: 13px; color: #64748b;">If you did not request a password change, please contact our support team immediately at <a href="mailto:info@ilantechsolutions.com" style="color: #4f46e5;">info@ilantechsolutions.com</a>.</p>
     """
-
+    body = get_email_template(user.name or 'User', "Password Reset OTP", content, "Security Team")
     background_tasks.add_task(send_email_notification, email, f"ITS - Password Reset Mail", body)
     return {"message": "OTP sent successfully"}
 
@@ -789,37 +784,35 @@ def send_email_notification(to_email: str, subject: str, body_html: str):
 def get_email_template(receiver_name, title, content_html, sender_name="Aruvi Team"):
     return f"""
     <html>
-    <body style="margin: 0; padding: 0; background-color: #f1f5f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
-        <table border="0" cellpadding="0" cellspacing="0" width="100%" style="table-layout: fixed;">
-            <tr>
-                <td align="center" style="padding: 20px 0;">
-                    <table border="0" cellpadding="0" cellspacing="0" width="600" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; border-collapse: separate;">
-                        <!-- Header -->
-                        <tr>
-                            <td align="center" style="background-color: #0f172a; padding: 30px 20px;">
-                                <h2 style="margin: 0; color: #ffffff; font-size: 24px; font-weight: 600;">{title}</h2>
-                            </td>
-                        </tr>
-                        <!-- Content -->
-                        <tr>
-                            <td style="padding: 40px 30px; line-height: 1.6; color: #1e293b;">
-                                <p style="margin: 0 0 20px 0; font-size: 16px;">Dear <strong>{receiver_name}</strong>,</p>
-                                <div style="font-size: 15px;">
-                                    {content_html}
-                                </div>
-                                <p style="margin: 30px 0 0 0; font-size: 16px;">Best Regards,<br><strong style="color: #0f172a;">{sender_name}</strong></p>
-                            </td>
-                        </tr>
-                        <!-- Footer -->
-                        <tr>
-                            <td align="center" style="background-color: #f8fafc; padding: 20px; border-top: 1px solid #e2e8f0; font-size: 12px; color: #64748b;">
-                                &copy; 2026 Ilan Tech Solutions. All rights reserved.
-                            </td>
-                        </tr>
-                    </table>
-                </td>
-            </tr>
-        </table>
+    <head>
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Segoe+UI:wght@400;600;700&display=swap');
+            body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #334155; margin: 0; padding: 0; background-color: #f8fafc; }}
+            .container {{ max-width: 600px; margin: 30px auto; background-color: #ffffff; padding: 40px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }}
+            .header {{ border-bottom: 2px solid #eef2f6; padding-bottom: 20px; margin-bottom: 30px; }}
+            .title {{ color: #1e293b; font-size: 22px; font-weight: 700; margin: 0; }}
+            .greeting {{ font-size: 16px; margin-bottom: 20px; color: #1e293b; }}
+            .content {{ font-size: 15px; margin-bottom: 30px; }}
+            .footer {{ border-top: 1px solid #eef2f6; padding-top: 25px; margin-top: 35px; color: #94a3b8; font-size: 13px; }}
+            .company {{ color: #475569; font-weight: 600; font-size: 15px; margin-bottom: 2px; }}
+            .signature {{ color: #64748b; font-size: 14px; margin-top: 0; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1 class="title">{title}</h1>
+            </div>
+            <p class="greeting">Dear <strong>{receiver_name}</strong>,</p>
+            <div class="content">
+                {content_html}
+            </div>
+            <div class="footer">
+                <p class="company">{sender_name}</p>
+                <p class="signature">Aruvi Team | Ilan Tech Solutions</p>
+                <p style="margin-top: 20px; font-size: 11px;">© 2026 Ilan Tech Solutions Private Limited. All rights reserved.</p>
+            </div>
+        </div>
     </body>
     </html>
     """
@@ -1004,12 +997,16 @@ async def apply_leave(
             if manager and manager.p_mail:
                 subject = f"ITS-{emp_name}-{leave_type} Request on {from_date}"
                 content = f"""
-                <p>Good Day!</p>
-                <p>I hope this mail finds you well.</p>
-                <p>I am requesting a <strong>{leave_type}</strong> from {from_date} to {to_date} ({requested_days} days) for the following reason: {reason}</p>
-                <p>Thank you for considering my request. Looking forward to your approval.</p>
+                <p>An employee has submitted a new leave request. Please review the details below:</p>
+                <div style="font-size: 18px; font-weight: 700; color: #4f46e5; margin: 20px 0;">
+                    {leave_type} Application<br>
+                    <span style="font-size: 14px; font-weight: 500; color: #64748b;">{from_date} to {to_date} ({requested_days} days)</span>
+                </div>
+                <p><strong>Employee:</strong> {emp_name}</p>
+                <p><strong>Reason:</strong> {reason}</p>
+                <p style="margin-top: 25px;">Please log in to the Aruvi portal to approve or reject this request.</p>
                 """
-                body = get_email_template(manager.name, f"{leave_type} Request", content, emp_name)
+                body = get_email_template(manager.name, "New Leave Request", content, emp_name)
                 
                 # Send to Manager
                 background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
@@ -1153,9 +1150,13 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
             """
 
             content = f"""
-            <p>Good Day!</p>
-            <p>This is <strong>{status_msg}</strong>. {request_item.remarks or ''}</p>
-            {original_request_box}
+            <p>Your request for <strong>{leave.leave_type}</strong> has been processed.</p>
+            <div style="font-size: 20px; font-weight: 700; color: {'#10B981' if request_item.action.lower() == 'approved' else '#EF4444'}; margin: 20px 0;">
+                {status_msg}
+            </div>
+            <p><strong>Dates:</strong> {leave.from_date} to {leave.to_date}</p>
+            <p><strong>Remarks:</strong> {request_item.remarks or 'No remarks provided.'}</p>
+            <p style="margin-top: 25px; font-size: 13px; color: #64748b;">You can view the full history and status in the Aruvi mobile app.</p>
             """
             
             # Send using the approver name as the sender in the template
@@ -1633,13 +1634,14 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
             if manager and manager.p_mail:
                 subject = f"ITS - {user.name} - OT Request | {ot_date_clean} | {request.from_time} to {request.to_time}"
                 content = f"""
-                <p>I would like to request overtime work for the following details:</p>
-                <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border-left: 4px solid #f97316;">
-                    <p><strong>Date:</strong> {ot_date_clean}</p>
-                    <p><strong>Duration:</strong> {request.from_time} to {request.to_time} ({request.duration})</p>
-                    <p><strong>Reason:</strong> {request.reason}</p>
+                <p>An employee has requested overtime. Details below:</p>
+                <div style="font-size: 18px; font-weight: 700; color: #4f46e5; margin: 20px 0;">
+                    Overtime Request: {ot_date_clean}<br>
+                    <span style="font-size: 14px; font-weight: 500; color: #64748b;">{request.from_time} to {request.to_time} ({request.duration})</span>
                 </div>
-                <p>Kindly approve the request.</p>
+                <p><strong>Employee:</strong> {user.name}</p>
+                <p><strong>Reason:</strong> {request.reason}</p>
+                <p style="margin-top: 25px;">Please log in to the portal to take action on this request.</p>
                 """
                 body = get_email_template(manager.name, "New Overtime Request", content, user.name)
                 background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
@@ -1754,15 +1756,7 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
             approved_hrs = 2.0
             lop_hrs = (diff_mins - 120.0) / 60.0
 
-        curr_val = str(user.remaining_perm or "0").strip()
-        try:
-            curr_perm = float(curr_val) if curr_val else 0.0
-        except:
-            curr_perm = 0.0
-
-        new_remaining = max(0.0, curr_perm - approved_hrs)
-        user.remaining_perm = str(round(new_remaining, 2))
-
+        # Check for duplicate FIRST before modifying user balance
         duplicate_perm = db.query(models.EmpPermission).filter(
             func.lower(func.trim(models.EmpPermission.emp_id)) == target_emp_id.lower(),
             models.EmpPermission.date == p_date,
@@ -1772,13 +1766,25 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
             raise HTTPException(status_code=400,
                                 detail=f"Permission already applied for {request.date}.")
 
+        # Now update remaining_perm
+        curr_val = str(user.remaining_perm or "0").strip()
+        try:
+            curr_perm = float(curr_val) if curr_val else 0.0
+        except:
+            curr_perm = 0.0
+
+        new_remaining = max(0.0, curr_perm - approved_hrs)
+        user.remaining_perm = str(round(new_remaining, 2))
+
+        total_hrs_val = diff_mins / 60.0
+
         new_perm = models.EmpPermission(
             emp_id=user.emp_id,
             date=p_date,
             f_time=f_time_dt,
             t_time=t_time_dt,
             reason=request.reason,
-            total_hours=f"{duration_hrs:.2f}",
+            total_hours=f"{total_hrs_val:.2f}",
             dis_total_hours=f"{lop_hrs:.2f}",
             available_hours=str(round(new_remaining, 2)),
             status="Pending",
@@ -1798,14 +1804,14 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
             if manager and manager.p_mail:
                 subject = f"ITS - {user.name} - Permission Request | {request.date} | {request.f_time} to {request.t_time}"
                 content = f"""
-                <p>I would like to request permission for the following details:</p>
-                <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border-left: 4px solid #3b82f6;">
-                    <p><strong>Date:</strong> {request.date}</p>
-                    <p><strong>Duration:</strong> {request.f_time} to {request.t_time} ({duration_hrs:.2f} hrs)</p>
-                    <p><strong>Approved:</strong> {approved_hrs:.2f} hrs, <strong>LOP:</strong> {lop_hrs:.2f} hrs</p>
-                    <p><strong>Reason:</strong> {request.reason}</p>
+                <p>An employee has requested permission. Details below:</p>
+                <div style="font-size: 18px; font-weight: 700; color: #4f46e5; margin: 20px 0;">
+                    Permission Request: {request.date}<br>
+                    <span style="font-size: 14px; font-weight: 500; color: #64748b;">{request.f_time} to {request.t_time} ({total_hrs_val:.2f} hrs)</span>
                 </div>
-                <p>Kindly approve the request.</p>
+                <p><strong>Employee:</strong> {user.name}</p>
+                <p><strong>Reason:</strong> {request.reason}</p>
+                <p style="margin-top: 25px;">Kindly review and approve via the portal.</p>
                 """
                 body = get_email_template(manager.name, "New Permission Request", content, user.name)
                 background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
@@ -1866,14 +1872,10 @@ def approve_permission(request: schemas.PermissionApprovalAction, background_tas
 
             subject = f"Permission Request {status_msg} - {perm_date}"
             content = f"""
-            <p>Your permission request has been processed.</p>
-            <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border-left: 4px solid {color};">
-                <p><strong>Date:</strong> {perm_date}</p>
-                <p><strong>Time:</strong> {f_time_str} to {t_time_str}</p>
-                <p><strong>Status:</strong> <span style="color: {color}; font-weight: bold;">{status_msg}</span></p>
-                <p><strong>Remarks:</strong> {request.remarks or 'N/A'}</p>
-            </div>
-            <p>Processed by: {manager_name}</p>
+            <p>Your permission request has been <strong>{status_msg}</strong>.</p>
+            <p><strong>Date:</strong> {perm_date}</p>
+            <p><strong>Time:</strong> {f_time_str} to {t_time_str}</p>
+            <p><strong>Remarks:</strong> {request.remarks or 'N/A'}</p>
             """
             body = get_email_template(emp_user.name, "Permission Request Update", content, "HR Team")
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
@@ -1961,14 +1963,10 @@ def approve_ot(request: schemas.OverTimeApprovalAction, background_tasks: Backgr
             manager_name = admin_user.name if admin_user else "Manager"
             subject = f"OT Request {status_msg} - {ot.ot_date}"
             content = f"""
-            <p>Your Overtime request has been processed.</p>
-            <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border-left: 4px solid {color};">
-                <p><strong>Date:</strong> {ot.ot_date}</p>
-                <p><strong>Duration:</strong> {ot.duration}</p>
-                <p><strong>Status:</strong> <span style="color: {color}; font-weight: bold;">{status_msg}</span></p>
-                <p><strong>Remarks:</strong> {request.remarks or 'N/A'}</p>
-            </div>
-            <p>Processed by: {manager_name}</p>
+            <p>Your Overtime request has been <strong>{status_msg}</strong>.</p>
+            <p><strong>Date:</strong> {ot.ot_date}</p>
+            <p><strong>Duration:</strong> {ot.duration}</p>
+            <p><strong>Remarks:</strong> {request.remarks or 'N/A'}</p>
             """
             body = get_email_template(emp_user.name, "OT Request Update", content, "HR Team")
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
@@ -2054,13 +2052,9 @@ def approve_wfh(request: schemas.WFHApprovalAction, background_tasks: Background
             manager_name = admin_user.name if admin_user else "Manager"
             subject = f"WFH Request {status_msg} - {wfh.from_date}"
             content = f"""
-            <p>Your Work From Home request has been processed.</p>
-            <div style="background-color: #f8fafc; padding: 20px; border-radius: 8px; border-left: 4px solid {color};">
-                <p><strong>Duration:</strong> {wfh.from_date} to {wfh.to_date}</p>
-                <p><strong>Status:</strong> <span style="color: {color}; font-weight: bold;">{status_msg}</span></p>
-                <p><strong>Remarks:</strong> {request.remarks or 'N/A'}</p>
-            </div>
-            <p>Processed by: {manager_name}</p>
+            <p>Your Work From Home request has been <strong>{status_msg}</strong>.</p>
+            <p><strong>Duration:</strong> {wfh.from_date} to {wfh.to_date}</p>
+            <p><strong>Remarks:</strong> {request.remarks or 'N/A'}</p>
             """
             body = get_email_template(emp_user.name, "WFH Request Update", content, "HR Team")
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
@@ -2158,15 +2152,17 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
                     to_str = to_date
                 customer_name = user.attribute3 if user.attribute3 else "Internal"
                 subject = f"ITS - {user.name}  {customer_name} - WFH | {from_str} to {to_str} ({days_val} Days)"
-                body = f"""
-                <html><body style="font-family: 'Times New Roman', Times, serif; color: #00008B;">
-                    <p>Dear {manager.name} ,</p>
-                    <p>Good Evening! I hope you are doing well. </p>
-                    <p>I would like to request Work From Home from <strong>{from_str}</strong> to <strong>{to_str}</strong> ({days_val} Days) due to {request.reason}</p>
-                    <p>Kindly, Approve the same to proceed.</p>
-                    <p>Thanks &amp; Regards,<br><strong>{user.name}</strong></p>
-                </body></html>
+                content = f"""
+                <p>An employee has requested to work from home. Details below:</p>
+                <div style="font-size: 18px; font-weight: 700; color: #4f46e5; margin: 20px 0;">
+                    WFH Request: {from_str} to {to_str}<br>
+                    <span style="font-size: 14px; font-weight: 500; color: #64748b;">Duration: {days_val} Days</span>
+                </div>
+                <p><strong>Employee:</strong> {user.name}</p>
+                <p><strong>Reason:</strong> {request.reason}</p>
+                <p style="margin-top: 25px;">Please check the admin portal for more details.</p>
                 """
+                body = get_email_template(manager.name, "Work From Home Request", content, user.name)
                 background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
         return {"message": "WFH request submitted successfully", "wfh_id": new_wfh.wfh_id}
     except HTTPException:
