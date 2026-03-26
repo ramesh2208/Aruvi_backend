@@ -819,13 +819,13 @@ def get_email_template(receiver_name, title, content_html, sender_name="Aruvi Te
     <html>
     <head>
         <style>
-            body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 15px; }}
+            body {{ font-family: 'Times New Roman', Times, serif; line-height: 1.6; color: #00008B; margin: 0; padding: 15px; }}
             a {{ color: #0ea5e9; text-decoration: none; }}
             a:hover {{ text-decoration: underline; }}
         </style>
     </head>
-    <body>
-        <p style="margin-top: 0;">Dear {receiver_name},</p>
+    <body style="font-family: 'Times New Roman', Times, serif; color: #00008B; padding: 15px;">
+        <p style="margin-top: 0;"><strong>Dear {receiver_name},</strong></p>
         
         <div>
             {content_html}
@@ -1109,10 +1109,10 @@ async def apply_leave(
                     subject = f"ITS - {emp_name} - {leave_type} Request | {from_date} ({summary_msg})"
                     
                     content = f"""
-                    <p>Good Day!</p>
+                    <p><strong>Good Day!</strong></p>
                     <p>I hope this mail finds you well.</p>
                     <p>I am requesting leave from <strong>{from_date}</strong> to <strong>{to_date}</strong>.</p>
-                    <p><strong>Breakup:</strong> {summary_msg}</p>
+                    <p><strong>Days:</strong> {summary_msg}</p>
                     <p><strong>Reason:</strong> {reason}</p>
                     """
                     body = get_email_template(manager.name, "Leave Request", content, emp_name)
@@ -1743,11 +1743,10 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
             if manager and manager.p_mail:
                 subject = f"ITS - {user.name} - OT Request | {ot_date_clean} | {request.from_time} to {request.to_time}"
                 content = f"""
+                <p><strong>Good Day!</strong></p>
                 <p>An employee has requested overtime. Details below:</p>
-                <div style="font-size: 18px; font-weight: 700; color: #4f46e5; margin: 20px 0;">
-                    Overtime Request: {ot_date_clean}<br>
-                    <span style="font-size: 14px; font-weight: 500; color: #64748b;">{request.from_time} to {request.to_time} ({request.duration})</span>
-                </div>
+                <p><strong>Overtime Request:</strong> {ot_date_clean}<br>
+                <span>{request.from_time} to {request.to_time} ({request.duration})</span></p>
                 <p><strong>Employee:</strong> {user.name}</p>
                 <p><strong>Reason:</strong> {request.reason}</p>
                 <p style="margin-top: 25px;">Please log in to the portal to take action on this request.</p>
@@ -1933,7 +1932,7 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                     t_display = request.t_time
 
                 content = f"""
-                <p>Good Day!</p>
+                <p><strong>Good Day!</strong></p>
                 <p>I hope this mail finds you well.</p>
                 <p>I would like to request permission on <strong>{request.date}</strong> from <strong>{f_display}</strong> to <strong>{t_display}</strong>.</p>
                 <p><strong>Reason:</strong> {request.reason}</p>
