@@ -159,6 +159,13 @@ def parse_time_str(t_str: str):
     return None
 
 
+def format_time_safe(t):
+    if not t: return ""
+    if isinstance(t, str): return t
+    if hasattr(t, "strftime"): return t.strftime("%H:%M")
+    return str(t)
+
+
 @app.post("/login", response_model=schemas.Token)
 def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
     print("\n" + "=" * 60)
@@ -1747,7 +1754,7 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
 @app.get("/admin/pending-permissions")
 def get_pending_permissions(manager_id: Optional[str] = None, db: Session = Depends(get_db)):
     query = db.query(models.EmpPermission, models.EmpDet).join(
-        models.EmpDet, models.EmpPermission.emp_id == models.EmpDet.emp_id
+        models.EmpDet, func.lower(func.trim(models.EmpPermission.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id))
     ).filter(models.EmpPermission.status == "Pending")
     if manager_id:
         query = query.filter(
@@ -1760,11 +1767,11 @@ def get_pending_permissions(manager_id: Optional[str] = None, db: Session = Depe
             "emp_name": emp.name or "Unknown",
             "emp_id": emp.emp_id or "N/A",
             "date": perm.date.strftime("%d-%b-%Y") if perm.date else "",
-            "time": f"{perm.f_time.strftime('%H:%M')} to {perm.t_time.strftime('%H:%M')}",
-            "fromTime": perm.f_time.strftime('%H:%M') if perm.f_time else "",
-            "toTime": perm.t_time.strftime('%H:%M') if perm.t_time else "",
-            "f_time": perm.f_time.strftime('%H:%M') if perm.f_time else "",
-            "t_time": perm.t_time.strftime('%H:%M') if perm.t_time else "",
+            "time": f"{format_time_safe(perm.f_time)} to {format_time_safe(perm.t_time)}",
+            "fromTime": format_time_safe(perm.f_time),
+            "toTime": format_time_safe(perm.t_time),
+            "f_time": format_time_safe(perm.f_time),
+            "t_time": format_time_safe(perm.t_time),
             "total_hours": perm.total_hours or "0.0",
             "dis_total_hours": perm.dis_total_hours or "0.0",
             "reason": perm.reason or "No reason",
@@ -1776,13 +1783,15 @@ def get_pending_permissions(manager_id: Optional[str] = None, db: Session = Depe
 
 @app.get("/admin/all-permission-history")
 def get_all_permission_history(manager_id: Optional[str] = None, db: Session = Depends(get_db)):
+    print(f"\n--- FETCH ALL PERMISSION HISTORY: Manager={manager_id} ---")
     query = db.query(models.EmpPermission, models.EmpDet).join(
-        models.EmpDet, models.EmpPermission.emp_id == models.EmpDet.emp_id
+        models.EmpDet, func.lower(func.trim(models.EmpPermission.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id))
     )
     if manager_id:
         query = query.filter(
             func.lower(func.trim(models.EmpDet.manager_id)) == manager_id.strip().lower())
     all_perms = query.order_by(models.EmpPermission.creation_date.desc()).all()
+    print(f"   Found {len(all_perms)} records")
     results = []
     for perm, emp in all_perms:
         results.append({
@@ -1790,11 +1799,11 @@ def get_all_permission_history(manager_id: Optional[str] = None, db: Session = D
             "emp_name": emp.name or "Unknown",
             "emp_id": emp.emp_id or "N/A",
             "date": perm.date.strftime("%d-%b-%Y") if perm.date else "",
-            "time": f"{perm.f_time.strftime('%H:%M')} to {perm.t_time.strftime('%H:%M')}",
-            "fromTime": perm.f_time.strftime('%H:%M') if perm.f_time else "",
-            "toTime": perm.t_time.strftime('%H:%M') if perm.t_time else "",
-            "f_time": perm.f_time.strftime('%H:%M') if perm.f_time else "",
-            "t_time": perm.t_time.strftime('%H:%M') if perm.t_time else "",
+            "time": f"{format_time_safe(perm.f_time)} to {format_time_safe(perm.t_time)}",
+            "fromTime": format_time_safe(perm.f_time),
+            "toTime": format_time_safe(perm.t_time),
+            "f_time": format_time_safe(perm.f_time),
+            "t_time": format_time_safe(perm.t_time),
             "total_hours": perm.total_hours or "0.0",
             "dis_total_hours": perm.dis_total_hours or "0.0",
             "reason": perm.reason or "No reason",
@@ -1807,15 +1816,20 @@ def get_all_permission_history(manager_id: Optional[str] = None, db: Session = D
 @app.post("/apply-permission")
 def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: BackgroundTasks,
                      db: Session = Depends(get_db)):
+    print(f"\n--- APPLY PERMISSION ATTEMPT ---")
+    print(f" Request Data: {request.dict()}")
     try:
-        target_emp_id = (request.emp_id or "").strip()
+        target_emp_id = (request.emp_id or "").strip().lower()
         user = db.query(models.EmpDet).filter(
-            func.trim(models.EmpDet.emp_id) == target_emp_id).first()
+            func.lower(func.trim(models.EmpDet.emp_id)) == target_emp_id).first()
         if not user:
+            print(f"   Error: Employee {target_emp_id} not found")
             raise HTTPException(status_code=404, detail="Employee not found")
 
+        print(f"   Found User: {user.name} (Manager: {user.manager_id})")
         p_date_dt = parse_date(request.date)
         if not p_date_dt:
+            print(f"   Error: Invalid date format {request.date}")
             raise HTTPException(status_code=400, detail="Invalid date format")
         p_date = p_date_dt.date()
 
@@ -1824,6 +1838,9 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
         t_time_dt = parse_time_str(request.t_time)
         if not f_time_dt or not t_time_dt:
             raise HTTPException(status_code=400, detail="Invalid time format")
+
+        assert f_time_dt is not None
+        assert t_time_dt is not None
 
         h1, m1 = f_time_dt.hour, f_time_dt.minute
         h2, m2 = t_time_dt.hour, t_time_dt.minute
@@ -1870,8 +1887,8 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
         new_perm = models.EmpPermission(
             emp_id=user.emp_id,
             date=p_date,
-            f_time=f_time_dt,
-            t_time=t_time_dt,
+            f_time=f_time_dt.time(),
+            t_time=t_time_dt.time(),
             reason=request.reason,
             total_hours=f"{total_hrs_val:.2f}",
             dis_total_hours=f"{lop_hrs:.2f}",
@@ -1886,6 +1903,7 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
         db.add(new_perm)
         db.commit()
         db.refresh(new_perm)
+        print(f"   Success: Inserted permission {new_perm.p_id}")
 
         if user and user.manager_id:
             manager = db.query(models.EmpDet).filter(
@@ -2315,14 +2333,17 @@ def get_permission_stats(emp_id: str, db: Session = Depends(get_db)):
 
 @app.get("/permission-history/{emp_id}")
 def get_permission_history(emp_id: str, db: Session = Depends(get_db)):
+    print(f"\n--- FETCH PERMISSION HISTORY: {emp_id} ---")
+    emp_id = emp_id.strip().lower()
     history = db.query(models.EmpPermission).filter(
-        func.lower(func.trim(models.EmpPermission.emp_id)) == emp_id.lower()
+        func.lower(func.trim(models.EmpPermission.emp_id)) == emp_id
     ).order_by(models.EmpPermission.p_id.desc()).all()
+    print(f"   Found {len(history)} records")
     return [{
         "p_id": row.p_id, "emp_id": row.emp_id,
-        "date": row.date.strftime("%d-%b-%Y") if row.date else "",
-        "f_time": row.f_time.strftime("%H:%M") if row.f_time else "",
-        "t_time": row.t_time.strftime("%H:%M") if row.t_time else "",
+        "date": row.date.strftime("%d-%b-%Y") if hasattr(row.date, 'strftime') else (row.date or ""),
+        "f_time": format_time_safe(row.f_time),
+        "t_time": format_time_safe(row.t_time),
         "total_hours": row.total_hours, "dis_total_hours": row.dis_total_hours,
         "reason": row.reason, "status": row.status, "remarks": row.remarks,
         "creation_date": row.creation_date, "last_update_date": row.last_update_date
