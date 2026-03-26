@@ -735,6 +735,25 @@ def get_leave_stats(emp_id: str, db: Session = Depends(get_db)):
     return stats
 
 
+@app.get("/wfh-history/{emp_id}")
+def get_wfh_history(emp_id: str, db: Session = Depends(get_db)):
+    emp_id = emp_id.strip()
+    history = db.query(models.WFHDet).filter(
+        func.lower(func.trim(models.WFHDet.emp_id)) == emp_id.lower()
+    ).order_by(models.WFHDet.wfh_id.desc()).all()
+    return [
+        {
+            "wfh_id": row.wfh_id,
+            "from_date": row.from_date,
+            "to_date": row.to_date,
+            "days": row.days,
+            "reason": row.reason,
+            "status": row.status
+        }
+        for row in history
+    ]
+
+
 @app.get("/leave-history/{emp_id}")
 def get_leave_history(emp_id: str, db: Session = Depends(get_db)):
     emp_id = emp_id.strip()
