@@ -441,7 +441,7 @@ def reset_password(request: schemas.ResetPasswordRequest, db: Session = Depends(
     user.password = base64.b64encode(encrypted_bytes).decode()
     user.attribute15 = base64.b64encode(iv).decode()
     db.commit()
-    del otp_store[email]
+    otp_store.pop(email, None)
     return {"message": "Password reset successfully"}
 
 
@@ -3293,6 +3293,13 @@ def update_client(client_id: int, client_req: schemas.ClientApplyRequest, db: Se
 
     db.commit()
     return {"message": "Client updated successfully"}
+
+
+@app.get("/holiday-dates")
+def get_holiday_dates(db: Session = Depends(get_db)):
+    holidays = db.query(models.HolidayDet.Office_Holiday_Date).all()
+    # Return as a simple list of date strings
+    return [h[0] for h in holidays if h[0]]
 
 
 @app.post("/admin/create-client")
