@@ -971,51 +971,99 @@ async def apply_leave(
             ).first()
 
         det_id = balance_row.l_det_id if balance_row else None
-        print(f" FINAL: det_id: {det_id}, emp_id: {emp_id}, leave_type: {leave_type}, CL to Deduct: {cl_days_to_deduct}, LOP: {lop_days_val}")
-
-        new_leave = models.EmpLeave(
-            l_det_id=det_id,
-            emp_id=emp_id.strip(),
-            leave_type=leave_type,
-            from_date=from_date,
-            to_date=to_date,
-            days=str(cl_days_to_deduct),  # This is the portion consuming CL balance
-            reason=reason,
-            status=status,
-            file=primary_attachment_path,
-            attribute14=attr14_paths,
-            applied_date=datetime.now().strftime('%Y-%m-%d'),
-            mail_message_id="",
-            hr_action="",
-            hr_approval="",
-            admin_approval="",
-            lop_days=str(lop_days_val),    # Store the excess as LOP
-            remarks="",
-            approved_by="",
-            reporting_manager="",
-            approver="",
-            revision="0",
-            attribute_category="",
-            attribute1=str(requested_days),  # Store total requested in attribute1 for reference
-            attribute2="", attribute3="", attribute4="", attribute5="",
-            last_update_login="",
-            created_by=emp_id.strip(),
-            creation_date=datetime.now(),
-            last_updated_by=emp_id.strip(),
-            last_update_date=datetime.now()
-        )
-        db.add(new_leave)
         
-        if balance_row:
-            days_count = cl_days_to_deduct
-            balance_row.availed_leave = float(balance_row.availed_leave or 0) + days_count
-            if balance_row.available_leave is not None:
-                balance_row.available_leave = float(balance_row.available_leave or 0) - days_count
-            db.add(balance_row)
+        # Format days to avoid long floating point strings (e.g. 0.999999)
+        cl_days_to_deduct = round(float(cl_days_to_deduct), 2)
+        lop_days_val = round(float(lop_days_val), 2)
+        
+        # Utility function to format numbers cleanly for DB string fields
+        def fmt_days(d):
+            val = float(d)
+            if val.is_integer():
+                return str(int(val))
+            return f"{val:.2f}".rstrip('0').rstrip('.')
+
+        print(f" FINAL: det_id: {det_id}, emp_id: {emp_id}, CL: {cl_days_to_deduct}, LOP: {lop_days_val}")
+
+        # Record 1: The Casual Leave portion (if any)
+        if cl_days_to_deduct > 0 and req_from:
+            if lop_days_val > 0:
+                # Part 1 of splitting
+                split_days = int(cl_days_to_deduct)
+                future_dt = req_from + timedelta(days=split_days - 1)
+                rec1_to = future_dt.strftime('%Y-%m-%d')
+            else:
+                rec1_to = to_date
+
+            new_leave = models.EmpLeave(
+                l_det_id=det_id,
+                emp_id=emp_id.strip(),
+                leave_type=leave_type,
+                from_date=from_date,
+                to_date=rec1_to,
+                days=fmt_days(cl_days_to_deduct),
+                reason=reason + (" (Part 1: CL)" if lop_days_val > 0 else ""),
+                status=status,
+                file=primary_attachment_path,
+                attribute14=attr14_paths,
+                applied_date=datetime.now().strftime('%Y-%m-%d'),
+                mail_message_id="", hr_action="", hr_approval="", admin_approval="",
+                lop_days="0",
+                remarks="", approved_by="", reporting_manager="", approver="", revision="0",
+                attribute_category="", attribute1=fmt_days(requested_days),
+                attribute2="", attribute3="", attribute4="", attribute5="",
+                last_update_login="", created_by=emp_id.strip(), creation_date=datetime.now(),
+                last_updated_by=emp_id.strip(), last_update_date=datetime.now()
+            )
+            db.add(new_leave)
+            
+            if balance_row:
+                balance_row.availed_leave = float(balance_row.availed_leave or 0) + cl_days_to_deduct
+                if balance_row.available_leave is not None:
+                    balance_row.available_leave = float(balance_row.available_leave or 0) - cl_days_to_deduct
+                db.add(balance_row)
+
+        # Record 2: The LOP portion (if any)
+        if lop_days_val > 0 and req_from:
+            if cl_days_to_deduct > 0:
+                # Part 2 of a split
+                split_offset = int(cl_days_to_deduct)
+                future_dt_2 = req_from + timedelta(days=split_offset)
+                rec2_from = future_dt_2.strftime('%Y-%m-%d')
+                rec2_reason = reason + " (Part 2: LOP)"
+            else:
+                # Pure LOP
+                rec2_from = from_date
+                rec2_reason = reason + " (Limit Reached: LOP)"
+
+            lop_leave = models.EmpLeave(
+                l_det_id=det_id,
+                emp_id=emp_id.strip(),
+                leave_type="LOP",
+                from_date=rec2_from,
+                to_date=to_date,
+                days=fmt_days(lop_days_val),
+                reason=rec2_reason,
+                status=status,
+                file=primary_attachment_path,
+                attribute14=attr14_paths,
+                applied_date=datetime.now().strftime('%Y-%m-%d'),
+                mail_message_id="", hr_action="", hr_approval="", admin_approval="",
+                lop_days=fmt_days(lop_days_val),
+                remarks="", approved_by="", reporting_manager="", approver="", revision="0",
+                attribute_category="", attribute1=fmt_days(requested_days),
+                attribute2="", attribute3="", attribute4="", attribute5="",
+                last_update_login="", created_by=emp_id.strip(), creation_date=datetime.now(),
+                last_updated_by=emp_id.strip(), last_update_date=datetime.now()
+            )
+            db.add(lop_leave)
+            
+            if cl_days_to_deduct <= 0:
+                new_leave = lop_leave
         
         db.commit()
         db.refresh(new_leave)
-        print(f" SUCCESS: Stored leave ID: {new_leave.l_id}")
+        print(f" SUCCESS: Leave processing complete for {emp_id}")
 
         # Email Notification (Safe/Non-blocking)
         try:
@@ -1024,25 +1072,18 @@ async def apply_leave(
                     func.lower(func.trim(models.EmpDet.emp_id)) == user.manager_id.strip().lower()
                 ).first()
                 if manager and manager.p_mail:
-                    subject = f"ITS - {emp_name} - {leave_type} Request | {from_date}"
-                    if from_date == to_date:
-                        date_phrase = f"on <strong>{from_date}</strong>"
-                    else:
-                        date_phrase = f"from <strong>{from_date}</strong> to <strong>{to_date}</strong>"
-
+                    summary_msg = f"{cl_days_to_deduct} CL / {lop_days_val} LOP" if lop_days_val > 0 else f"{requested_days} days"
+                    subject = f"ITS - {emp_name} - {leave_type} Request | {from_date} ({summary_msg})"
+                    
                     content = f"""
                     <p>Good Day!</p>
                     <p>I hope this mail finds you well.</p>
-                    <p>I am requesting {leave_type.lower()} {date_phrase} ({requested_days} days).</p>
+                    <p>I am requesting leave from <strong>{from_date}</strong> to <strong>{to_date}</strong>.</p>
+                    <p><strong>Breakup:</strong> {summary_msg}</p>
                     <p><strong>Reason:</strong> {reason}</p>
-                    <p>Thank you for considering my request. Looking forward to your approval.</p>
                     """
                     body = get_email_template(manager.name, "Leave Request", content, emp_name)
                     background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
-                    
-                    admin_emails = ["info@ilantechsolutions.com", "hr@ilantechsolutions.com"]
-                    for admin_email in admin_emails:
-                        background_tasks.add_task(send_email_notification, admin_email, f"ADMIN: {subject}", body)
         except Exception as mail_err:
             print(f" Non-critical error sending mail: {mail_err}")
 
