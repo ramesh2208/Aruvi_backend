@@ -829,15 +829,19 @@ async def apply_leave(
         db: Session = Depends(get_db)
 ):
     emp_id = emp_id.strip()
-    user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == emp_id).first()
+    user = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail=f"Employee with ID {emp_id} not found in the system.")
+        
     emp_name = user.name if user else 'Unknown'
     normalized_leave_type = (leave_type or "").strip().lower()
     requested_days = float(days or 0)
 
-    # Validation: Sick Leave more than 2 days requires attachment
-    if normalized_leave_type == "sick leave" and requested_days > 2:
+    # Validation: Sick Leave 2 days or more requires attachment
+    if normalized_leave_type == "sick leave" and requested_days >= 2:
         if not attachments or len(attachments) == 0:
-            raise HTTPException(status_code=400, detail="Attachment is mandatory for Sick Leave requests lasting more than 2 days.")
+            raise HTTPException(status_code=400, detail="Attachment is mandatory for Sick Leave requests lasting 2 days or more.")
 
     attachment_paths = []
     if attachments:
@@ -865,6 +869,10 @@ async def apply_leave(
     primary_attachment_path = attachment_paths[0] if attachment_paths else None
 
     print(f" Processing Leave Request for: {emp_id}, Type: {leave_type}, Days: {days}, Primary File: {primary_attachment_path}")
+    
+    lop_days_val = 0.0
+    cl_days_to_deduct = requested_days
+
     try:
         req_from = parse_date(from_date)
         req_to = parse_date(to_date)
@@ -919,13 +927,19 @@ async def apply_leave(
                 req_month_usage[req_key] = req_month_usage.get(req_key, 0.0) + req_daily_share
                 req_cur = req_cur + timedelta(days=1)
 
+            max_excess = 0.0
             for month_key, req_value in req_month_usage.items():
                 used_value = month_usage.get(month_key, 0.0)
-                if used_value + req_value > 3.0001:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Casual Leave max is 3 days per month ({month_key}). Remaining should be applied as LOP."
-                    )
+                if used_value + req_value > 3.0:
+                    excess = (used_value + req_value) - 3.0
+                    if excess > max_excess:
+                        max_excess = excess
+            
+            if max_excess > 0:
+                # Part of the leave becomes LOP
+                lop_days_val = min(requested_days, max_excess)
+                cl_days_to_deduct = requested_days - lop_days_val
+                print(f" Casual Leave Limit Exceeded. {cl_days_to_deduct} as CL, {lop_days_val} as LOP.")
 
         # Find balance row and deduct (using robust mapping)
         l_type_lower = leave_type.lower()
@@ -956,14 +970,19 @@ async def apply_leave(
                 func.lower(func.trim(models.LeaveDet.leave_type)).contains(search_key)
             ).first()
 
-        det_id = balance_row.l_det_id if balance_row else None
+    # Additional check: If det_id is still None, try to find ANY leave_det for this employee as a fallback
+    det_id = balance_row.l_det_id if balance_row else None
+
+    print(f" FINAL: det_id: {det_id}, emp_id: {emp_id}, leave_type: {leave_type}, CL to Deduct: {cl_days_to_deduct}, LOP: {lop_days_val}")
+
+    try:
         new_leave = models.EmpLeave(
             l_det_id=det_id,
             emp_id=emp_id.strip(),
             leave_type=leave_type,
             from_date=from_date,
             to_date=to_date,
-            days=str(requested_days),
+            days=str(cl_days_to_deduct),  # This is the portion consuming CL balance
             reason=reason,
             status=status,
             file=primary_attachment_path,
@@ -973,14 +992,15 @@ async def apply_leave(
             hr_action="",
             hr_approval="",
             admin_approval="",
-            lop_days="0",
+            lop_days=str(lop_days_val),    # Store the excess as LOP
             remarks="",
             approved_by="",
             reporting_manager="",
             approver="",
             revision="0",
             attribute_category="",
-            attribute1="", attribute2="", attribute3="", attribute4="", attribute5="",
+            attribute1=str(requested_days),  # Store total requested in attribute1 for reference
+            attribute2="", attribute3="", attribute4="", attribute5="",
             last_update_login="",
             created_by=emp_id.strip(),
             creation_date=datetime.now(),
@@ -990,55 +1010,54 @@ async def apply_leave(
         db.add(new_leave)
         
         if balance_row:
-            days_count = requested_days
+            days_count = cl_days_to_deduct
             balance_row.availed_leave = float(balance_row.availed_leave or 0) + days_count
             if balance_row.available_leave is not None:
                 balance_row.available_leave = float(balance_row.available_leave or 0) - days_count
+            db.add(balance_row)
         
         db.commit()
         db.refresh(new_leave)
+        print(f" SUCCESS: Stored leave ID: {new_leave.l_id}")
 
-        # Verification Log
-        saved_leave = db.query(models.EmpLeave).filter(models.EmpLeave.l_id == new_leave.l_id).first()
-        if saved_leave:
-            print(f" SUCCESS: Leave record verified in DB. ID: {saved_leave.l_id}")
-        else:
-            print(f" CRITICAL ERROR: Leave record NOT FOUND in DB after commit!")
+        # Email Notification (Safe/Non-blocking)
+        try:
+            if user and user.manager_id:
+                manager = db.query(models.EmpDet).filter(
+                    func.lower(func.trim(models.EmpDet.emp_id)) == user.manager_id.strip().lower()
+                ).first()
+                if manager and manager.p_mail:
+                    subject = f"ITS - {emp_name} - {leave_type} Request | {from_date}"
+                    if from_date == to_date:
+                        date_phrase = f"on <strong>{from_date}</strong>"
+                    else:
+                        date_phrase = f"from <strong>{from_date}</strong> to <strong>{to_date}</strong>"
 
-        print(f" Leave Applied Successfully. ID: {new_leave.l_id} for Emp: {new_leave.emp_id}")
-        if user and user.manager_id:
-            manager = db.query(models.EmpDet).filter(models.EmpDet.emp_id == user.manager_id).first()
-            if manager and manager.p_mail:
-                subject = f"ITS - {emp_name} - {leave_type} Request | {from_date}"
-                
-                if from_date == to_date:
-                    date_phrase = f"on <strong>{from_date}</strong>"
-                else:
-                    date_phrase = f"from <strong>{from_date}</strong> to <strong>{to_date}</strong>"
+                    content = f"""
+                    <p>Good Day!</p>
+                    <p>I hope this mail finds you well.</p>
+                    <p>I am requesting {leave_type.lower()} {date_phrase} ({requested_days} days).</p>
+                    <p><strong>Reason:</strong> {reason}</p>
+                    <p>Thank you for considering my request. Looking forward to your approval.</p>
+                    """
+                    body = get_email_template(manager.name, "Leave Request", content, emp_name)
+                    background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
+                    
+                    admin_emails = ["info@ilantechsolutions.com", "hr@ilantechsolutions.com"]
+                    for admin_email in admin_emails:
+                        background_tasks.add_task(send_email_notification, admin_email, f"ADMIN: {subject}", body)
+        except Exception as mail_err:
+            print(f" Non-critical error sending mail: {mail_err}")
 
-                content = f"""
-                <p>Good Day!</p>
-                <p>I hope this mail finds you well.</p>
-                <p>I am requesting {leave_type.lower()} {date_phrase} ({requested_days} days).</p>
-                <p><strong>Reason:</strong> {reason}</p>
-                <p>Thank you for considering my request. Looking forward to your approval.</p>
-                """
-                body = get_email_template(manager.name, "Leave Request", content, emp_name)
-                
-                # Send to Manager
-                background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
-                
-                # Also notify Admin/HR
-                admin_emails = ["info@ilantechsolutions.com", "hr@ilantechsolutions.com"]
-                for admin_email in admin_emails:
-                    background_tasks.add_task(send_email_notification, admin_email, f"ADMIN: {subject}", body)
     except HTTPException:
         db.rollback()
         raise
     except Exception as e:
-        print(f" DATABASE ERROR: {str(e)}")
         db.rollback()
+        print(f" CRITICAL DATABASE ERROR: {str(e)}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Database Insertion Error: {str(e)}")
+
     return {"message": "Leave request submitted successfully", "leave_id": new_leave.l_id}
 
 
@@ -1124,12 +1143,15 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
         leave.approved_by = admin_user.name
         leave.approver = admin_user.name
     
-    # Robust revision increment
+    # Robust revision increment with 3-time limit
     try:
         val = str(leave.revision or "0")
         current_rev = int(''.join(filter(str.isdigit, val))) if any(c.isdigit() for c in val) else 0
     except (ValueError, TypeError):
         current_rev = 0
+
+    if current_rev >= 3:
+        raise HTTPException(status_code=400, detail="Maximum 3 revisions allowed for this leave request. No further actions can be taken.")
         
     next_rev = current_rev + 1
     leave.revision = str(next_rev)
