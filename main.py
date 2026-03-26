@@ -137,25 +137,30 @@ def parse_date(d):
 
 # FIX: Added missing parse_time_str function
 def parse_time_str(t_str: str):
-    """Parse time string into a datetime object (date part set to 1900-01-01)
-       Supports 24h (09:30, 09:30:00) and 12h (9:30 AM, 9:30:00 AM) formats.
-    """
-    if not t_str:
-        return None
-    t_str = t_str.strip()
-    # Try various formats including AM/PM
+    """Parse time string into a datetime object (date part set to 1900-01-01)"""
+    if not t_str: return None
+    t_str = t_str.strip().upper()
     formats = (
-        "%H:%M:%S", "%H:%M", 
         "%I:%M:%S %p", "%I:%M %p", 
-        "%I:%M:%S%p", "%I:%M%p",
-        "%H:%M %p" # Some systems might send 24h with AM/PM (weird but possible)
+        "%I:%M %p", "%I:%M%p",
+        "%H:%M:%S", "%H:%M",
+        "%H:%M %p"
     )
     for fmt in formats:
         try:
-            dt = datetime.strptime(t_str, fmt)
-            return dt.replace(year=1900, month=1, day=1)
+            return datetime.strptime(t_str, fmt).replace(year=1900, month=1, day=1)
         except:
             continue
+    # Last ditch effort: regex for simple extraction
+    import re
+    match = re.search(r"(\d{1,2})[:.](\d{2})(?::(\d{2}))?\s*([AP]M)?", t_str)
+    if match:
+        h, m, s, p = match.groups()
+        h, m = int(h), int(m)
+        s = int(s) if s else 0
+        if p == "PM" and h < 12: h += 12
+        if p == "AM" and h == 12: h = 0
+        return datetime(1900, 1, 1, h, m, s)
     return None
 
 
