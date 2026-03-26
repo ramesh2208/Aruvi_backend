@@ -679,7 +679,7 @@ def get_leave_stats(emp_id: str, db: Session = Depends(get_db)):
     emp_id = emp_id.strip()
     leave_rows = db.query(models.LeaveDet).filter(
         func.lower(func.trim(models.LeaveDet.emp_id)) == emp_id.lower()).all()
-    stats = {
+    stats: dict = {
         "casualLeave": {"total": 0, "availed": 0},
         "sickLeave": {"total": 0, "availed": 0},
         "maternityPaternity": {"total": 0, "availed": 0},
@@ -688,8 +688,12 @@ def get_leave_stats(emp_id: str, db: Session = Depends(get_db)):
         "availed": 0
     }
 
-    cl_total, sl_total, mp_total, mr_total = 0, 0, 0, 5
-    cl_availed, sl_availed, mp_availed, mr_availed = 0, 0, 0, 0
+    cl_total: float = 0.0
+    sl_total: float = 0.0
+    mp_total: float = 0.0
+    cl_availed: float = 0.0
+    sl_availed: float = 0.0
+    mp_availed: float = 0.0
 
     for row in leave_rows:
         l_type = (row.leave_type or "").lower()
@@ -697,7 +701,7 @@ def get_leave_stats(emp_id: str, db: Session = Depends(get_db)):
             t_val = float(row.total_leave or 0)
             a_val = float(row.availed_leave or 0)
         except:
-            t_val, a_val = 0, 0
+            t_val, a_val = 0.0, 0.0
 
         if 'casual' in l_type or l_type == 'cl':
             cl_total = t_val
@@ -709,6 +713,7 @@ def get_leave_stats(emp_id: str, db: Session = Depends(get_db)):
             mp_total = t_val
             mp_availed = a_val
 
+    # Cast totals to float to ensure consistency
     stats["casualLeave"] = {"total": cl_total, "availed": cl_availed}
     stats["sickLeave"] = {"total": sl_total, "availed": sl_availed}
     stats["maternityPaternity"] = {"total": mp_total, "availed": mp_availed}
@@ -878,6 +883,8 @@ async def apply_leave(
         req_to = parse_date(to_date)
         if not req_from or not req_to:
             raise HTTPException(status_code=400, detail="Invalid From/To date format")
+        assert req_from is not None
+        assert req_to is not None
         if req_to < req_from:
             raise HTTPException(status_code=400, detail="To date must be on or after from date")
 
@@ -895,7 +902,7 @@ async def apply_leave(
             if not row_from or not row_to:
                 continue
             # Overlap exists if (req_from <= row_to) AND (req_to >= row_from)
-            if (req_from <= row_to) and (req_to >= row_from):
+            if row_from and row_to and (req_from <= row_to) and (req_to >= row_from):
                 raise HTTPException(
                     status_code=400,
                     detail=f"Leave already applied for overlapping dates ({row.from_date} to {row.to_date})."
@@ -910,18 +917,21 @@ async def apply_leave(
                 row_to = parse_date(row.to_date) if row.to_date else row_from
                 if not row_from or not row_to:
                     continue
-                if row_to < row_from:
+                if row_from and row_to and row_to < row_from:
                     row_from, row_to = row_to, row_from
-                cur = row_from
-                daily_share = float(row.days or 0) / ((row_to - row_from).days + 1 or 1)
-                while cur <= row_to:
-                    key = f"{cur.year}-{cur.month:02d}"
-                    month_usage[key] = month_usage.get(key, 0.0) + daily_share
-                    cur = cur + timedelta(days=1)
+                
+                if row_from and row_to:
+                    delta_days = (row_to - row_from).days + 1
+                    daily_share = float(row.days or 0) / (delta_days if delta_days > 0 else 1)
+                    cur = row_from
+                    while cur <= row_to:
+                        key = f"{cur.year}-{cur.month:02d}"
+                        month_usage[key] = month_usage.get(key, 0.0) + daily_share
+                        cur = cur + timedelta(days=1)
 
             req_month_usage: dict[str, float] = {}
             req_cur = req_from
-            req_daily_share = requested_days / ((req_to - req_from).days + 1 or 1)
+            req_daily_share = float(requested_days) / float((req_to - req_from).days + 1 or 1)
             while req_cur <= req_to:
                 req_key = f"{req_cur.year}-{req_cur.month:02d}"
                 req_month_usage[req_key] = req_month_usage.get(req_key, 0.0) + req_daily_share
@@ -973,8 +983,10 @@ async def apply_leave(
         det_id = balance_row.l_det_id if balance_row else None
         
         # Format days to avoid long floating point strings (e.g. 0.999999)
-        cl_days_to_deduct = round(float(cl_days_to_deduct), 2)
-        lop_days_val = round(float(lop_days_val), 2)
+        from decimal import Decimal, ROUND_HALF_UP
+        _twodp = Decimal('0.01')
+        cl_days_to_deduct = float(Decimal(str(float(cl_days_to_deduct))).quantize(_twodp, rounding=ROUND_HALF_UP))
+        lop_days_val = float(Decimal(str(float(lop_days_val))).quantize(_twodp, rounding=ROUND_HALF_UP))
         
         # Utility function to format numbers cleanly for DB string fields
         def fmt_days(d):
@@ -2192,6 +2204,8 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
             row_to = parse_date(row.to_date) if row.to_date else row_from
             if not row_from or not row_to:
                 continue
+            assert row_from is not None
+            assert row_to is not None
             if not (req_to < row_from or req_from > row_to):
                 raise HTTPException(
                     status_code=400,
