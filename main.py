@@ -21,6 +21,7 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 import pyotp
 from cryptography.fernet import Fernet
+from sqlalchemy import extract
 
 import models, schemas, database
 from database import engine, SessionLocal
@@ -659,7 +660,6 @@ def get_check_status(emp_id: str, db: Session = Depends(get_db)):
 
 @app.get("/attendance-month/{emp_id}")
 def get_attendance_month(emp_id: str, month: int, year: int, db: Session = Depends(get_db)):
-    from sqlalchemy import extract
     emp_id = emp_id.strip()
     logs = db.query(models.CheckIn).filter(
         func.lower(func.trim(models.CheckIn.emp_id)) == emp_id.lower(),
@@ -708,15 +708,12 @@ def get_leave_stats(emp_id: str, db: Session = Depends(get_db)):
         elif 'maternity' in l_type or 'paternity' in l_type or l_type in ['ml', 'pl']:
             mp_total = t_val
             mp_availed = a_val
-        elif 'marriage' in l_type:
-            mr_availed = a_val
 
     stats["casualLeave"] = {"total": cl_total, "availed": cl_availed}
     stats["sickLeave"] = {"total": sl_total, "availed": sl_availed}
     stats["maternityPaternity"] = {"total": mp_total, "availed": mp_availed}
-    stats["marriageLeave"] = {"total": mr_total, "availed": mr_availed}
-    stats["total"] = cl_total + sl_total + mp_total + mr_total
-    stats["availed"] = cl_availed + sl_availed + mp_availed + mr_availed
+    stats["total"] = cl_total + sl_total + mp_total
+    stats["availed"] = cl_availed + sl_availed + mp_availed
 
     return stats
 
@@ -845,10 +842,6 @@ async def apply_leave(
     attachment_paths = []
     if attachments:
         print(f" Received {len(attachments)} attachments for leave request.")
-        images = [f for f in attachments if f.content_type and f.content_type.startswith('image/')]
-        if len(images) > 0 and (len(images) < 5 or len(images) > 8):
-            raise HTTPException(status_code=400, detail="Please upload between 5 to 8 images.")
-
         upload_dir = "uploads/leave_attachments"
         os.makedirs(upload_dir, exist_ok=True)
 
@@ -883,6 +876,7 @@ async def apply_leave(
         if requested_days <= 0:
             raise HTTPException(status_code=400, detail="Invalid leave days")
 
+        # Check for Overlapping Leaves
         existing_leaves = db.query(models.EmpLeave).filter(
             func.lower(func.trim(models.EmpLeave.emp_id)) == emp_id.lower(),
             func.lower(func.trim(models.EmpLeave.status)).in_(["pending", "approved"])
@@ -892,7 +886,8 @@ async def apply_leave(
             row_to = parse_date(row.to_date) if row.to_date else row_from
             if not row_from or not row_to:
                 continue
-            if not (req_to < row_from or req_from > row_to):
+            # Overlap exists if (req_from <= row_to) AND (req_to >= row_from)
+            if (req_from <= row_to) and (req_to >= row_from):
                 raise HTTPException(
                     status_code=400,
                     detail=f"Leave already applied for overlapping dates ({row.from_date} to {row.to_date})."
@@ -932,17 +927,35 @@ async def apply_leave(
                         detail=f"Casual Leave max is 3 days per month ({month_key}). Remaining should be applied as LOP."
                     )
 
-        l_type_key = leave_type.strip().lower().split(' ')[0]
-        balance_row = db.query(models.LeaveDet).filter(
-            func.lower(func.trim(models.LeaveDet.emp_id)) == emp_id.strip().lower(),
-            func.lower(func.trim(models.LeaveDet.leave_type)).contains(l_type_key)
-        ).first()
-        if balance_row:
-            available_leave = float(balance_row.available_leave or 0)
-            if available_leave <= 0:
-                raise HTTPException(status_code=400, detail=f"{leave_type} balance is 0")
-            if requested_days > available_leave + 0.0001:
-                raise HTTPException(status_code=400, detail=f"Insufficient {leave_type} balance")
+        # Find balance row and deduct (using robust mapping)
+        l_type_lower = leave_type.lower()
+        balance_row = None
+        
+        # Try specific mappings first
+        if 'casual' in l_type_lower or 'cl' == l_type_lower:
+            search_key = 'casual'
+        elif 'sick' in l_type_lower or 'sl' == l_type_lower:
+            search_key = 'sick'
+        elif 'maternity' in l_type_lower or 'paternity' in l_type_lower or l_type_lower in ['ml', 'pl']:
+            # For maternity/paternity, we look for either keyword in the DB
+            balance_row = db.query(models.LeaveDet).filter(
+                func.lower(func.trim(models.LeaveDet.emp_id)) == emp_id.strip().lower(),
+                or_(
+                    func.lower(func.trim(models.LeaveDet.leave_type)).contains('maternity'),
+                    func.lower(func.trim(models.LeaveDet.leave_type)).contains('paternity'),
+                    func.lower(func.trim(models.LeaveDet.leave_type)).in_(['ml', 'pl'])
+                )
+            ).first()
+            search_key = None
+        else:
+            search_key = l_type_lower.split(' ')[0]
+
+        if search_key and not balance_row:
+            balance_row = db.query(models.LeaveDet).filter(
+                func.lower(func.trim(models.LeaveDet.emp_id)) == emp_id.strip().lower(),
+                func.lower(func.trim(models.LeaveDet.leave_type)).contains(search_key)
+            ).first()
+
         det_id = balance_row.l_det_id if balance_row else None
         new_leave = models.EmpLeave(
             l_det_id=det_id,
@@ -975,6 +988,7 @@ async def apply_leave(
             last_update_date=datetime.now()
         )
         db.add(new_leave)
+        
         if balance_row:
             days_count = requested_days
             balance_row.availed_leave = float(balance_row.availed_leave or 0) + days_count
@@ -987,9 +1001,9 @@ async def apply_leave(
         # Verification Log
         saved_leave = db.query(models.EmpLeave).filter(models.EmpLeave.l_id == new_leave.l_id).first()
         if saved_leave:
-            print(f" SUCCESS: Leave record verified in DB. ID: {saved_leave.l_id}, File: {saved_leave.file}")
+            print(f" SUCCESS: Leave record verified in DB. ID: {saved_leave.l_id}")
         else:
-            print(f" CRITICAL ERROR: Leave record NOT FOUND in DB after commit! ID requested: {new_leave.l_id}")
+            print(f" CRITICAL ERROR: Leave record NOT FOUND in DB after commit!")
 
         print(f" Leave Applied Successfully. ID: {new_leave.l_id} for Emp: {new_leave.emp_id}")
         if user and user.manager_id:
