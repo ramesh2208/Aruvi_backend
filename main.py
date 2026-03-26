@@ -1315,10 +1315,9 @@ def get_notifications(
         return s or 'Unknown'
 
     def cutoff_filter(status_col, date_col, creation_col):
-        return or_(
-            func.lower(status_col) == 'pending',
-            func.coalesce(date_col, creation_col) > effective_cutoff
-        )
+        # We now respect the cutoff for EVERYTHING, including pending, 
+        # so "Clear All" actually clears them.
+        return func.coalesce(date_col, creation_col) > effective_cutoff
 
     if role.lower() == 'admin':
         print(f" ADMIN notifications for {user_id} (manager_id={manager_id}) - SHOWING ONLY PENDING")
@@ -1404,7 +1403,7 @@ def get_notifications(
                                 f"{leave.from_date} to {leave.to_date} ({leave.days} days)"),
                     "time": str(update_time or "Recently"),
                     "icon": status_icon(st),
-                    "screen": "/AdminLeave?tab=myApproval"
+                    "screen": f"/AdminLeave?tab=myApproval&l_id={leave.l_id}"
                 })
             except Exception as e:
                 print(f"   Error formatting leave {leave.l_id}: {e}")
@@ -1442,7 +1441,7 @@ def get_notifications(
                     "message": f"{status_label(st)} | {ot.ot_date}: {ot.duration} hrs",
                     "time": str(update_time or "Recently"),
                     "icon": status_icon(st),
-                    "screen": "/AdminOt?tab=myApproval"
+                    "screen": f"/AdminOt?tab=myApproval&ot_id={ot.ot_id}"
                 })
             except Exception as e:
                 print(f"   Error formatting OT {ot.ot_id}: {e}")
@@ -1481,7 +1480,7 @@ def get_notifications(
                         "message": f"{status_label(st)} | {wfh.from_date} to {wfh.to_date}",
                         "time": str(update_time or "Recently"),
                         "icon": status_icon(st),
-                        "screen": "/AdminWfh?tab=myApproval"
+                        "screen": f"/AdminWfh?tab=myApproval&wfh_id={wfh.wfh_id}"
                     })
                 except Exception as e:
                     print(f"   Error formatting WFH {wfh.wfh_id}: {e}")
@@ -1534,7 +1533,7 @@ def get_notifications(
                 db.query(models.EmpLeave)
                 .filter(
                     func.lower(func.trim(models.EmpLeave.emp_id)) == user_id.lower(),
-                    func.lower(models.EmpLeave.status) == "approved",
+                    func.lower(models.EmpLeave.status).in_(["approved", "rejected"]),
                     cutoff_filter(
                         models.EmpLeave.status,
                         models.EmpLeave.last_update_date,
@@ -1562,7 +1561,7 @@ def get_notifications(
                 db.query(models.EmpPermission)
                 .filter(
                     func.lower(func.trim(models.EmpPermission.emp_id)) == user_id.lower(),
-                    func.lower(models.EmpPermission.status) == "approved",
+                    func.lower(models.EmpPermission.status).in_(["approved", "rejected"]),
                     cutoff_filter(
                         models.EmpPermission.status,
                         models.EmpPermission.last_update_date,
