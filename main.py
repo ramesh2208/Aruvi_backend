@@ -970,12 +970,9 @@ async def apply_leave(
                 func.lower(func.trim(models.LeaveDet.leave_type)).contains(search_key)
             ).first()
 
-    # Additional check: If det_id is still None, try to find ANY leave_det for this employee as a fallback
-    det_id = balance_row.l_det_id if balance_row else None
+        det_id = balance_row.l_det_id if balance_row else None
+        print(f" FINAL: det_id: {det_id}, emp_id: {emp_id}, leave_type: {leave_type}, CL to Deduct: {cl_days_to_deduct}, LOP: {lop_days_val}")
 
-    print(f" FINAL: det_id: {det_id}, emp_id: {emp_id}, leave_type: {leave_type}, CL to Deduct: {cl_days_to_deduct}, LOP: {lop_days_val}")
-
-    try:
         new_leave = models.EmpLeave(
             l_det_id=det_id,
             emp_id=emp_id.strip(),
