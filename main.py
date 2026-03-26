@@ -819,33 +819,23 @@ def get_email_template(receiver_name, title, content_html, sender_name="Aruvi Te
     <html>
     <head>
         <style>
-            @import url('https://fonts.googleapis.com/css2?family=Segoe+UI:wght@400;600;700&display=swap');
-            body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #334155; margin: 0; padding: 0; background-color: #f8fafc; }}
-            .container {{ max-width: 600px; margin: 30px auto; background-color: #ffffff; padding: 40px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }}
-            .header {{ border-bottom: 2px solid #eef2f6; padding-bottom: 20px; margin-bottom: 30px; }}
-            .title {{ color: #1e293b; font-size: 22px; font-weight: 700; margin: 0; }}
-            .greeting {{ font-size: 16px; margin-bottom: 20px; color: #1e293b; }}
-            .content {{ font-size: 15px; margin-bottom: 30px; }}
-            .footer {{ border-top: 1px solid #eef2f6; padding-top: 25px; margin-top: 35px; color: #94a3b8; font-size: 13px; }}
-            .company {{ color: #475569; font-weight: 600; font-size: 15px; margin-bottom: 2px; }}
-            .signature {{ color: #64748b; font-size: 14px; margin-top: 0; }}
+            body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 15px; }}
+            a {{ color: #0ea5e9; text-decoration: none; }}
+            a:hover {{ text-decoration: underline; }}
         </style>
     </head>
     <body>
-        <div class="container">
-            <div class="header">
-                <h1 class="title">{title}</h1>
-            </div>
-            <p class="greeting">Dear <strong>{receiver_name}</strong>,</p>
-            <div class="content">
-                {content_html}
-            </div>
-            <div class="footer">
-                <p class="company">{sender_name}</p>
-                <p class="signature">Aruvi Team | Ilan Tech Solutions</p>
-                <p style="margin-top: 20px; font-size: 11px;">© 2026 Ilan Tech Solutions Private Limited. All rights reserved.</p>
-            </div>
+        <p style="margin-top: 0;">Dear {receiver_name},</p>
+        
+        <div>
+            {content_html}
         </div>
+
+        <p style="margin-top: 40px; margin-bottom: 5px;">Thanks & Regards,</p>
+        <strong>Ilan Tech Solutions Private Limited</strong>
+        <p style="margin-top: 5px; font-size: 14px;">
+            Website: <a href="http://www.ilantechsolutions.com">www.ilantechsolutions.com</a>
+        </p>
     </body>
     </html>
     """
