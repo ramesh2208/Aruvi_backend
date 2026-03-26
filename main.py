@@ -1328,8 +1328,8 @@ def get_notifications(
         # so "Clear All" actually clears them.
         return func.coalesce(date_col, creation_col) > effective_cutoff
 
-    if role.lower() == 'admin':
-        print(f" ADMIN notifications for {user_id} (manager_id={manager_id}) - SHOWING ONLY PENDING")
+    if role.lower() in ['admin', 'manager', 'hr']:
+        print(f" ADMIN/MANAGER notifications for {user_id} (manager_id={manager_id}) - SHOWING ONLY PENDING")
 
         q_perms = (
             db.query(models.EmpPermission, models.EmpDet)
@@ -1535,8 +1535,8 @@ def get_notifications(
             except Exception as e:
                 print(f"   Error formatting Timesheet {ts.t_id}: {e}")
 
-    else:
-        print(f" EMPLOYEE notifications for {user_id} - SHOWING ONLY APPROVED")
+    if True: # Always process standard personal notifications for everyone
+        print(f" EMPLOYEE notifications for {user_id} - SHOWING ONLY APPROVED/REJECTED")
 
         for leave in (
                 db.query(models.EmpLeave)
