@@ -814,6 +814,15 @@ def send_email_notification(to_email: str, subject: str, body_html: str):
         return False
 
 
+def fmt_days(d):
+    try:
+        val = float(d)
+        if val.is_integer():
+            return str(int(val))
+        return f"{val:.2f}".rstrip('0').rstrip('.')
+    except (ValueError, TypeError):
+        return str(d)
+
 def get_email_template(receiver_name, title, content_html, sender_name="Aruvi Team"):
     return f"""
     <html>
@@ -1009,13 +1018,6 @@ async def apply_leave(
         cl_days_to_deduct = float(Decimal(str(float(cl_days_to_deduct))).quantize(_twodp, rounding=ROUND_HALF_UP))
         lop_days_val = float(Decimal(str(float(lop_days_val))).quantize(_twodp, rounding=ROUND_HALF_UP))
         
-        # Utility function to format numbers cleanly for DB string fields
-        def fmt_days(d):
-            val = float(d)
-            if val.is_integer():
-                return str(int(val))
-            return f"{val:.2f}".rstrip('0').rstrip('.')
-
         print(f" FINAL: det_id: {det_id}, emp_id: {emp_id}, CL: {cl_days_to_deduct}, LOP: {lop_days_val}")
 
         # Record 1: The Casual Leave portion (if any)
@@ -1105,7 +1107,7 @@ async def apply_leave(
                     func.lower(func.trim(models.EmpDet.emp_id)) == user.manager_id.strip().lower()
                 ).first()
                 if manager and manager.p_mail:
-                    summary_msg = f"{cl_days_to_deduct} CL / {lop_days_val} LOP" if lop_days_val > 0 else f"{requested_days} days"
+                    summary_msg = f"{fmt_days(cl_days_to_deduct)} CL / {fmt_days(lop_days_val)} LOP" if lop_days_val > 0 else f"{fmt_days(requested_days)} days"
                     subject = f"ITS - {emp_name} - {leave_type} Request | {from_date} ({summary_msg})"
                     
                     content = f"""
@@ -1255,7 +1257,7 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
                 <p>Dear {leave.approver or 'Manager'},</p>
                 <p>Good Day!</p>
                 <p>I hope this mail finds you well.</p>
-                <p>I am requesting a <strong>{leave.leave_type}</strong> from {leave.from_date} to {leave.to_date} ({leave.days} days) due to: {leave.reason}</p>
+                <p>I am requesting a <strong>{leave.leave_type}</strong> from {leave.from_date} to {leave.to_date} ({fmt_days(leave.days)} days) due to: {leave.reason}</p>
             </div>
             """
 
