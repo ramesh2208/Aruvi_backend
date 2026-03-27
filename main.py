@@ -141,10 +141,8 @@ def parse_time_str(t_str: str):
     if not t_str: return None
     t_str = t_str.strip().upper()
     formats = (
-        "%I:%M:%S %p", "%I:%M %p", 
-        "%I:%M %p", "%I:%M%p",
-        "%H:%M:%S", "%H:%M",
-        "%H:%M %p"
+        "%I:%M:%S %p", "%I:%M %p", "%I:%M%p",
+        "%H:%M:%S", "%H:%M", "%H:%M %p"
     )
     for fmt in formats:
         try:
@@ -153,14 +151,18 @@ def parse_time_str(t_str: str):
             continue
     # Last ditch effort: regex for simple extraction
     import re
+    # Match digits and optional AM/PM. Handles dots or colons.
     match = re.search(r"(\d{1,2})[:.](\d{2})(?::(\d{2}))?\s*([AP]M)?", t_str)
     if match:
-        h, m, s, p = match.groups()
-        h, m = int(h), int(m)
-        s = int(s) if s else 0
+        h_str, m_str, s_str, p = match.groups()
+        h, m = int(h_str), int(m_str)
+        s = int(s_str) if s_str else 0
         if p == "PM" and h < 12: h += 12
         if p == "AM" and h == 12: h = 0
-        return datetime(1900, 1, 1, h, m, s)
+        try:
+            return datetime(1900, 1, 1, h, m, s)
+        except:
+            return None
     return None
 
 
@@ -1947,8 +1949,8 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
         new_perm = models.EmpPermission(
             emp_id=(user.emp_id or "").strip(),
             date=p_date,
-            f_time=f_time_dt.time(),
-            t_time=t_time_dt.time(),
+            f_time=f_time_dt.strftime("%I:%M %p"),
+            t_time=t_time_dt.strftime("%I:%M %p"),
             reason=request.reason,
             total_hours=f"{total_hrs_val:.2f}",
             dis_total_hours=f"{lop_hrs:.2f}",
