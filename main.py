@@ -1107,14 +1107,15 @@ async def apply_leave(
                     func.lower(func.trim(models.EmpDet.emp_id)) == user.manager_id.strip().lower()
                 ).first()
                 if manager and manager.p_mail:
-                    summary_msg = f"{fmt_days(cl_days_to_deduct)} CL / {fmt_days(lop_days_val)} LOP" if lop_days_val > 0 else f"{fmt_days(requested_days)} days"
+                    day_text = "Day" if float(requested_days) == 1.0 else "Days"
+                    summary_msg = f"{fmt_days(cl_days_to_deduct)} CL / {fmt_days(lop_days_val)} LOP" if lop_days_val > 0 else f"{fmt_days(requested_days)} {day_text}"
                     subject = f"ITS - {emp_name} - {leave_type} Request | {from_date} ({summary_msg})"
                     
                     content = f"""
                     <p><strong>Good Day!</strong></p>
                     <p>I hope this mail finds you well.</p>
                     <p>I am requesting leave from <strong>{from_date}</strong> to <strong>{to_date}</strong>.</p>
-                    <p><strong>Days:</strong> {summary_msg}</p>
+                    <p><strong>No of Days:</strong> {summary_msg}</p>
                     <p><strong>Reason:</strong> {reason}</p>
                     """
                     body = get_email_template(manager.name, "Leave Request", content, emp_name)
@@ -1257,16 +1258,17 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
                 <p>Dear {leave.approver or 'Manager'},</p>
                 <p>Good Day!</p>
                 <p>I hope this mail finds you well.</p>
-                <p>I am requesting a <strong>{leave.leave_type}</strong> from {leave.from_date} to {leave.to_date} ({fmt_days(leave.days)} days) due to: {leave.reason}</p>
+                <p>I am requesting a <strong>{leave.leave_type}</strong> from {leave.from_date} to {leave.to_date} ({fmt_days(leave.days)} {"Day" if float(leave.days or 0) == 1.0 else "Days"}) due to: {leave.reason}</p>
             </div>
             """
 
             content = f"""
             <p>Your request for <strong>{leave.leave_type}</strong> has been processed.</p>
             <div style="font-size: 20px; font-weight: 700; color: {'#10B981' if request_item.action.lower() == 'approved' else '#EF4444'}; margin: 20px 0;">
-                {status_msg}
+                {status_msg if request_item.action.lower() != 'approved' else "This is Approved and Ackownledged"}
             </div>
             <p><strong>Dates:</strong> {leave.from_date} to {leave.to_date}</p>
+            <p><strong>No of Days:</strong> {fmt_days(leave.days)} {"Day" if float(leave.days or 0) == 1.0 else "Days"}</p>
             <p><strong>Remarks:</strong> {request_item.remarks or 'No remarks provided.'}</p>
             <p style="margin-top: 25px; font-size: 13px; color: #64748b;">You can view the full history and status in the Aruvi mobile app.</p>
             """
