@@ -1925,20 +1925,27 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
             raise HTTPException(status_code=400,
                                 detail=f"Permission already applied for {request.date}.")
 
-        # Now update remaining_perm
+        # Now update remaining_perm in xxits_emp_det_t
         curr_val = str(user.remaining_perm or "0").strip()
         try:
             curr_perm = float(curr_val) if curr_val else 0.0
-        except:
-            curr_perm = 0.0
+        except Exception:
+            # Try to initialize from the permission field if remaining_perm is empty
+            try:
+                curr_perm = float(str(user.permission or "4").strip())
+            except Exception:
+                curr_perm = 4.0
 
         new_remaining = max(0.0, curr_perm - approved_hrs)
         user.remaining_perm = str(round(new_remaining, 2))
+        # Also keep permission in sync (total allocated stays the same, only remaining changes)
+        if not user.permission:
+            user.permission = user.remaining_perm  # set if never initialized
 
         total_hrs_val = diff_mins / 60.0
 
         new_perm = models.EmpPermission(
-            emp_id=user.emp_id,
+            emp_id=(user.emp_id or "").strip(),
             date=p_date,
             f_time=f_time_dt.time(),
             t_time=t_time_dt.time(),
@@ -2370,37 +2377,68 @@ def get_wfh_history(emp_id: str, db: Session = Depends(get_db)):
 
 @app.get("/permission-stats/{emp_id}")
 def get_permission_stats(emp_id: str, db: Session = Depends(get_db)):
-    emp_id = emp_id.strip()
-    user = db.query(models.EmpDet).filter(
-        func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()).first()
-    if not user:
-        return {"total": 0, "remaining": 0}
     try:
-        total = float(user.permission or 0)
-        remaining = float(user.remaining_perm or 0)
-    except:
-        total = 0
-        remaining = 0
-    return {"total": total, "remaining": remaining}
+        emp_id_clean = (emp_id or "").strip()
+        user = None
+        try:
+            user = db.query(models.EmpDet).filter(
+                func.lower(func.trim(models.EmpDet.emp_id)) == emp_id_clean.lower()).first()
+        except Exception:
+            # Fallback: plain string match
+            user = db.query(models.EmpDet).filter(
+                models.EmpDet.emp_id == emp_id_clean).first()
+        if not user:
+            return {"total": 0, "remaining": 0}
+        try:
+            total_raw = str(user.permission or "0").strip()
+            total = float(total_raw) if total_raw else 0.0
+        except Exception:
+            total = 0.0
+        try:
+            rem_raw = str(user.remaining_perm or "0").strip()
+            remaining = float(rem_raw) if rem_raw else 0.0
+        except Exception:
+            remaining = 0.0
+        return {"total": total, "remaining": remaining}
+    except Exception as e:
+        print(f"permission-stats error: {e}")
+        return {"total": 0, "remaining": 0}
 
 
 @app.get("/permission-history/{emp_id}")
 def get_permission_history(emp_id: str, db: Session = Depends(get_db)):
     print(f"\n--- FETCH PERMISSION HISTORY: {emp_id} ---")
-    emp_id = emp_id.strip().lower()
-    history = db.query(models.EmpPermission).filter(
-        func.lower(func.trim(models.EmpPermission.emp_id)) == emp_id
-    ).order_by(models.EmpPermission.p_id.desc()).all()
-    print(f"   Found {len(history)} records")
-    return [{
-        "p_id": row.p_id, "emp_id": row.emp_id,
-        "date": row.date.strftime("%d-%b-%Y") if hasattr(row.date, 'strftime') else (row.date or ""),
-        "f_time": format_time_safe(row.f_time),
-        "t_time": format_time_safe(row.t_time),
-        "total_hours": row.total_hours, "dis_total_hours": row.dis_total_hours,
-        "reason": row.reason, "status": row.status, "remarks": row.remarks,
-        "creation_date": row.creation_date, "last_update_date": row.last_update_date
-    } for row in history]
+    try:
+        emp_id_clean = (emp_id or "").strip()
+        try:
+            history = db.query(models.EmpPermission).filter(
+                func.lower(func.trim(models.EmpPermission.emp_id)) == emp_id_clean.lower()
+            ).order_by(models.EmpPermission.p_id.desc()).all()
+        except Exception:
+            history = db.query(models.EmpPermission).filter(
+                models.EmpPermission.emp_id == emp_id_clean
+            ).order_by(models.EmpPermission.p_id.desc()).all()
+        print(f"   Found {len(history)} records")
+        result = []
+        for row in history:
+            try:
+                date_str = row.date.strftime("%d-%b-%Y") if hasattr(row.date, 'strftime') else (str(row.date) if row.date else "")
+            except Exception:
+                date_str = str(row.date) if row.date else ""
+            result.append({
+                "p_id": row.p_id, "emp_id": row.emp_id,
+                "date": date_str,
+                "f_time": format_time_safe(row.f_time),
+                "t_time": format_time_safe(row.t_time),
+                "total_hours": row.total_hours, "dis_total_hours": row.dis_total_hours,
+                "reason": row.reason, "status": row.status, "remarks": row.remarks,
+                "creation_date": str(row.creation_date) if row.creation_date else None,
+                "last_update_date": str(row.last_update_date) if row.last_update_date else None
+            })
+        return result
+    except Exception as e:
+        print(f"permission-history error: {e}")
+        return []
 
 
 @app.get("/dashboard/{emp_id}", response_model=schemas.DashboardResponse)
