@@ -169,7 +169,9 @@ def parse_time_str(t_str: str):
 def format_time_safe(t):
     if not t: return ""
     if isinstance(t, str): return t
-    if hasattr(t, "strftime"): return t.strftime("%H:%M")
+    if hasattr(t, "strftime"):
+        # Returns 12-hour format like '1:00 PM'
+        return t.strftime("%I:%M %p").lstrip('0')
     return str(t)
 
 
@@ -1949,8 +1951,8 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
         new_perm = models.EmpPermission(
             emp_id=(user.emp_id or "").strip(),
             date=p_date,
-            f_time=f_time_dt.strftime("%I:%M %p"),
-            t_time=t_time_dt.strftime("%I:%M %p"),
+            f_time=f_time_dt.time(),
+            t_time=t_time_dt.time(),
             reason=request.reason,
             total_hours=f"{total_hrs_val:.2f}",
             dis_total_hours=f"{lop_hrs:.2f}",
