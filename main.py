@@ -1277,424 +1277,461 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
     return {"message": f"Leave request {request_item.action.lower()} successfully",
             "approved_by": leave.approved_by}
 
+from datetime import datetime, timedelta
+from typing import Optional
+import traceback
 
-@app.get("/notifications/{user_id}")
+router = APIRouter()
+
+# ─── Helper functions ────────────────────────────────────────────────────────
+
+def _status_type(s: str) -> str:
+    s = (s or '').lower().strip()
+    if s == 'pending':  return 'pending'
+    if s == 'approved': return 'success'
+    if s == 'rejected': return 'error'
+    return 'info'
+
+
+def _status_icon(s: str) -> str:
+    s = (s or '').lower().strip()
+    if s == 'pending':  return 'time-outline'
+    if s == 'approved': return 'checkmark-circle'
+    if s == 'rejected': return 'close-circle'
+    return 'notifications-outline'
+
+
+def _status_label(s: str) -> str:
+    s = (s or '').lower().strip()
+    if s == 'pending':  return 'Pending'
+    if s == 'approved': return 'Approved'
+    if s == 'rejected': return 'Rejected'
+    return s.capitalize() or 'Unknown'
+
+
+def _fmt_date(val) -> str:
+    """Safely format a date object or return string as-is."""
+    if val is None:
+        return ''
+    if hasattr(val, 'strftime'):
+        return val.strftime('%d-%b-%Y')
+    return str(val)
+
+
+def _fmt_time(val) -> str:
+    """Safely format a time object or return string as-is."""
+    if val is None:
+        return ''
+    if hasattr(val, 'strftime'):
+        return val.strftime('%I:%M %p')
+    return str(val)
+
+
+# ─── GET /notifications/{user_id} ────────────────────────────────────────────
+
+@router.get("/notifications/{user_id}")
 def get_notifications(
-        user_id: str,
-        role: str = "employee",
-        manager_id: Optional[str] = None,
-        db: Session = Depends(get_db)
+    user_id: str,
+    role: str = "employee",
+    manager_id: Optional[str] = None,
+    db: Session = Depends(get_db)
 ):
-    user_id = user_id.strip()
+    """
+    Returns notifications for a user.
+
+    - Employee  → their own approved/rejected items
+    - Admin / Manager / HR → pending items from their team  +  their own approved/rejected items
+    """
+    # FIX 1: Normalize user_id and role (frontend may send 'Admin' not 'admin')
+    user_id = user_id.strip().lower()
+    role = (role or 'employee').strip().lower()
+
     notifications = []
 
+    # ── Fetch the user row to get the "last clear" timestamp ─────────────────
     user = db.query(models.EmpDet).filter(
-        func.lower(func.trim(models.EmpDet.emp_id)) == user_id.lower()
+        func.lower(func.trim(models.EmpDet.emp_id)) == user_id
     ).first()
 
-    last_clear_date = None
-    if user and user.attribute8 and user.attribute8.strip():
-        try:
-            last_clear_date = datetime.strptime(user.attribute8.strip(), "%Y-%m-%d %H:%M:%S")
-        except Exception as e:
-            print(f" Could not parse attribute8 '{user.attribute8}': {e}")
+    last_clear_date: Optional[datetime] = None
+    if user and user.attribute8 and str(user.attribute8).strip():
+        raw = str(user.attribute8).strip()
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                last_clear_date = datetime.strptime(raw, fmt)
+                break
+            except ValueError:
+                continue
+        if last_clear_date is None:
+            print(f"⚠️  Could not parse attribute8 '{raw}' for user {user_id}")
 
-    effective_cutoff = last_clear_date if last_clear_date else (datetime.now() - timedelta(days=30))
-    print(f" Notifications for {user_id} | role={role} | cutoff={effective_cutoff}")
+    # FIX 2: Default cutoff — 30 days back (so fresh users see recent items)
+    effective_cutoff: datetime = last_clear_date if last_clear_date else (datetime.now() - timedelta(days=30))
+    print(f"📋 Notifications | user={user_id} | role={role} | cutoff={effective_cutoff} | manager_id={manager_id}")
 
-    def status_type(s: str):
-        s = (s or '').lower()
-        if s == 'pending': return 'pending'
-        if s == 'approved': return 'success'
-        if s == 'rejected': return 'error'
-        return 'info'
-
-    def status_icon(s: str):
-        s = (s or '').lower()
-        if s == 'pending': return 'time-outline'
-        if s == 'approved': return 'checkmark-circle'
-        if s == 'rejected': return 'close-circle'
-        return 'notifications-outline'
-
-    def status_label(s: str):
-        s = (s or '').lower()
-        if s == 'pending': return ' Pending'
-        if s == 'approved': return ' Approved'
-        if s == 'rejected': return ' Rejected'
-        return s or 'Unknown'
-
-    def cutoff_filter(status_col, date_col, creation_col):
-        # We now respect the cutoff for EVERYTHING, including pending, 
-        # so "Clear All" actually clears them.
+    def cutoff_filter(date_col, creation_col):
+        """Return SQLAlchemy filter: coalesce(date_col, creation_col) > effective_cutoff"""
         return func.coalesce(date_col, creation_col) > effective_cutoff
 
-    if role.lower() in ['admin', 'manager', 'hr']:
-        print(f" ADMIN/MANAGER notifications for {user_id} (manager_id={manager_id}) - SHOWING ONLY PENDING")
+    def standard_order(date_col, creation_col):
+        """Standard descending order by most recent update/creation."""
+        return func.coalesce(date_col, creation_col).desc()
 
-        q_perms = (
-            db.query(models.EmpPermission, models.EmpDet)
-            .outerjoin(models.EmpDet,
-                       func.lower(func.trim(models.EmpPermission.emp_id)) ==
-                       func.lower(func.trim(models.EmpDet.emp_id)))
-            .filter(func.lower(models.EmpPermission.status) == "pending")
-            .filter(cutoff_filter(
-                models.EmpPermission.status,
-                models.EmpPermission.last_update_date,
-                models.EmpPermission.creation_date))
-        )
-        if manager_id and manager_id.strip().lower() != 'all':
-            q_perms = q_perms.filter(
-                func.lower(func.trim(models.EmpDet.manager_id)) == manager_id.strip().lower())
+    # ═══════════════════════════════════════════════════════════════════════════
+    # BLOCK A — ADMIN / MANAGER / HR: show PENDING items from their team
+    # ═══════════════════════════════════════════════════════════════════════════
+    if role in ('admin', 'manager', 'hr'):
+        print(f"  → Admin/Manager block for {user_id} (manager_id={manager_id})")
 
-        for perm, emp in q_perms.order_by(
-                case((func.lower(models.EmpPermission.status) == 'pending', 0), else_=1),
-                func.coalesce(models.EmpPermission.last_update_date,
-                              models.EmpPermission.creation_date).desc()
-        ).limit(30).all():
-            try:
-                emp_name = emp.name if emp else "Unknown"
-                p_date_str = (perm.date.strftime('%d-%b-%Y')
-                              if perm.date and hasattr(perm.date, 'strftime')
-                              else str(perm.date or ''))
-                f_time_str = (perm.f_time.strftime('%I:%M %p')
-                              if perm.f_time and hasattr(perm.f_time, 'strftime')
-                              else str(perm.f_time or ''))
-                t_time_str = (perm.t_time.strftime('%I:%M %p')
-                              if perm.t_time and hasattr(perm.t_time, 'strftime')
-                              else str(perm.t_time or ''))
-                st = perm.status or 'Pending'
+        # helper: apply manager filter if manager_id is given and not 'all'
+        def apply_manager_filter(query, emp_model):
+            if manager_id and manager_id.strip().lower() not in ('', 'all', 'none'):
+                query = query.filter(
+                    func.lower(func.trim(emp_model.manager_id)) == manager_id.strip().lower()
+                )
+            return query
+
+        # ── Permissions (pending) ─────────────────────────────────────────────
+        try:
+            q = (
+                db.query(models.EmpPermission, models.EmpDet)
+                .outerjoin(models.EmpDet,
+                    func.lower(func.trim(models.EmpPermission.emp_id)) ==
+                    func.lower(func.trim(models.EmpDet.emp_id)))
+                .filter(func.lower(func.trim(models.EmpPermission.status)) == "pending")
+                .filter(cutoff_filter(models.EmpPermission.last_update_date, models.EmpPermission.creation_date))
+            )
+            q = apply_manager_filter(q, models.EmpDet)
+
+            for perm, emp in q.order_by(standard_order(
+                models.EmpPermission.last_update_date, models.EmpPermission.creation_date
+            )).limit(30).all():
+                emp_name = (emp.name if emp else None) or "Unknown"
+                st = (perm.status or 'Pending').strip()
                 update_time = perm.last_update_date or perm.creation_date
                 notifications.append({
-                    "id": f"permission_{perm.p_id}",
+                    "id": f"admin_permission_{perm.p_id}",
                     "record_id": perm.p_id,
-                    "type": status_type(st),
+                    "type": _status_type(st),
                     "notification_type": "permission",
-                    "title": f"Permission - {emp_name}",
-                    "message": f"{status_label(st)} | {p_date_str}: {f_time_str} - {t_time_str}",
+                    "title": f"Permission Request – {emp_name}",
+                    "message": f"{_status_label(st)} | {_fmt_date(perm.date)}: {_fmt_time(perm.f_time)} – {_fmt_time(perm.t_time)}",
                     "time": str(update_time or "Recently"),
-                    "icon": status_icon(st),
+                    "icon": _status_icon(st),
                     "screen": f"/AdminPermission?tab=myApproval&p_id={perm.p_id}"
                 })
-            except Exception as e:
-                print(f"   Error formatting permission {perm.p_id}: {e}")
-
-        q_leaves = (
-            db.query(models.EmpLeave, models.EmpDet)
-            .outerjoin(models.EmpDet,
-                       func.lower(func.trim(models.EmpLeave.emp_id)) ==
-                       func.lower(func.trim(models.EmpDet.emp_id)))
-            .filter(func.lower(models.EmpLeave.status) == "pending")
-            .filter(cutoff_filter(
-                models.EmpLeave.status,
-                models.EmpLeave.last_update_date,
-                models.EmpLeave.creation_date))
-        )
-        if manager_id and manager_id.strip().lower() != 'all':
-            q_leaves = q_leaves.filter(
-                func.lower(func.trim(models.EmpDet.manager_id)) == manager_id.strip().lower())
-
-        for leave, emp in q_leaves.order_by(
-                case((func.lower(models.EmpLeave.status) == 'pending', 0), else_=1),
-                func.coalesce(models.EmpLeave.last_update_date,
-                              models.EmpLeave.creation_date).desc()
-        ).limit(30).all():
-            try:
-                emp_name = emp.name if emp else "Unknown"
-                st = leave.status or 'Pending'
-                update_time = (leave.last_update_date or leave.creation_date or leave.applied_date)
-                notifications.append({
-                    "id": f"leave_{leave.l_id}",
-                    "record_id": leave.l_id,
-                    "type": status_type(st),
-                    "notification_type": "leave",
-                    "title": f"Leave - {emp_name}",
-                    "message": (f"{status_label(st)} | {leave.leave_type}: "
-                                f"{leave.from_date} to {leave.to_date} ({leave.days} days)"),
-                    "time": str(update_time or "Recently"),
-                    "icon": status_icon(st),
-                    "screen": f"/AdminLeave?tab=myApproval&l_id={leave.l_id}"
-                })
-            except Exception as e:
-                print(f"   Error formatting leave {leave.l_id}: {e}")
-
-        q_ot = (
-            db.query(models.OverTimeDet, models.EmpDet)
-            .outerjoin(models.EmpDet,
-                       func.lower(func.trim(models.OverTimeDet.emp_id)) ==
-                       func.lower(func.trim(models.EmpDet.emp_id)))
-            .filter(func.lower(models.OverTimeDet.status) == "pending")
-            .filter(cutoff_filter(
-                models.OverTimeDet.status,
-                models.OverTimeDet.last_update_date,
-                models.OverTimeDet.creation_date))
-        )
-        if manager_id and manager_id.strip().lower() != 'all':
-            q_ot = q_ot.filter(
-                func.lower(func.trim(models.EmpDet.manager_id)) == manager_id.strip().lower())
-
-        for ot, emp in q_ot.order_by(
-                case((func.lower(models.OverTimeDet.status) == 'pending', 0), else_=1),
-                func.coalesce(models.OverTimeDet.last_update_date,
-                              models.OverTimeDet.creation_date).desc()
-        ).limit(30).all():
-            try:
-                emp_name = emp.name if emp else "Unknown"
-                st = ot.status or 'Pending'
-                update_time = ot.last_update_date or ot.creation_date
-                notifications.append({
-                    "id": f"ot_{ot.ot_id}",
-                    "record_id": ot.ot_id,
-                    "type": status_type(st),
-                    "notification_type": "ot",
-                    "title": f"OT - {emp_name}",
-                    "message": f"{status_label(st)} | {ot.ot_date}: {ot.duration} hrs",
-                    "time": str(update_time or "Recently"),
-                    "icon": status_icon(st),
-                    "screen": f"/AdminOt?tab=myApproval&ot_id={ot.ot_id}"
-                })
-            except Exception as e:
-                print(f"   Error formatting OT {ot.ot_id}: {e}")
-
-        try:
-            q_wfh = (
-                db.query(models.WFHDet, models.EmpDet)
-                .outerjoin(models.EmpDet,
-                           func.lower(func.trim(models.WFHDet.emp_id)) ==
-                           func.lower(func.trim(models.EmpDet.emp_id)))
-                .filter(func.lower(models.WFHDet.status) == "pending")
-                .filter(cutoff_filter(
-                    models.WFHDet.status,
-                    models.WFHDet.last_update_date,
-                    models.WFHDet.creation_date))
-            )
-            if manager_id and manager_id.strip().lower() != 'all':
-                q_wfh = q_wfh.filter(
-                    func.lower(func.trim(models.EmpDet.manager_id)) == manager_id.strip().lower())
-
-            for wfh, emp in q_wfh.order_by(
-                    case((func.lower(models.WFHDet.status) == 'pending', 0), else_=1),
-                    func.coalesce(models.WFHDet.last_update_date,
-                                  models.WFHDet.creation_date).desc()
-            ).limit(30).all():
-                try:
-                    emp_name = emp.name if emp else "Unknown"
-                    st = wfh.status or 'Pending'
-                    update_time = wfh.last_update_date or wfh.creation_date
-                    notifications.append({
-                        "id": f"wfh_{wfh.wfh_id}",
-                        "record_id": wfh.wfh_id,
-                        "type": status_type(st),
-                        "notification_type": "wfh",
-                        "title": f"WFH - {emp_name}",
-                        "message": f"{status_label(st)} | {wfh.from_date} to {wfh.to_date}",
-                        "time": str(update_time or "Recently"),
-                        "icon": status_icon(st),
-                        "screen": f"/AdminWfh?tab=myApproval&wfh_id={wfh.wfh_id}"
-                    })
-                except Exception as e:
-                    print(f"   Error formatting WFH {wfh.wfh_id}: {e}")
-        except Exception as wfh_error:
-            print(f" Error fetching WFH notifications (admin): {wfh_error}")
+        except Exception as e:
+            print(f"  ❌ Admin permissions error: {e}")
             traceback.print_exc()
 
-        q_timesheets = (
-            db.query(models.TimesheetDet, models.EmpDet)
-            .outerjoin(models.EmpDet,
-                       func.lower(func.trim(models.TimesheetDet.emp_id)) ==
-                       func.lower(func.trim(models.EmpDet.emp_id)))
-            .filter(func.lower(models.TimesheetDet.status) == "pending")
-            .filter(cutoff_filter(
-                models.TimesheetDet.status,
-                models.TimesheetDet.last_update_date,
-                models.TimesheetDet.creation_date))
-        )
-        if manager_id and manager_id.strip().lower() != 'all':
-            q_timesheets = q_timesheets.filter(
-                func.lower(func.trim(models.EmpDet.manager_id)) == manager_id.strip().lower())
-
-        for ts, emp in q_timesheets.order_by(
-                case((func.lower(models.TimesheetDet.status) == 'pending', 0), else_=1),
-                func.coalesce(models.TimesheetDet.last_update_date,
-                              models.TimesheetDet.creation_date).desc()
-        ).limit(30).all():
-            try:
-                emp_name = emp.name if emp else "Unknown"
-                st = ts.status or 'Pending'
-                update_time = ts.last_update_date or ts.creation_date
-                notifications.append({
-                    "id": f"timesheet_{ts.t_id}",
-                    "record_id": ts.t_id,
-                    "type": status_type(st),
-                    "notification_type": "timesheet",
-                    "title": f"Timesheet - {emp_name}",
-                    "message": f"{status_label(st)} | {ts.date} - {ts.project or 'N/A'}",
-                    "time": str(update_time or "Recently"),
-                    "icon": status_icon(st),
-                    "screen": "/AdminTimesheet"
-                })
-            except Exception as e:
-                print(f"   Error formatting Timesheet {ts.t_id}: {e}")
-
-    if True: # Always process standard personal notifications for everyone
-        print(f" EMPLOYEE notifications for {user_id} - SHOWING ONLY APPROVED/REJECTED")
-
-        for leave in (
-                db.query(models.EmpLeave)
-                .filter(
-                    func.lower(func.trim(models.EmpLeave.emp_id)) == user_id.lower(),
-                    func.lower(models.EmpLeave.status).in_(["approved", "rejected"]),
-                    cutoff_filter(
-                        models.EmpLeave.status,
-                        models.EmpLeave.last_update_date,
-                        models.EmpLeave.creation_date))
-                .order_by(func.coalesce(models.EmpLeave.last_update_date,
-                                        models.EmpLeave.creation_date).desc())
-                .limit(30).all()
-        ):
-            st = leave.status or 'Pending'
-            update_time = leave.last_update_date or leave.creation_date
-            notifications.append({
-                "id": f"leave_{leave.l_id}",
-                "record_id": leave.l_id,
-                "type": status_type(st),
-                "notification_type": "leave",
-                "title": f"Leave {status_label(st)}",
-                "message": (f"{leave.leave_type}: {leave.from_date} to "
-                            f"{leave.to_date} ({leave.days} days)"),
-                "time": str(update_time or "Recently"),
-                "icon": status_icon(st),
-                "screen": f"/EmployeeLeave?tab=history&id={leave.l_id}"
-            })
-
-        for perm in (
-                db.query(models.EmpPermission)
-                .filter(
-                    func.lower(func.trim(models.EmpPermission.emp_id)) == user_id.lower(),
-                    func.lower(models.EmpPermission.status).in_(["approved", "rejected"]),
-                    cutoff_filter(
-                        models.EmpPermission.status,
-                        models.EmpPermission.last_update_date,
-                        models.EmpPermission.creation_date))
-                .order_by(func.coalesce(models.EmpPermission.last_update_date,
-                                        models.EmpPermission.creation_date).desc())
-                .limit(30).all()
-        ):
-            st = perm.status or 'Pending'
-            p_date_str = (perm.date.strftime('%d-%b-%Y')
-                          if perm.date and hasattr(perm.date, 'strftime')
-                          else str(perm.date or ''))
-            update_time = perm.last_update_date or perm.creation_date
-            notifications.append({
-                "id": f"permission_{perm.p_id}",
-                "record_id": perm.p_id,
-                "type": status_type(st),
-                "notification_type": "permission",
-                "title": f"Permission {status_label(st)}",
-                "message": f"Permission on {p_date_str}",
-                "time": str(update_time or "Recently"),
-                "icon": status_icon(st),
-                "screen": f"/EmployeePermission?tab=history&id={perm.p_id}"
-            })
-
-        for ot in (
-                db.query(models.OverTimeDet)
-                .filter(
-                    func.lower(func.trim(models.OverTimeDet.emp_id)) == user_id.lower(),
-                    func.lower(models.OverTimeDet.status).in_(["pending", "approved", "rejected"]),
-                    cutoff_filter(
-                        models.OverTimeDet.status,
-                        models.OverTimeDet.last_update_date,
-                        models.OverTimeDet.creation_date))
-                .order_by(func.coalesce(models.OverTimeDet.last_update_date,
-                                        models.OverTimeDet.creation_date).desc())
-                .limit(30).all()
-        ):
-            st = ot.status or 'Pending'
-            update_time = ot.last_update_date or ot.creation_date
-            notifications.append({
-                "id": f"ot_{ot.ot_id}",
-                "record_id": ot.ot_id,
-                "type": status_type(st),
-                "notification_type": "ot",
-                "title": f"OT {status_label(st)}",
-                "message": f"OT on {ot.ot_date}: {ot.duration} hrs",
-                "time": str(update_time or "Recently"),
-                "icon": status_icon(st),
-                "screen": f"/EmployeeOt?tab=history&id={ot.ot_id}"
-            })
-
+        # ── Leaves (pending) ──────────────────────────────────────────────────
         try:
-            for wfh in (
-                    db.query(models.WFHDet)
-                    .filter(
-                        func.lower(func.trim(models.WFHDet.emp_id)) == user_id.lower(),
-                        func.lower(models.WFHDet.status).in_(["pending", "approved", "rejected"]),
-                        cutoff_filter(
-                            models.WFHDet.status,
-                            models.WFHDet.last_update_date,
-                            models.WFHDet.creation_date))
-                    .order_by(func.coalesce(models.WFHDet.last_update_date,
-                                            models.WFHDet.creation_date).desc())
-                    .limit(30).all()
-            ):
-                st = wfh.status or 'Pending'
+            q = (
+                db.query(models.EmpLeave, models.EmpDet)
+                .outerjoin(models.EmpDet,
+                    func.lower(func.trim(models.EmpLeave.emp_id)) ==
+                    func.lower(func.trim(models.EmpDet.emp_id)))
+                .filter(func.lower(func.trim(models.EmpLeave.status)) == "pending")
+                .filter(cutoff_filter(models.EmpLeave.last_update_date, models.EmpLeave.creation_date))
+            )
+            q = apply_manager_filter(q, models.EmpDet)
+
+            for leave, emp in q.order_by(standard_order(
+                models.EmpLeave.last_update_date, models.EmpLeave.creation_date
+            )).limit(30).all():
+                emp_name = (emp.name if emp else None) or "Unknown"
+                st = (leave.status or 'Pending').strip()
+                update_time = leave.last_update_date or leave.creation_date or leave.applied_date
+                notifications.append({
+                    "id": f"admin_leave_{leave.l_id}",
+                    "record_id": leave.l_id,
+                    "type": _status_type(st),
+                    "notification_type": "leave",
+                    "title": f"Leave Request – {emp_name}",
+                    "message": f"{_status_label(st)} | {leave.leave_type}: {leave.from_date} to {leave.to_date} ({leave.days} days)",
+                    "time": str(update_time or "Recently"),
+                    "icon": _status_icon(st),
+                    "screen": f"/AdminLeave?tab=myApproval&l_id={leave.l_id}"
+                })
+        except Exception as e:
+            print(f"  ❌ Admin leaves error: {e}")
+            traceback.print_exc()
+
+        # ── Overtime (pending) ────────────────────────────────────────────────
+        try:
+            q = (
+                db.query(models.OverTimeDet, models.EmpDet)
+                .outerjoin(models.EmpDet,
+                    func.lower(func.trim(models.OverTimeDet.emp_id)) ==
+                    func.lower(func.trim(models.EmpDet.emp_id)))
+                .filter(func.lower(func.trim(models.OverTimeDet.status)) == "pending")
+                .filter(cutoff_filter(models.OverTimeDet.last_update_date, models.OverTimeDet.creation_date))
+            )
+            q = apply_manager_filter(q, models.EmpDet)
+
+            for ot, emp in q.order_by(standard_order(
+                models.OverTimeDet.last_update_date, models.OverTimeDet.creation_date
+            )).limit(30).all():
+                emp_name = (emp.name if emp else None) or "Unknown"
+                st = (ot.status or 'Pending').strip()
+                update_time = ot.last_update_date or ot.creation_date
+                notifications.append({
+                    "id": f"admin_ot_{ot.ot_id}",
+                    "record_id": ot.ot_id,
+                    "type": _status_type(st),
+                    "notification_type": "ot",
+                    "title": f"OT Request – {emp_name}",
+                    "message": f"{_status_label(st)} | {ot.ot_date}: {ot.duration} hrs",
+                    "time": str(update_time or "Recently"),
+                    "icon": _status_icon(st),
+                    "screen": f"/AdminOt?tab=myApproval&ot_id={ot.ot_id}"
+                })
+        except Exception as e:
+            print(f"  ❌ Admin OT error: {e}")
+            traceback.print_exc()
+
+        # ── WFH (pending) ─────────────────────────────────────────────────────
+        try:
+            q = (
+                db.query(models.WFHDet, models.EmpDet)
+                .outerjoin(models.EmpDet,
+                    func.lower(func.trim(models.WFHDet.emp_id)) ==
+                    func.lower(func.trim(models.EmpDet.emp_id)))
+                .filter(func.lower(func.trim(models.WFHDet.status)) == "pending")
+                .filter(cutoff_filter(models.WFHDet.last_update_date, models.WFHDet.creation_date))
+            )
+            q = apply_manager_filter(q, models.EmpDet)
+
+            for wfh, emp in q.order_by(standard_order(
+                models.WFHDet.last_update_date, models.WFHDet.creation_date
+            )).limit(30).all():
+                emp_name = (emp.name if emp else None) or "Unknown"
+                st = (wfh.status or 'Pending').strip()
                 update_time = wfh.last_update_date or wfh.creation_date
                 notifications.append({
-                    "id": f"wfh_{wfh.wfh_id}",
+                    "id": f"admin_wfh_{wfh.wfh_id}",
                     "record_id": wfh.wfh_id,
-                    "type": status_type(st),
+                    "type": _status_type(st),
                     "notification_type": "wfh",
-                    "title": f"WFH {status_label(st)}",
-                    "message": f"WFH: {wfh.from_date} to {wfh.to_date}",
+                    "title": f"WFH Request – {emp_name}",
+                    "message": f"{_status_label(st)} | {wfh.from_date} to {wfh.to_date}",
                     "time": str(update_time or "Recently"),
-                    "icon": status_icon(st),
-                    "screen": f"/EmployeeWfh?tab=history&id={wfh.wfh_id}"
+                    "icon": _status_icon(st),
+                    "screen": f"/AdminWfh?tab=myApproval&wfh_id={wfh.wfh_id}"
                 })
-        except Exception as wfh_error:
-            print(f" Error fetching WFH notifications: {wfh_error}")
+        except Exception as e:
+            print(f"  ❌ Admin WFH error: {e}")
+            traceback.print_exc()
 
-        for ts in (
-                db.query(models.TimesheetDet)
-                .filter(
-                    func.lower(func.trim(models.TimesheetDet.emp_id)) == user_id.lower(),
-                    func.lower(models.TimesheetDet.status).in_(["pending", "approved", "rejected"]),
-                    cutoff_filter(
-                        models.TimesheetDet.status,
-                        models.TimesheetDet.last_update_date,
-                        models.TimesheetDet.creation_date))
-                .order_by(func.coalesce(models.TimesheetDet.last_update_date,
-                                        models.TimesheetDet.creation_date).desc())
-                .limit(30).all()
+        # ── Timesheets (pending) ──────────────────────────────────────────────
+        try:
+            q = (
+                db.query(models.TimesheetDet, models.EmpDet)
+                .outerjoin(models.EmpDet,
+                    func.lower(func.trim(models.TimesheetDet.emp_id)) ==
+                    func.lower(func.trim(models.EmpDet.emp_id)))
+                .filter(func.lower(func.trim(models.TimesheetDet.status)) == "pending")
+                .filter(cutoff_filter(models.TimesheetDet.last_update_date, models.TimesheetDet.creation_date))
+            )
+            q = apply_manager_filter(q, models.EmpDet)
+
+            for ts, emp in q.order_by(standard_order(
+                models.TimesheetDet.last_update_date, models.TimesheetDet.creation_date
+            )).limit(30).all():
+                emp_name = (emp.name if emp else None) or "Unknown"
+                st = (ts.status or 'Pending').strip()
+                update_time = ts.last_update_date or ts.creation_date
+                notifications.append({
+                    "id": f"admin_timesheet_{ts.t_id}",
+                    "record_id": ts.t_id,
+                    "type": _status_type(st),
+                    "notification_type": "timesheet",
+                    "title": f"Timesheet – {emp_name}",
+                    "message": f"{_status_label(st)} | {ts.date} – {ts.project or 'N/A'}",
+                    "time": str(update_time or "Recently"),
+                    "icon": _status_icon(st),
+                    "screen": "/AdminTimesheet"
+                })
+        except Exception as e:
+            print(f"  ❌ Admin Timesheet error: {e}")
+            traceback.print_exc()
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # BLOCK B — EMPLOYEE personal notifications (ALL roles get this block)
+    # Shows their OWN approved/rejected items so they know what happened.
+    # FIX 3: IDs are different from admin block (no "admin_" prefix) so no collision
+    # ═══════════════════════════════════════════════════════════════════════════
+    print(f"  → Employee personal block for {user_id}")
+
+    # ── Own Leaves (approved / rejected) ─────────────────────────────────────
+    try:
+        for leave in (
+            db.query(models.EmpLeave)
+            .filter(
+                func.lower(func.trim(models.EmpLeave.emp_id)) == user_id,
+                func.lower(func.trim(models.EmpLeave.status)).in_(["approved", "rejected"]),
+                cutoff_filter(models.EmpLeave.last_update_date, models.EmpLeave.creation_date)
+            )
+            .order_by(func.coalesce(models.EmpLeave.last_update_date, models.EmpLeave.creation_date).desc())
+            .limit(30).all()
         ):
-            st = ts.status or 'Pending'
+            st = (leave.status or 'Pending').strip()
+            update_time = leave.last_update_date or leave.creation_date
+            notifications.append({
+                "id": f"emp_leave_{leave.l_id}",
+                "record_id": leave.l_id,
+                "type": _status_type(st),
+                "notification_type": "leave",
+                "title": f"Leave {_status_label(st)}",
+                "message": f"{leave.leave_type}: {leave.from_date} to {leave.to_date} ({leave.days} days)",
+                "time": str(update_time or "Recently"),
+                "icon": _status_icon(st),
+                "screen": f"/EmployeeLeave?tab=history&id={leave.l_id}"
+            })
+    except Exception as e:
+        print(f"  ❌ Employee leaves error: {e}")
+
+    # ── Own Permissions (approved / rejected) ─────────────────────────────────
+    try:
+        for perm in (
+            db.query(models.EmpPermission)
+            .filter(
+                func.lower(func.trim(models.EmpPermission.emp_id)) == user_id,
+                func.lower(func.trim(models.EmpPermission.status)).in_(["approved", "rejected"]),
+                cutoff_filter(models.EmpPermission.last_update_date, models.EmpPermission.creation_date)
+            )
+            .order_by(func.coalesce(models.EmpPermission.last_update_date, models.EmpPermission.creation_date).desc())
+            .limit(30).all()
+        ):
+            st = (perm.status or 'Pending').strip()
+            update_time = perm.last_update_date or perm.creation_date
+            notifications.append({
+                "id": f"emp_permission_{perm.p_id}",
+                "record_id": perm.p_id,
+                "type": _status_type(st),
+                "notification_type": "permission",
+                "title": f"Permission {_status_label(st)}",
+                "message": f"Permission on {_fmt_date(perm.date)}",
+                "time": str(update_time or "Recently"),
+                "icon": _status_icon(st),
+                "screen": f"/EmployeePermission?tab=history&id={perm.p_id}"
+            })
+    except Exception as e:
+        print(f"  ❌ Employee permissions error: {e}")
+
+    # ── Own OT (pending / approved / rejected) ────────────────────────────────
+    # FIX 4: OT shows all statuses for employee (they need to know pending too)
+    try:
+        for ot in (
+            db.query(models.OverTimeDet)
+            .filter(
+                func.lower(func.trim(models.OverTimeDet.emp_id)) == user_id,
+                func.lower(func.trim(models.OverTimeDet.status)).in_(["pending", "approved", "rejected"]),
+                cutoff_filter(models.OverTimeDet.last_update_date, models.OverTimeDet.creation_date)
+            )
+            .order_by(func.coalesce(models.OverTimeDet.last_update_date, models.OverTimeDet.creation_date).desc())
+            .limit(30).all()
+        ):
+            st = (ot.status or 'Pending').strip()
+            update_time = ot.last_update_date or ot.creation_date
+            notifications.append({
+                "id": f"emp_ot_{ot.ot_id}",
+                "record_id": ot.ot_id,
+                "type": _status_type(st),
+                "notification_type": "ot",
+                "title": f"OT {_status_label(st)}",
+                "message": f"OT on {ot.ot_date}: {ot.duration} hrs",
+                "time": str(update_time or "Recently"),
+                "icon": _status_icon(st),
+                "screen": f"/EmployeeOt?tab=history&id={ot.ot_id}"
+            })
+    except Exception as e:
+        print(f"  ❌ Employee OT error: {e}")
+
+    # ── Own WFH (pending / approved / rejected) ───────────────────────────────
+    try:
+        for wfh in (
+            db.query(models.WFHDet)
+            .filter(
+                func.lower(func.trim(models.WFHDet.emp_id)) == user_id,
+                func.lower(func.trim(models.WFHDet.status)).in_(["pending", "approved", "rejected"]),
+                cutoff_filter(models.WFHDet.last_update_date, models.WFHDet.creation_date)
+            )
+            .order_by(func.coalesce(models.WFHDet.last_update_date, models.WFHDet.creation_date).desc())
+            .limit(30).all()
+        ):
+            st = (wfh.status or 'Pending').strip()
+            update_time = wfh.last_update_date or wfh.creation_date
+            notifications.append({
+                "id": f"emp_wfh_{wfh.wfh_id}",
+                "record_id": wfh.wfh_id,
+                "type": _status_type(st),
+                "notification_type": "wfh",
+                "title": f"WFH {_status_label(st)}",
+                "message": f"WFH: {wfh.from_date} to {wfh.to_date}",
+                "time": str(update_time or "Recently"),
+                "icon": _status_icon(st),
+                "screen": f"/EmployeeWfh?tab=history&id={wfh.wfh_id}"
+            })
+    except Exception as e:
+        print(f"  ❌ Employee WFH error: {e}")
+
+    # ── Own Timesheets (pending / approved / rejected) ────────────────────────
+    try:
+        for ts in (
+            db.query(models.TimesheetDet)
+            .filter(
+                func.lower(func.trim(models.TimesheetDet.emp_id)) == user_id,
+                func.lower(func.trim(models.TimesheetDet.status)).in_(["pending", "approved", "rejected"]),
+                cutoff_filter(models.TimesheetDet.last_update_date, models.TimesheetDet.creation_date)
+            )
+            .order_by(func.coalesce(models.TimesheetDet.last_update_date, models.TimesheetDet.creation_date).desc())
+            .limit(30).all()
+        ):
+            st = (ts.status or 'Pending').strip()
             update_time = ts.last_update_date or ts.creation_date
             notifications.append({
-                "id": f"timesheet_{ts.t_id}",
+                "id": f"emp_timesheet_{ts.t_id}",
                 "record_id": ts.t_id,
-                "type": status_type(st),
+                "type": _status_type(st),
                 "notification_type": "timesheet",
-                "title": f"Timesheet {status_label(st)}",
-                "message": f"Timesheet: {ts.date} - {ts.project or 'N/A'}",
+                "title": f"Timesheet {_status_label(st)}",
+                "message": f"Timesheet: {ts.date} – {ts.project or 'N/A'}",
                 "time": str(update_time or "Recently"),
-                "icon": status_icon(st),
+                "icon": _status_icon(st),
                 "screen": "/EmployeeTimesheet"
             })
+    except Exception as e:
+        print(f"  ❌ Employee Timesheet error: {e}")
 
-    print(f" Returning {len(notifications)} notifications for {user_id}")
+    print(f"✅ Returning {len(notifications)} notifications for {user_id} (role={role})")
     return notifications
 
 
-@app.post("/notifications/clear-all/{user_id}")
+# ─── POST /notifications/clear-all/{user_id} ─────────────────────────────────
+
+@router.post("/notifications/clear-all/{user_id}")
 def clear_all_notifications(user_id: str, db: Session = Depends(get_db)):
-    user_id = user_id.strip()
+    """
+    Saves the current timestamp into attribute8 of the employee record.
+    Next call to get_notifications will use this as the cutoff — hiding
+    everything created/updated before this moment.
+    """
+    user_id = user_id.strip().lower()
+
     user = db.query(models.EmpDet).filter(
-        func.lower(func.trim(models.EmpDet.emp_id)) == user_id.lower()
+        func.lower(func.trim(models.EmpDet.emp_id)) == user_id
     ).first()
+
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    user.attribute8 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        raise HTTPException(status_code=404, detail=f"User '{user_id}' not found")
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    user.attribute8 = now_str
     db.commit()
-    return {"message": "All notifications cleared"}
+
+    print(f"✅ Cleared all notifications for {user_id} at {now_str}")
+    return {"message": "All notifications cleared", "cleared_at": now_str}
 
 
 @app.post("/apply-ot")
@@ -3433,3 +3470,5 @@ def create_client(client_req: schemas.ClientApplyRequest, db: Session = Depends(
         print(f"ERROR: Failed to create client: {str(e)}")
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
+
+app.include_router(router)
