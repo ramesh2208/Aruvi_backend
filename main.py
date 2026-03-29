@@ -137,43 +137,54 @@ def parse_date(d):
 
 # FIX: Added missing parse_time_str function
 def parse_time_str(t_str: str):
-    """Parse time string into a datetime object (date part set to 1900-01-01)"""
-    if not t_str: return None
+    """
+    Parse time string into a datetime object (date part 1900-01-01).
+    Handles: '09:30 AM', '09:30:00 AM', '13:30', '13:30:00'
+    """
+    if not t_str:
+        return None
     t_str = t_str.strip().upper()
+ 
+    # Try standard formats first
     formats = (
-        "%I:%M:%S %p", "%I:%M %p", "%I:%M%p",
-        "%H:%M:%S", "%H:%M", "%H:%M %p"
+        "%I:%M:%S %p",   # 09:30:00 AM
+        "%I:%M %p",      # 09:30 AM
+        "%I:%M%p",       # 09:30AM
+        "%H:%M:%S",      # 13:30:00
+        "%H:%M",         # 13:30
     )
     for fmt in formats:
         try:
             return datetime.strptime(t_str, fmt).replace(year=1900, month=1, day=1)
-        except:
+        except ValueError:
             continue
-    # Last ditch effort: regex for simple extraction
-    import re
-    # Match digits and optional AM/PM. Handles dots or colons.
+ 
+    # Fallback: regex extraction
     match = re.search(r"(\d{1,2})[:.](\d{2})(?::(\d{2}))?\s*([AP]M)?", t_str)
     if match:
-        h_str, m_str, s_str, p = match.groups()
+        h_str, m_str, s_str, period = match.groups()
         h, m = int(h_str), int(m_str)
         s = int(s_str) if s_str else 0
-        if p == "PM" and h < 12: h += 12
-        if p == "AM" and h == 12: h = 0
+        if period == "PM" and h < 12:
+            h += 12
+        if period == "AM" and h == 12:
+            h = 0
         try:
             return datetime(1900, 1, 1, h, m, s)
-        except:
+        except ValueError:
             return None
     return None
-
-
+ 
+ 
 def format_time_safe(t):
-    if not t: return ""
-    if isinstance(t, str): return t
+    """Safely format time object or string to '09:30 AM' format."""
+    if not t:
+        return ""
+    if isinstance(t, str):
+        return t
     if hasattr(t, "strftime"):
-        # Returns 12-hour format like '1:00 PM'
-        return t.strftime("%I:%M %p").lstrip('0')
+        return t.strftime("%I:%M %p").lstrip('0') or "12:00 AM"
     return str(t)
-
 
 @app.post("/login", response_model=schemas.Token)
 def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
@@ -1811,104 +1822,150 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
 @app.get("/admin/pending-permissions")
 def get_pending_permissions(manager_id: Optional[str] = None, db: Session = Depends(get_db)):
     query = db.query(models.EmpPermission, models.EmpDet).join(
-        models.EmpDet, func.lower(func.trim(models.EmpPermission.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id))
-    ).filter(models.EmpPermission.status == "Pending")
+        models.EmpDet,
+        func.lower(func.trim(models.EmpPermission.emp_id)) ==
+        func.lower(func.trim(models.EmpDet.emp_id))
+    ).filter(
+        func.lower(func.trim(models.EmpPermission.status)) == "pending"
+    )
+ 
     if manager_id:
         query = query.filter(
-            func.lower(func.trim(models.EmpDet.manager_id)) == manager_id.strip().lower())
+            func.lower(func.trim(models.EmpDet.manager_id)) == manager_id.strip().lower()
+        )
+ 
     pending = query.order_by(models.EmpPermission.creation_date.desc()).all()
+ 
     results = []
     for perm, emp in pending:
+        try:
+            date_str = perm.date.strftime("%d-%b-%Y") if perm.date else ""
+        except Exception:
+            date_str = str(perm.date) if perm.date else ""
+ 
+        f_time_str = format_time_safe(perm.f_time)
+        t_time_str = format_time_safe(perm.t_time)
+ 
         results.append({
-            "p_id": perm.p_id,
-            "emp_name": emp.name or "Unknown",
-            "emp_id": emp.emp_id or "N/A",
-            "date": perm.date.strftime("%d-%b-%Y") if perm.date else "",
-            "time": f"{format_time_safe(perm.f_time)} to {format_time_safe(perm.t_time)}",
-            "fromTime": format_time_safe(perm.f_time),
-            "toTime": format_time_safe(perm.t_time),
-            "f_time": format_time_safe(perm.f_time),
-            "t_time": format_time_safe(perm.t_time),
-            "total_hours": perm.total_hours or "0.0",
-            "dis_total_hours": perm.dis_total_hours or "0.0",
-            "reason": perm.reason or "No reason",
-            "remarks": perm.remarks or "",
-            "status": perm.status or "Pending"
+            "p_id":             perm.p_id,
+            "emp_name":         emp.name or "Unknown",
+            "emp_id":           emp.emp_id or "N/A",
+            "date":             date_str,
+            "time":             f"{f_time_str} to {t_time_str}",
+            "fromTime":         f_time_str,
+            "toTime":           t_time_str,
+            "f_time":           f_time_str,
+            "t_time":           t_time_str,
+            "total_hours":      str(perm.total_hours or "0"),
+            "dis_total_hours":  str(perm.dis_total_hours or "0"),
+            "permitted_hours":  str(perm.permitted_permission or "0"),
+            "lop_hours":        str(perm.lop_hours or "0"),
+            "reason":           perm.reason or "No reason",
+            "remarks":          perm.remarks or "",
+            "status":           perm.status or "Pending",
+            "applied_date":     str(perm.applied_date) if perm.applied_date else "",
+            "creation_date":    str(perm.creation_date) if perm.creation_date else "",
         })
     return results
 
 
 @app.get("/admin/all-permission-history")
 def get_all_permission_history(manager_id: Optional[str] = None, db: Session = Depends(get_db)):
-    print(f"\n--- FETCH ALL PERMISSION HISTORY: Manager={manager_id} ---")
+    print(f"\\n--- FETCH ALL PERMISSION HISTORY: Manager={manager_id} ---")
+ 
     query = db.query(models.EmpPermission, models.EmpDet).join(
-        models.EmpDet, func.lower(func.trim(models.EmpPermission.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id))
+        models.EmpDet,
+        func.lower(func.trim(models.EmpPermission.emp_id)) ==
+        func.lower(func.trim(models.EmpDet.emp_id))
     )
+ 
     if manager_id:
         query = query.filter(
-            func.lower(func.trim(models.EmpDet.manager_id)) == manager_id.strip().lower())
+            func.lower(func.trim(models.EmpDet.manager_id)) == manager_id.strip().lower()
+        )
+ 
     all_perms = query.order_by(models.EmpPermission.creation_date.desc()).all()
     print(f"   Found {len(all_perms)} records")
+ 
     results = []
     for perm, emp in all_perms:
+        try:
+            date_str = perm.date.strftime("%d-%b-%Y") if perm.date else ""
+        except Exception:
+            date_str = str(perm.date) if perm.date else ""
+ 
+        f_time_str = format_time_safe(perm.f_time)
+        t_time_str = format_time_safe(perm.t_time)
+ 
         results.append({
-            "p_id": perm.p_id,
-            "emp_name": emp.name or "Unknown",
-            "emp_id": emp.emp_id or "N/A",
-            "date": perm.date.strftime("%d-%b-%Y") if perm.date else "",
-            "time": f"{format_time_safe(perm.f_time)} to {format_time_safe(perm.t_time)}",
-            "fromTime": format_time_safe(perm.f_time),
-            "toTime": format_time_safe(perm.t_time),
-            "f_time": format_time_safe(perm.f_time),
-            "t_time": format_time_safe(perm.t_time),
-            "total_hours": perm.total_hours or "0.0",
-            "dis_total_hours": perm.dis_total_hours or "0.0",
-            "reason": perm.reason or "No reason",
-            "remarks": perm.remarks or "",
-            "status": perm.status or "Pending"
+            "p_id":             perm.p_id,
+            "emp_name":         emp.name or "Unknown",
+            "emp_id":           emp.emp_id or "N/A",
+            "date":             date_str,
+            "time":             f"{f_time_str} to {t_time_str}",
+            "fromTime":         f_time_str,
+            "toTime":           t_time_str,
+            "f_time":           f_time_str,
+            "t_time":           t_time_str,
+            "total_hours":      str(perm.total_hours or "0"),
+            "dis_total_hours":  str(perm.dis_total_hours or "0"),
+            "permitted_hours":  str(perm.permitted_permission or "0"),
+            "lop_hours":        str(perm.lop_hours or "0"),
+            "reason":           perm.reason or "No reason",
+            "remarks":          perm.remarks or "",
+            "status":           perm.status or "Pending",
+            "applied_date":     str(perm.applied_date) if perm.applied_date else "",
+            "creation_date":    str(perm.creation_date) if perm.creation_date else "",
+            "last_update_date": str(perm.last_update_date) if perm.last_update_date else "",
         })
     return results
 
 
 @app.post("/apply-permission")
-def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: BackgroundTasks,
-                     db: Session = Depends(get_db)):
-    print(f"\n--- APPLY PERMISSION ATTEMPT ---")
-    print(f" Request Data: {request.dict()}")
+def apply_permission(
+    request: schemas.PermissionApplyRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    print(f"\\n--- APPLY PERMISSION ---")
+    print(f"   Request: {request.dict()}")
+ 
     try:
         target_emp_id = (request.emp_id or "").strip().lower()
+ 
         user = db.query(models.EmpDet).filter(
-            func.lower(func.trim(models.EmpDet.emp_id)) == target_emp_id).first()
+            func.lower(func.trim(models.EmpDet.emp_id)) == target_emp_id
+        ).first()
+ 
         if not user:
-            print(f"   Error: Employee {target_emp_id} not found")
             raise HTTPException(status_code=404, detail="Employee not found")
-
-        print(f"   Found User: {user.name} (Manager: {user.manager_id})")
+ 
+        print(f"   Found user: {user.name} | manager: {user.manager_id}")
+ 
+        # ── Parse date ────────────────────────────────────────
         p_date_dt = parse_date(request.date)
         if not p_date_dt:
-            print(f"   Error: Invalid date format {request.date}")
-            raise HTTPException(status_code=400, detail="Invalid date format")
+            raise HTTPException(status_code=400, detail=f"Invalid date format: {request.date}")
         p_date = p_date_dt.date()
-
-        # FIX: Uses the now-defined parse_time_str
+ 
+        # ── Parse times ───────────────────────────────────────
         f_time_dt = parse_time_str(request.f_time)
         t_time_dt = parse_time_str(request.t_time)
-        if not f_time_dt or not t_time_dt:
-            raise HTTPException(status_code=400, detail="Invalid time format")
-
-        assert f_time_dt is not None
-        assert t_time_dt is not None
-
+ 
+        if not f_time_dt:
+            raise HTTPException(status_code=400, detail=f"Invalid from time format: {request.f_time}")
+        if not t_time_dt:
+            raise HTTPException(status_code=400, detail=f"Invalid to time format: {request.t_time}")
+ 
+        # ── Calculate duration ────────────────────────────────
         h1, m1 = f_time_dt.hour, f_time_dt.minute
         h2, m2 = t_time_dt.hour, t_time_dt.minute
         diff_mins = (h2 * 60 + m2) - (h1 * 60 + m1)
-        if diff_mins < 0:
-            diff_mins += 24 * 60
-
+ 
         if diff_mins <= 0:
             raise HTTPException(status_code=400, detail="To Time must be after From Time")
-
-        # Revised Permission Logic based on user request (Point 4)
+ 
+        # Permission logic: same as frontend
         if diff_mins <= 60:
             approved_hrs = 1.0
             lop_hrs = 0.0
@@ -1918,38 +1975,45 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
         else:
             approved_hrs = 2.0
             lop_hrs = (diff_mins - 120.0) / 60.0
-
-        # Check for duplicate FIRST before modifying user balance
-        duplicate_perm = db.query(models.EmpPermission).filter(
-            func.lower(func.trim(models.EmpPermission.emp_id)) == target_emp_id.lower(),
+ 
+        total_hrs_val = diff_mins / 60.0
+ 
+        print(f"   Duration: {diff_mins} mins | Approved: {approved_hrs} hrs | LOP: {lop_hrs} hrs")
+ 
+        # ── Duplicate check ───────────────────────────────────
+        duplicate = db.query(models.EmpPermission).filter(
+            func.lower(func.trim(models.EmpPermission.emp_id)) == target_emp_id,
             models.EmpPermission.date == p_date,
             func.lower(func.trim(models.EmpPermission.status)).in_(["pending", "approved"])
         ).first()
-        if duplicate_perm:
-            raise HTTPException(status_code=400,
-                                detail=f"Permission already applied for {request.date}.")
-
-        # Now update remaining_perm in xxits_emp_det_t
-        curr_val = str(user.remaining_perm or "0").strip()
+ 
+        if duplicate:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Permission already applied for {request.date}."
+            )
+ 
+        # ── Update remaining_perm ─────────────────────────────
         try:
-            curr_perm = float(curr_val) if curr_val else 0.0
+            curr_val = str(user.remaining_perm or "").strip()
+            if not curr_val or curr_val in ("None", ""):
+                # Initialize from total permission
+                try:
+                    curr_perm = float(str(user.permission or "0").strip())
+                except Exception:
+                    curr_perm = 4.0  # default 4 hours
+            else:
+                curr_perm = float(curr_val)
         except Exception:
-            # Try to initialize from the permission field if remaining_perm is empty
-            try:
-                curr_perm = float(str(user.permission or "4").strip())
-            except Exception:
-                curr_perm = 4.0
-
+            curr_perm = 4.0
+ 
         new_remaining = max(0.0, curr_perm - approved_hrs)
         user.remaining_perm = str(round(new_remaining, 2))
-        # Also keep permission in sync (total allocated stays the same, only remaining changes)
-        if not user.permission:
-            user.permission = user.remaining_perm  # set if never initialized
-
-        total_hrs_val = diff_mins / 60.0
-
+        print(f"   Permission balance: {curr_perm} -> {new_remaining}")
+ 
+        # ── Insert permission record ──────────────────────────
         new_perm = models.EmpPermission(
-            emp_id=(user.emp_id or "").strip(),
+            emp_id=user.emp_id.strip(),
             date=p_date,
             f_time=f_time_dt.time(),
             t_time=t_time_dt.time(),
@@ -1967,104 +2031,158 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
         db.add(new_perm)
         db.commit()
         db.refresh(new_perm)
-        print(f"   Success: Inserted permission {new_perm.p_id}")
-
-        if user and user.manager_id:
-            manager = db.query(models.EmpDet).filter(
-                func.trim(models.EmpDet.emp_id) == user.manager_id.strip()).first()
-            if manager and manager.p_mail:
-                subject = f"ITS - {user.name} - Permission Request | {request.date} | {request.f_time} to {request.t_time}"
-
-                # Format time nicely for email display
-                try:
-                    f_display = f_time_dt.strftime("%I:%M %p").lstrip('0')
-                    t_display = t_time_dt.strftime("%I:%M %p").lstrip('0')
-                except:
-                    f_display = request.f_time
-                    t_display = request.t_time
-
-                content = f"""
-                <p><strong>Good Day!</strong></p>
-                <p>I hope this mail finds you well.</p>
-                <p>I would like to request permission on <strong>{request.date}</strong> from <strong>{f_display}</strong> to <strong>{t_display}</strong>.</p>
-                <p><strong>Reason:</strong> {request.reason}</p>
-                <p>Thank you for considering my request. Looking forward to your approval.</p>
-                """
-                body = get_email_template(manager.name, "Permission Request", content, user.name)
-                background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
-
-        return {"message": "Permission applied successfully", "p_id": new_perm.p_id}
+ 
+        print(f"   SUCCESS: Inserted permission ID {new_perm.p_id}")
+ 
+        # ── Email notification ────────────────────────────────
+        try:
+            if user.manager_id:
+                manager = db.query(models.EmpDet).filter(
+                    func.lower(func.trim(models.EmpDet.emp_id)) == user.manager_id.strip().lower()
+                ).first()
+                if manager and manager.p_mail:
+                    try:
+                        f_display = f_time_dt.strftime("%I:%M %p").lstrip('0')
+                        t_display = t_time_dt.strftime("%I:%M %p").lstrip('0')
+                    except Exception:
+                        f_display = request.f_time
+                        t_display = request.t_time
+ 
+                    subject = (
+                        f"ITS - {user.name} - Permission Request | "
+                        f"{request.date} | {f_display} to {t_display}"
+                    )
+                    content = f'''
+                    <p><strong>Good Day!</strong></p>
+                    <p>I hope this mail finds you well.</p>
+                    <p>I would like to request permission on <strong>{request.date}</strong>
+                       from <strong>{f_display}</strong> to <strong>{t_display}</strong>.</p>
+                    <p><strong>Approved Hours:</strong> {approved_hrs} hr</p>
+                    {f'<p><strong>LOP Hours:</strong> {round(lop_hrs, 2)} hr</p>' if lop_hrs > 0 else ''}
+                    <p><strong>Reason:</strong> {request.reason}</p>
+                    '''
+                    body = get_email_template(manager.name, "Permission Request", content, user.name)
+                    background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
+        except Exception as mail_err:
+            print(f"   Non-critical email error: {mail_err}")
+ 
+        return {
+            "message": "Permission applied successfully",
+            "p_id": new_perm.p_id,
+            "approved_hrs": approved_hrs,
+            "lop_hrs": round(lop_hrs, 2)
+        }
+ 
     except HTTPException:
         db.rollback()
         raise
     except Exception as e:
         db.rollback()
+        print(f"   CRITICAL ERROR in apply-permission: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Database Error: {str(e)}")
 
-
 @app.post("/admin/approve-permission")
-def approve_permission(request: schemas.PermissionApprovalAction, background_tasks: BackgroundTasks,
-                       db: Session = Depends(get_db)):
+def approve_permission(
+    request: schemas.PermissionApprovalAction,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
     perm = db.query(models.EmpPermission).filter(
-        models.EmpPermission.p_id == request.p_id).first()
+        models.EmpPermission.p_id == request.p_id
+    ).first()
+ 
     if not perm:
         raise HTTPException(status_code=404, detail="Permission request not found")
-    old_status = perm.status
-    perm.status = request.action
-    perm.remarks = request.remarks
+ 
+    old_status = (perm.status or "").strip().lower()
+    new_action = request.action.strip()
+ 
+    perm.status = new_action
+    perm.remarks = request.remarks or ""
     perm.last_update_date = datetime.now()
+ 
     admin_user = db.query(models.EmpDet).filter(
-        models.EmpDet.emp_id == request.admin_id.strip()).first()
+        func.lower(func.trim(models.EmpDet.emp_id)) == request.admin_id.strip().lower()
+    ).first()
+ 
     if admin_user:
-        perm.remarks = f"{(request.remarks or '')} (Action by: {admin_user.name})".strip()
         perm.approved_by = admin_user.name
-    if request.action == 'Rejected' and old_status != 'Rejected':
-        user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == perm.emp_id).first()
+        remark_suffix = f" (Action by: {admin_user.name})"
+        perm.remarks = (request.remarks or "").strip() + remark_suffix
+ 
+    # If rejecting a previously pending request → refund approved hours
+    if new_action.lower() == "rejected" and old_status != "rejected":
+        user = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == (perm.emp_id or "").strip().lower()
+        ).first()
         if user:
             try:
-                if perm.f_time and perm.t_time:
+                # Use permitted_permission field if available, else calculate from times
+                if perm.permitted_permission:
+                    approved_to_refund = float(perm.permitted_permission)
+                elif perm.f_time and perm.t_time:
                     h1, m1 = perm.f_time.hour, perm.f_time.minute
                     h2, m2 = perm.t_time.hour, perm.t_time.minute
                     diff = (h2 * 60 + m2) - (h1 * 60 + m1)
-                    if diff < 0: diff += 24 * 60
+                    if diff < 0:
+                        diff += 24 * 60
                     approved_to_refund = min(diff / 60.0, 2.0)
                 else:
                     approved_to_refund = 0.0
-                curr_perm = float(user.remaining_perm or 0)
-                user.remaining_perm = str(curr_perm + approved_to_refund)
-            except Exception as e:
-                print(f"Refund error: {e}")
+ 
+                curr_rem = float(user.remaining_perm or 0)
+                user.remaining_perm = str(round(curr_rem + approved_to_refund, 2))
+                print(f"Refunded {approved_to_refund} hrs to {user.emp_id}. New remaining: {user.remaining_perm}")
+            except Exception as refund_err:
+                print(f"Refund error: {refund_err}")
+ 
     db.commit()
+ 
+    # Email employee
     try:
         emp_user = db.query(models.EmpDet).filter(
-            func.lower(func.trim(models.EmpDet.emp_id)) == perm.emp_id.strip().lower()
+            func.lower(func.trim(models.EmpDet.emp_id)) == (perm.emp_id or "").strip().lower()
         ).first()
+ 
         if emp_user and emp_user.p_mail:
-            status_msg = request.action  # 'Approved' or 'Rejected'
             perm_date = perm.date.strftime("%d-%b-%Y") if perm.date else "N/A"
             manager_name = admin_user.name if admin_user else "Manager"
-            f_time_str = perm.f_time.strftime("%I:%M %p").lstrip('0') if perm.f_time else "N/A"
-            t_time_str = perm.t_time.strftime("%I:%M %p").lstrip('0') if perm.t_time else "N/A"
-
-            subject = f"ITS - Permission Request {status_msg} - {perm_date}"
-
-            if status_msg.lower() == "approved":
-                action_line = f"I am pleased to inform you that your permission request on <strong>{perm_date}</strong> from <strong>{f_time_str}</strong> to <strong>{t_time_str}</strong> has been <strong style='color:#10B981;'>Approved</strong>."
+            f_time_str = format_time_safe(perm.f_time)
+            t_time_str = format_time_safe(perm.t_time)
+ 
+            subject = f"ITS - Permission Request {new_action} - {perm_date}"
+ 
+            if new_action.lower() == "approved":
+                action_line = (
+                    f"Your permission request on <strong>{perm_date}</strong> "
+                    f"from <strong>{f_time_str}</strong> to <strong>{t_time_str}</strong> "
+                    f"has been <strong style='color:#10B981;'>Approved</strong>."
+                )
             else:
-                action_line = f"We regret to inform you that your permission request on <strong>{perm_date}</strong> from <strong>{f_time_str}</strong> to <strong>{t_time_str}</strong> has been <strong style='color:#EF4444;'>Rejected</strong>."
-
-            content = f"""
+                action_line = (
+                    f"Your permission request on <strong>{perm_date}</strong> "
+                    f"from <strong>{f_time_str}</strong> to <strong>{t_time_str}</strong> "
+                    f"has been <strong style='color:#EF4444;'>Rejected</strong>."
+                )
+ 
+            content = f'''
             <p>Good Day!</p>
-            <p>I hope this mail finds you well.</p>
             <p>{action_line}</p>
             {f'<p><strong>Remarks:</strong> {request.remarks}</p>' if request.remarks else ''}
             <p>Please reach out if you have any questions.</p>
-            """
-            body = get_email_template(emp_user.name, f"Permission Request {status_msg}", content, manager_name)
+            '''
+            body = get_email_template(
+                emp_user.name,
+                f"Permission Request {new_action}",
+                content,
+                manager_name
+            )
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
     except Exception as e:
-        print(f" Email notification failed: {e}")
-    return {"message": f"Permission {request.action.lower()} successfully"}
+        print(f"Email notification failed: {e}")
+ 
+    return {"message": f"Permission {new_action.lower()} successfully"}
 
 
 @app.get("/admin/pending-ot")
@@ -2383,27 +2501,40 @@ def get_wfh_history(emp_id: str, db: Session = Depends(get_db)):
 def get_permission_stats(emp_id: str, db: Session = Depends(get_db)):
     try:
         emp_id_clean = (emp_id or "").strip()
-        user = None
-        try:
-            user = db.query(models.EmpDet).filter(
-                func.lower(func.trim(models.EmpDet.emp_id)) == emp_id_clean.lower()).first()
-        except Exception:
-            # Fallback: plain string match
-            user = db.query(models.EmpDet).filter(
-                models.EmpDet.emp_id == emp_id_clean).first()
+        
+        user = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id_clean.lower()
+        ).first()
+        
         if not user:
             return {"total": 0, "remaining": 0}
+ 
+        # Parse total permission hours
         try:
             total_raw = str(user.permission or "0").strip()
-            total = float(total_raw) if total_raw else 0.0
-        except Exception:
+            total = float(total_raw) if total_raw and total_raw not in ("", "None") else 0.0
+        except (ValueError, TypeError):
             total = 0.0
+ 
+        # Parse remaining permission hours
+        # If remaining_perm is null/empty, initialize it to total
         try:
-            rem_raw = str(user.remaining_perm or "0").strip()
-            remaining = float(rem_raw) if rem_raw else 0.0
-        except Exception:
-            remaining = 0.0
-        return {"total": total, "remaining": remaining}
+            rem_raw = str(user.remaining_perm or "").strip()
+            if not rem_raw or rem_raw in ("None", ""):
+                # First time: remaining = total
+                remaining = total
+                # Optionally persist this initialization:
+                user.remaining_perm = str(round(total, 2))
+                db.commit()
+            else:
+                remaining = float(rem_raw)
+        except (ValueError, TypeError):
+            remaining = total
+ 
+        return {
+            "total": round(total, 2),
+            "remaining": round(remaining, 2)
+        }
     except Exception as e:
         print(f"permission-stats error: {e}")
         return {"total": 0, "remaining": 0}
@@ -2411,37 +2542,55 @@ def get_permission_stats(emp_id: str, db: Session = Depends(get_db)):
 
 @app.get("/permission-history/{emp_id}")
 def get_permission_history(emp_id: str, db: Session = Depends(get_db)):
-    print(f"\n--- FETCH PERMISSION HISTORY: {emp_id} ---")
+    print(f"\\n--- FETCH PERMISSION HISTORY: {emp_id} ---")
     try:
         emp_id_clean = (emp_id or "").strip()
-        try:
-            history = db.query(models.EmpPermission).filter(
-                func.lower(func.trim(models.EmpPermission.emp_id)) == emp_id_clean.lower()
-            ).order_by(models.EmpPermission.p_id.desc()).all()
-        except Exception:
-            history = db.query(models.EmpPermission).filter(
-                models.EmpPermission.emp_id == emp_id_clean
-            ).order_by(models.EmpPermission.p_id.desc()).all()
+        
+        history = db.query(models.EmpPermission).filter(
+            func.lower(func.trim(models.EmpPermission.emp_id)) == emp_id_clean.lower()
+        ).order_by(models.EmpPermission.p_id.desc()).all()
+ 
         print(f"   Found {len(history)} records")
+ 
         result = []
         for row in history:
+            # Safe date formatting
             try:
-                date_str = row.date.strftime("%d-%b-%Y") if hasattr(row.date, 'strftime') else (str(row.date) if row.date else "")
+                if row.date is None:
+                    date_str = ""
+                elif hasattr(row.date, 'strftime'):
+                    date_str = row.date.strftime("%d-%b-%Y")
+                else:
+                    date_str = str(row.date)
             except Exception:
                 date_str = str(row.date) if row.date else ""
+ 
+            # Safe time formatting
+            f_time_str = format_time_safe(row.f_time)
+            t_time_str = format_time_safe(row.t_time)
+ 
             result.append({
-                "p_id": row.p_id, "emp_id": row.emp_id,
-                "date": date_str,
-                "f_time": format_time_safe(row.f_time),
-                "t_time": format_time_safe(row.t_time),
-                "total_hours": row.total_hours, "dis_total_hours": row.dis_total_hours,
-                "reason": row.reason, "status": row.status, "remarks": row.remarks,
-                "creation_date": str(row.creation_date) if row.creation_date else None,
-                "last_update_date": str(row.last_update_date) if row.last_update_date else None
+                "p_id":             row.p_id,
+                "emp_id":           row.emp_id or "",
+                "date":             date_str,
+                "f_time":           f_time_str,
+                "t_time":           t_time_str,
+                "total_hours":      str(row.total_hours or "0"),
+                "dis_total_hours":  str(row.dis_total_hours or "0"),
+                "permitted_hours":  str(row.permitted_permission or "0"),
+                "lop_hours":        str(row.lop_hours or "0"),
+                "reason":           row.reason or "",
+                "status":           row.status or "Pending",
+                "remarks":          row.remarks or "",
+                "approved_by":      row.approved_by or "",
+                "applied_date":     str(row.applied_date) if row.applied_date else "",
+                "creation_date":    str(row.creation_date) if row.creation_date else "",
+                "last_update_date": str(row.last_update_date) if row.last_update_date else "",
             })
         return result
     except Exception as e:
         print(f"permission-history error: {e}")
+        traceback.print_exc()
         return []
 
 
