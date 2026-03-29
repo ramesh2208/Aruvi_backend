@@ -8,6 +8,7 @@ import shutil
 import os
 import requests
 import random
+import re  # Added missing re import
 import string
 import hashlib
 import base64
@@ -149,15 +150,20 @@ def parse_time_str(t_str: str):
     formats = (
         "%I:%M:%S %p",   # 09:30:00 AM
         "%I:%M %p",      # 09:30 AM
+        "%I:%M:%S%p",    # 09:30:00AM
         "%I:%M%p",       # 09:30AM
         "%H:%M:%S",      # 13:30:00
         "%H:%M",         # 13:30
     )
     for fmt in formats:
         try:
+            # strip() and upper() already done at line 146
             return datetime.strptime(t_str, fmt).replace(year=1900, month=1, day=1)
         except ValueError:
             continue
+    
+    # Fallback to single digit hours for platforms that need it in strptime but wait, 
+    # strptime usually handles them, but we can try removing leading zeros if regex fails.
  
     # Fallback: regex extraction
     match = re.search(r"(\d{1,2})[:.](\d{2})(?::(\d{2}))?\s*([AP]M)?", t_str)
@@ -172,18 +178,33 @@ def parse_time_str(t_str: str):
         try:
             return datetime(1900, 1, 1, h, m, s)
         except ValueError:
+            print(f"   Regex parse failed for: {h}:{m}:{s}")
             return None
+    print(f"   parse_time_str: No match for {t_str!r}")
     return None
  
  
 def format_time_safe(t):
-    """Safely format time object or string to '09:30 AM' format."""
+    """Safely format time object, timedelta, or string to '09:30 AM' format."""
     if not t:
         return ""
     if isinstance(t, str):
+        # If it's already a string, try to parse and reformat it for consistency
+        parsed = parse_time_str(t)
+        if parsed:
+            return parsed.strftime("%I:%M %p").lstrip('0') or "12:00 AM"
         return t
     if hasattr(t, "strftime"):
         return t.strftime("%I:%M %p").lstrip('0') or "12:00 AM"
+    # For MySQL timedelta columns returned for TIME type
+    try:
+        from datetime import timedelta
+        if isinstance(t, timedelta):
+            # Create a dummy datetime around 1900-01-01 to use strftime
+            dummy = datetime(1900, 1, 1) + t
+            return dummy.strftime("%I:%M %p").lstrip('0') or "12:00 AM"
+    except:
+        pass
     return str(t)
 
 @app.post("/login", response_model=schemas.Token)
@@ -1949,6 +1970,7 @@ def apply_permission(
         p_date = p_date_dt.date()
  
         # ── Parse times ───────────────────────────────────────
+        print(f"   Parsing times: from={request.f_time!r}, to={request.t_time!r}")
         f_time_dt = parse_time_str(request.f_time)
         t_time_dt = parse_time_str(request.t_time)
  
@@ -2012,11 +2034,12 @@ def apply_permission(
         print(f"   Permission balance: {curr_perm} -> {new_remaining}")
  
         # ── Insert permission record ──────────────────────────
+        print(f"   Inserting perm: {user.emp_id} | {p_date} | {f_time_dt.time()} | {t_time_dt.time()}")
         new_perm = models.EmpPermission(
             emp_id=user.emp_id.strip(),
-            date=p_date,
-            f_time=f_time_dt.time(),
-            t_time=t_time_dt.time(),
+            date=p_date.strftime("%Y-%m-%d"),
+            f_time=f_time_dt.strftime("%H:%M:%S"),
+            t_time=t_time_dt.strftime("%H:%M:%S"),
             reason=request.reason,
             total_hours=f"{total_hrs_val:.2f}",
             dis_total_hours=f"{lop_hrs:.2f}",
@@ -2028,9 +2051,14 @@ def apply_permission(
             creation_date=datetime.now(),
             last_update_date=datetime.now()
         )
-        db.add(new_perm)
-        db.commit()
-        db.refresh(new_perm)
+        try:
+            db.add(new_perm)
+            db.commit()
+            db.refresh(new_perm)
+        except Exception as db_err:
+            print(f"   DATABASE INSERT ERROR: {db_err}")
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Database Format Error: {str(db_err)}")
  
         print(f"   SUCCESS: Inserted permission ID {new_perm.p_id}")
  
