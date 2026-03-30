@@ -2037,19 +2037,22 @@ def apply_permission(
         print(f"   Inserting perm: {user.emp_id} | {p_date} | {f_time_dt.time()} | {t_time_dt.time()}")
         new_perm = models.EmpPermission(
             emp_id=user.emp_id.strip(),
-            date=p_date.strftime("%Y-%m-%d"),
-            f_time=f_time_dt.strftime("%H:%M:%S"),
-            t_time=t_time_dt.strftime("%H:%M:%S"),
+            date=p_date,
+            f_time=f_time_dt.time(),
+            t_time=t_time_dt.time(),
             reason=request.reason,
             total_hours=f"{total_hrs_val:.2f}",
             dis_total_hours=f"{lop_hrs:.2f}",
             available_hours=str(round(new_remaining, 2)),
             status="Pending",
             applied_date=datetime.now().strftime("%d-%b-%Y"),
-            permitted_permission=str(round(approved_hrs, 2)),
-            lop_hours=str(round(lop_hrs, 2)),
+            permitted_permission=approved_hrs,
+            lop_hours=lop_hrs,
+            created_by=user.emp_id.strip(),
             creation_date=datetime.now(),
-            last_update_date=datetime.now()
+            last_updated_by=user.emp_id.strip(),
+            last_update_date=datetime.now(),
+            revision="0"
         )
         try:
             db.add(new_perm)
@@ -2129,6 +2132,15 @@ def approve_permission(
     perm.status = new_action
     perm.remarks = request.remarks or ""
     perm.last_update_date = datetime.now()
+    perm.last_updated_by = request.admin_id.strip()
+    
+    # Increment revision
+    try:
+        curr_rev = int(perm.revision) if perm.revision and str(perm.revision).isdigit() else 0
+        perm.revision = str(curr_rev + 1)
+    except:
+        perm.revision = "1"
+
  
     admin_user = db.query(models.EmpDet).filter(
         func.lower(func.trim(models.EmpDet.emp_id)) == request.admin_id.strip().lower()
