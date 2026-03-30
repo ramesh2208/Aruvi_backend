@@ -283,7 +283,7 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
             pass
 
     is_manager = db.query(models.EmpDet).filter(
-        func.lower(func.trim(models.EmpDet.manager_id)) == user.emp_id.lower().strip()
+        func.lower(func.trim(models.EmpDet.assign_manager)) == user.emp_id.lower().strip()
     ).first() is not None
     if is_manager and role_type != "Admin":
         role_type = "Admin"
@@ -450,7 +450,7 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
         except:
             pass
     is_manager = db.query(models.EmpDet).filter(
-        func.lower(func.trim(models.EmpDet.manager_id)) == user.emp_id.lower().strip()
+        func.lower(func.trim(models.EmpDet.assign_manager)) == user.emp_id.lower().strip()
     ).first() is not None
     if is_manager and role_type != "Admin":
         role_type = "Admin"
@@ -500,7 +500,7 @@ def get_employees(manager_id: Optional[str] = None, db: Session = Depends(get_db
     )
     if manager_id:
         query = query.filter(
-            func.lower(func.trim(models.EmpDet.manager_id)) == manager_id.strip().lower())
+            func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
     employees = query.all()
     results = []
     for emp in employees:
@@ -518,7 +518,7 @@ def get_employees(manager_id: Optional[str] = None, db: Session = Depends(get_db
             "department": domain_name,
             "designation": emp.role_type or "Employee",
             "doj": emp.date_of_joining or "",
-            "manager": emp.reporting_manager or "N/A",
+            "manager": emp.assign_manager or "N/A",
             "location": emp.attribute1 or "Chennai",
             "shift": "General (9:30 AM - 6:30 PM)",
             "address": emp.address or ""
@@ -572,7 +572,7 @@ def get_attendance_logs(manager_id: Optional[str] = None, db: Session = Depends(
     )
     if manager_id:
         query = query.filter(
-            func.lower(func.trim(models.EmpDet.manager_id)) == manager_id.strip().lower())
+            func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
     employees = query.all()
     logs = db.query(models.CheckIn).filter(models.CheckIn.t_date == today).all()
     logs_map = {log.emp_id.strip(): log for log in logs if log.emp_id}
@@ -1080,7 +1080,7 @@ async def apply_leave(
                 applied_date=datetime.now().strftime('%Y-%m-%d'),
                 mail_message_id="", hr_action="", hr_approval="", admin_approval="",
                 lop_days="0",
-                remarks="", approved_by="", reporting_manager="", approver="", revision="0",
+                remarks="", approved_by="", reporting_manager=user.assign_manager or "", approver=user.project_manager or "", revision="0",
                 attribute_category="", attribute1=fmt_days(requested_days),
                 attribute2="", attribute3="", attribute4="", attribute5="",
                 last_update_login="", created_by=emp_id.strip(), creation_date=datetime.now(),
@@ -1121,7 +1121,7 @@ async def apply_leave(
                 applied_date=datetime.now().strftime('%Y-%m-%d'),
                 mail_message_id="", hr_action="", hr_approval="", admin_approval="",
                 lop_days=fmt_days(lop_days_val),
-                remarks="", approved_by="", reporting_manager="", approver="", revision="0",
+                remarks="", approved_by="", reporting_manager=user.assign_manager or "", approver=user.project_manager or "", revision="0",
                 attribute_category="", attribute1=fmt_days(requested_days),
                 attribute2="", attribute3="", attribute4="", attribute5="",
                 last_update_login="", created_by=emp_id.strip(), creation_date=datetime.now(),
@@ -1138,9 +1138,9 @@ async def apply_leave(
 
         # Email Notification (Safe/Non-blocking)
         try:
-            if user and user.manager_id:
+            if user and user.assign_manager:
                 manager = db.query(models.EmpDet).filter(
-                    func.lower(func.trim(models.EmpDet.emp_id)) == user.manager_id.strip().lower()
+                    func.lower(func.trim(models.EmpDet.emp_id)) == user.assign_manager.strip().lower()
                 ).first()
                 if manager and manager.p_mail:
                     day_text = "Day" if float(requested_days) == 1.0 else "Days"
@@ -1183,7 +1183,7 @@ def get_pending_leaves(manager_id: Optional[str] = None, db: Session = Depends(g
     ).filter(models.EmpLeave.status == "Pending")
     if manager_id:
         query = query.filter(
-            func.lower(func.trim(models.EmpDet.manager_id)) == manager_id.strip().lower())
+            func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
     pending = query.order_by(models.EmpLeave.creation_date.desc()).all()
     results = []
     for leave, emp in pending:
@@ -1210,7 +1210,7 @@ def get_all_leave_history(manager_id: Optional[str] = None, db: Session = Depend
     )
     if manager_id:
         query = query.filter(
-            func.lower(func.trim(models.EmpDet.manager_id)) == manager_id.strip().lower())
+            func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
     all_leaves = query.order_by(models.EmpLeave.creation_date.desc()).all()
     results = []
     for leave, emp in all_leaves:
@@ -1427,7 +1427,7 @@ def get_notifications(
         def apply_manager_filter(query, emp_model):
             if manager_id and manager_id.strip().lower() not in ('', 'all', 'none'):
                 query = query.filter(
-                    func.lower(func.trim(emp_model.manager_id)) == manager_id.strip().lower()
+                    func.lower(func.trim(emp_model.assign_manager)) == manager_id.strip().lower()
                 )
             return query
 
@@ -1814,9 +1814,9 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
         db.commit()
         db.refresh(new_ot)
 
-        if user and user.manager_id:
+        if user and user.assign_manager:
             manager = db.query(models.EmpDet).filter(
-                func.trim(models.EmpDet.emp_id) == user.manager_id.strip()).first()
+                func.trim(models.EmpDet.emp_id) == user.assign_manager.strip()).first()
             if manager and manager.p_mail:
                 subject = f"ITS - {user.name} - OT Request | {ot_date_clean} | {request.from_time} to {request.to_time}"
                 content = f"""
@@ -1852,7 +1852,7 @@ def get_pending_permissions(manager_id: Optional[str] = None, db: Session = Depe
  
     if manager_id:
         query = query.filter(
-            func.lower(func.trim(models.EmpDet.manager_id)) == manager_id.strip().lower()
+            func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower()
         )
  
     pending = query.order_by(models.EmpPermission.creation_date.desc()).all()
@@ -1902,7 +1902,7 @@ def get_all_permission_history(manager_id: Optional[str] = None, db: Session = D
  
     if manager_id:
         query = query.filter(
-            func.lower(func.trim(models.EmpDet.manager_id)) == manager_id.strip().lower()
+            func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower()
         )
  
     all_perms = query.order_by(models.EmpPermission.creation_date.desc()).all()
@@ -1961,7 +1961,7 @@ def apply_permission(
         if not user:
             raise HTTPException(status_code=404, detail="Employee not found")
  
-        print(f"   Found user: {user.name} | manager: {user.manager_id}")
+        print(f"   Found user: {user.name} | manager: {user.assign_manager}")
  
         # ── Parse date ────────────────────────────────────────
         p_date_dt = parse_date(request.date)
@@ -2052,6 +2052,8 @@ def apply_permission(
             creation_date=datetime.now(),
             last_updated_by=user.emp_id.strip(),
             last_update_date=datetime.now(),
+            reporting_to=user.assign_manager,
+            attribute_category=user.project_manager,
             revision="0"
         )
         try:
@@ -2067,9 +2069,9 @@ def apply_permission(
  
         # ── Email notification ────────────────────────────────
         try:
-            if user.manager_id:
+            if user.assign_manager:
                 manager = db.query(models.EmpDet).filter(
-                    func.lower(func.trim(models.EmpDet.emp_id)) == user.manager_id.strip().lower()
+                    func.lower(func.trim(models.EmpDet.emp_id)) == user.assign_manager.strip().lower()
                 ).first()
                 if manager and manager.p_mail:
                     try:
@@ -2233,7 +2235,7 @@ def get_pending_ot(manager_id: Optional[str] = None, db: Session = Depends(get_d
     ).filter(func.lower(models.OverTimeDet.status) == "pending")
     if manager_id:
         query = query.filter(
-            func.lower(func.trim(models.EmpDet.manager_id)) == manager_id.strip().lower())
+            func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
     pending = query.order_by(models.OverTimeDet.creation_date.desc()).all()
     results = []
     for ot, emp in pending:
@@ -2262,7 +2264,7 @@ def get_all_ot_history(manager_id: Optional[str] = None, db: Session = Depends(g
     )
     if manager_id:
         query = query.filter(
-            func.lower(func.trim(models.EmpDet.manager_id)) == manager_id.strip().lower())
+            func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
     all_ot = query.order_by(models.OverTimeDet.creation_date.desc()).all()
     results = []
     for ot, emp in all_ot:
@@ -2324,7 +2326,7 @@ def get_pending_wfh(manager_id: Optional[str] = None, db: Session = Depends(get_
     ).filter(models.WFHDet.status == "Pending")
     if manager_id:
         query = query.filter(
-            func.lower(func.trim(models.EmpDet.manager_id)) == manager_id.strip().lower())
+            func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
     pending = query.order_by(models.WFHDet.creation_date.desc()).all()
     results = []
     for wfh, emp in pending:
@@ -2352,7 +2354,7 @@ def get_all_wfh_history(manager_id: Optional[str] = None, db: Session = Depends(
         )
         if manager_id:
             query = query.filter(
-                func.lower(func.trim(models.EmpDet.manager_id)) == manager_id.strip().lower())
+                func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
         all_wfh = query.order_by(models.WFHDet.creation_date.desc()).all()
         results = []
         for wfh, emp in all_wfh:
@@ -2480,8 +2482,8 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
         print(f" WFH inserted: ID={new_wfh.wfh_id}")
 
         user = submitter
-        if user and user.manager_id:
-            manager_id_clean = user.manager_id.strip()
+        if user and user.assign_manager:
+            manager_id_clean = user.assign_manager.strip()
             manager = db.query(models.EmpDet).filter(
                 func.lower(func.trim(models.EmpDet.emp_id)) == manager_id_clean.lower()).first()
             if manager and manager.p_mail:
@@ -2733,7 +2735,7 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
             pass
     recent_date_limit = datetime.now() - timedelta(days=7)
     is_manager = db.query(models.EmpDet).filter(
-        func.lower(func.trim(models.EmpDet.manager_id)) == emp_id.lower()
+        func.lower(func.trim(models.EmpDet.assign_manager)) == emp_id.lower()
     ).first() is not None
     if is_admin:
         try:
@@ -2768,7 +2770,7 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
             pending_leaves = db.query(models.EmpLeave, models.EmpDet.name) \
                 .join(models.EmpDet, models.EmpLeave.emp_id == models.EmpDet.emp_id) \
                 .filter(models.EmpLeave.status == 'Pending') \
-                .filter(func.lower(func.trim(models.EmpDet.manager_id)) == emp_id.lower()) \
+                .filter(func.lower(func.trim(models.EmpDet.assign_manager)) == emp_id.lower()) \
                 .order_by(models.EmpLeave.creation_date.desc()).limit(5).all()
             for leave, name in pending_leaves:
                 notifications.append({
@@ -2781,7 +2783,7 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
             pending_perms = db.query(models.EmpPermission, models.EmpDet.name) \
                 .join(models.EmpDet, models.EmpPermission.emp_id == models.EmpDet.emp_id) \
                 .filter(models.EmpPermission.status == 'Pending') \
-                .filter(func.lower(func.trim(models.EmpDet.manager_id)) == emp_id.lower()) \
+                .filter(func.lower(func.trim(models.EmpDet.assign_manager)) == emp_id.lower()) \
                 .order_by(models.EmpPermission.creation_date.desc()).limit(5).all()
             for perm, name in pending_perms:
                 notifications.append({
@@ -2795,7 +2797,7 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
             pending_wfh = db.query(models.WFHDet, models.EmpDet.name) \
                 .join(models.EmpDet, models.WFHDet.emp_id == models.EmpDet.emp_id) \
                 .filter(models.WFHDet.status == 'Pending') \
-                .filter(func.lower(func.trim(models.EmpDet.manager_id)) == emp_id.lower()) \
+                .filter(func.lower(func.trim(models.EmpDet.assign_manager)) == emp_id.lower()) \
                 .order_by(models.WFHDet.creation_date.desc()).limit(5).all()
             for wfh, name in pending_wfh:
                 notifications.append({
@@ -2810,7 +2812,7 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
                 .join(models.EmpDet, func.lower(func.trim(models.OverTimeDet.emp_id)) == func.lower(
                 func.trim(models.EmpDet.emp_id))) \
                 .filter(func.lower(models.OverTimeDet.status) == 'pending') \
-                .filter(func.lower(func.trim(models.EmpDet.manager_id)) == emp_id.lower()) \
+                .filter(func.lower(func.trim(models.EmpDet.assign_manager)) == emp_id.lower()) \
                 .order_by(models.OverTimeDet.creation_date.desc()).limit(5).all()
             for ot, name in pending_ots:
                 notifications.append({
