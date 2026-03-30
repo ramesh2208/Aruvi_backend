@@ -187,8 +187,8 @@ class EmpPermission(Base):
     applied_date = Column(String(100))
     approved_by = Column(String(100))
     reporting_to = Column(String(100))
-    permitted_permission = Column(String(100))
-    lop_hours = Column(String(100))
+    permitted_permission = Column(DECIMAL(10, 0))
+    lop_hours = Column(DECIMAL(5, 2))
     creation_date = Column(DateTime)
     last_update_date = Column(DateTime)
     attribute_category = Column(String(240))
@@ -206,7 +206,11 @@ class EmpPermission(Base):
     attribute12 = Column(String(240))
     attribute13 = Column(String(240))
     attribute14 = Column(String(240))
-    attribute15 = Column(String(240))
+    revision = Column(String(240), default="0")
+    created_by = Column(String(100))
+    last_updated_by = Column(String(100))
+
+
 
 
 class LeaveDet(Base):
@@ -408,18 +412,38 @@ class CompanyClient(Base):
     attribute13 = Column(String(240))
     attribute14 = Column(String(240))
 
-class ClientSite(Base):
-    __tablename__ = "xxits_aruvi_client_site_t"
+class SubClient(Base):
+    __tablename__ = "xxits_aruvi_sub_client_t"
 
-    site_id = Column(Integer, primary_key=True, autoincrement=True)
-    client_id = Column(Integer)
-    client_ref_no = Column(String(100))
-    gst_pct = Column(String(20))
-    short_code = Column(String(50))
-    currency = Column(String(20))
-    location = Column(String(250))
-    ship_to = Column(String(250))
-    status = Column(String(50), default="Active")
+    sub_cl_id = Column(Integer, primary_key=True, autoincrement=True)
+    sub_client_name = Column(String(100), nullable=False)
+    client_ref_no = Column(String(1000), nullable=False)
+    sub_gst_no = Column(String(100), nullable=False)
+    sub_msme_no = Column(String(100), nullable=False)
+    sub_pan = Column(String(100), nullable=False)
+    sub_tds_p = Column(Integer, nullable=False)
+    sub_gst_p = Column(String(30), nullable=False)
+    sub_short_code = Column(String(100), nullable=False)
+    sub_location = Column(String(500), nullable=False)
+    ship_to = Column(String(240))
+    currency = Column(String(240))
+    status = Column(String(240))
+    attribute_category = Column(String(240))
+    attribute1 = Column(String(240))
+    attribute2 = Column(String(240))
+    attribute3 = Column(String(240))
+    attribute4 = Column(String(240))
+    attribute5 = Column(String(240))
+    attribute6 = Column(String(240))
+    attribute7 = Column(String(240))
+    attribute8 = Column(String(240))
+    attribute9 = Column(String(240))
+    attribute10 = Column(String(240))
+    attribute11 = Column(String(240))
+    attribute12 = Column(String(240))
+    attribute13 = Column(String(240))
+    attribute14 = Column(String(240))
+    attribute15 = Column(String(240))
     created_by = Column(String(100))
     creation_date = Column(DateTime)
     last_updated_by = Column(String(100))
