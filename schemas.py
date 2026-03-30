@@ -157,14 +157,19 @@ class ResetPasswordRequest(BaseModel):
     otp: str
     new_password: str
 
-class ClientSiteSchema(BaseModel):
-    site_id: Optional[int] = None
-    client_id: Optional[int] = None
-    gst_pct: Optional[str] = None
-    short_code: Optional[str] = None
-    currency: Optional[str] = None
-    location: Optional[str] = None
+class SubClientSchema(BaseModel):
+    sub_cl_id: Optional[int] = None
+    sub_client_name: str
+    client_ref_no: str
+    sub_gst_no: Optional[str] = None
+    sub_msme_no: Optional[str] = None
+    sub_pan: Optional[str] = None
+    sub_tds_p: Optional[int] = 0
+    sub_gst_p: Optional[str] = None
+    sub_short_code: Optional[str] = None
+    sub_location: Optional[str] = None
     ship_to: Optional[str] = None
+    currency: Optional[str] = None
     status: Optional[str] = "Active"
 
 class ClientApplyRequest(BaseModel):
@@ -183,7 +188,7 @@ class ClientApplyRequest(BaseModel):
     currency: Optional[str] = None
     address: Optional[str] = None
     status: Optional[str] = "Active"
-    sites: Optional[List[ClientSiteSchema]] = []
+    sites: Optional[List[SubClientSchema]] = []
 
 class ClientResponse(BaseModel):
     client_id: int
@@ -199,7 +204,7 @@ class ClientResponse(BaseModel):
     pan_no: Optional[str] = None
     address: Optional[str] = None
     status: Optional[str] = "Active"
-    sites: Optional[List[ClientSiteSchema]] = []
+    sites: Optional[List[SubClientSchema]] = []
     creation_date: Optional[Any] = None
 
 class ProjectCreateRequest(BaseModel):
