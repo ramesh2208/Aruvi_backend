@@ -322,7 +322,7 @@ def forgot_password(request: schemas.ForgotPasswordRequest, background_tasks: Ba
     <p>We received a request to change the password for your account.</p>
     <p>To complete this process, please use the One-Time Password (OTP) provided below:</p>
     <div style="font-size: 24px; font-weight: 700; color: #4f46e5; margin: 20px 0; letter-spacing: 4px;">{otp}</div>
-    <p>This OTP is valid for <strong>5 minutes</strong> and can only be used once.</p>
+    <p>This OTP is valid for <strong>3 minutes</strong> and can only be used once.</p>
     <p style="margin-top: 25px; font-size: 13px; color: #64748b;">If you did not request a password change, please contact our support team immediately at <a href="mailto:info@ilantechsolutions.com" style="color: #4f46e5;">info@ilantechsolutions.com</a>.</p>
     """
     body = get_email_template(user.name or 'User', "Password Reset OTP", content, "Security Team")
