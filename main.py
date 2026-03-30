@@ -1300,8 +1300,8 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
 
             content = f"""
             <p>Your request for <strong>{leave.leave_type}</strong> has been processed.</p>
-            <div style="font-size: 20px; font-weight: 700; color: {'#10B981' if request_item.action.lower() == 'approved' else '#EF4444'}; margin: 20px 0;">
-                {status_msg if request_item.action.lower() != 'approved' else "This is Approved and Ackownledged"}
+            <div style="font-size: 20px; font-weight: 700; color: #1f2937; margin: 20px 0;">
+                {request_item.action}
             </div>
             <p><strong>Dates:</strong> {leave.from_date} to {leave.to_date}</p>
             <p><strong>No of Days:</strong> {fmt_days(leave.days)} {"Day" if float(leave.days or 0) == 1.0 else "Days"}</p>
@@ -1488,7 +1488,7 @@ def get_notifications(
                     "type": _status_type(st),
                     "notification_type": "leave",
                     "title": f"Leave Request – {emp_name}",
-                    "message": f"{_status_label(st)} | {leave.leave_type}: {leave.from_date} to {leave.to_date} ({leave.days} days)",
+                    "message": f"{_status_label(st)} | {leave.leave_type}: {leave.from_date} to {leave.to_date} ({fmt_days(leave.days)} {'Day' if float(leave.days or 0) == 1.0 else 'Days'})",
                     "time": str(update_time or "Recently"),
                     "icon": _status_icon(st),
                     "screen": f"/AdminLeave?tab=myApproval&l_id={leave.l_id}"
@@ -1623,7 +1623,7 @@ def get_notifications(
                 "type": _status_type(st),
                 "notification_type": "leave",
                 "title": f"Leave {_status_label(st)}",
-                "message": f"{leave.leave_type}: {leave.from_date} to {leave.to_date} ({leave.days} days)",
+                "message": f"{leave.leave_type}: {leave.from_date} to {leave.to_date} ({fmt_days(leave.days)} {'Day' if float(leave.days or 0) == 1.0 else 'Days'})",
                 "time": str(update_time or "Recently"),
                 "icon": _status_icon(st),
                 "screen": f"/EmployeeLeave?tab=history&id={leave.l_id}"
@@ -2199,20 +2199,23 @@ def approve_permission(
                 action_line = (
                     f"Your permission request on <strong>{perm_date}</strong> "
                     f"from <strong>{f_time_str}</strong> to <strong>{t_time_str}</strong> "
-                    f"has been <strong style='color:#10B981;'>Approved</strong>."
+                    f"has been <strong>Approved</strong>."
                 )
             else:
                 action_line = (
                     f"Your permission request on <strong>{perm_date}</strong> "
                     f"from <strong>{f_time_str}</strong> to <strong>{t_time_str}</strong> "
-                    f"has been <strong style='color:#EF4444;'>Rejected</strong>."
+                    f"has been <strong>Rejected</strong>."
                 )
  
             content = f'''
-            <p>Good Day!</p>
+            <p>Your request for <strong>Permission</strong> has been processed.</p>
+            <div style="font-size: 20px; font-weight: 700; color: #1f2937; margin: 20px 0;">
+                {new_action}
+            </div>
             <p>{action_line}</p>
-            {f'<p><strong>Remarks:</strong> {request.remarks}</p>' if request.remarks else ''}
-            <p>Please reach out if you have any questions.</p>
+            {f'<p><strong>Remarks:</strong> {request.remarks or "No remarks provided."}</p>' if request.remarks else ''}
+            <p style="margin-top: 25px; font-size: 13px; color: #64748b;">You can view the full history and status in the Aruvi mobile app.</p>
             '''
             body = get_email_template(
                 emp_user.name,
@@ -2306,10 +2309,14 @@ def approve_ot(request: schemas.OverTimeApprovalAction, background_tasks: Backgr
             manager_name = admin_user.name if admin_user else "Manager"
             subject = f"OT Request {status_msg} - {ot.ot_date}"
             content = f"""
-            <p>Your Overtime request has been <strong>{status_msg}</strong>.</p>
+            <p>Your request for <strong>Overtime</strong> has been processed.</p>
+            <div style="font-size: 20px; font-weight: 700; color: #1f2937; margin: 20px 0;">
+                {request.action}
+            </div>
             <p><strong>Date:</strong> {ot.ot_date}</p>
             <p><strong>Duration:</strong> {ot.duration}</p>
-            <p><strong>Remarks:</strong> {request.remarks or 'N/A'}</p>
+            <p><strong>Remarks:</strong> {request.remarks or 'No remarks provided.'}</p>
+            <p style="margin-top: 25px; font-size: 13px; color: #64748b;">You can view the full history and status in the Aruvi mobile app.</p>
             """
             body = get_email_template(emp_user.name, "OT Request Update", content, "HR Team")
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
@@ -2395,9 +2402,14 @@ def approve_wfh(request: schemas.WFHApprovalAction, background_tasks: Background
             manager_name = admin_user.name if admin_user else "Manager"
             subject = f"WFH Request {status_msg} - {wfh.from_date}"
             content = f"""
-            <p>Your Work From Home request has been <strong>{status_msg}</strong>.</p>
+            <p>Your request for <strong>Work From Home</strong> has been processed.</p>
+            <div style="font-size: 20px; font-weight: 700; color: #1f2937; margin: 20px 0;">
+                {request.action}
+            </div>
             <p><strong>Duration:</strong> {wfh.from_date} to {wfh.to_date}</p>
-            <p><strong>Remarks:</strong> {request.remarks or 'N/A'}</p>
+            <p><strong>No of Days:</strong> {fmt_days(wfh.days)} {"Day" if float(wfh.days or 0) == 1.0 else "Days"}</p>
+            <p><strong>Remarks:</strong> {request.remarks or 'No remarks provided.'}</p>
+            <p style="margin-top: 25px; font-size: 13px; color: #64748b;">You can view the full history and status in the Aruvi mobile app.</p>
             """
             body = get_email_template(emp_user.name, "WFH Request Update", content, "HR Team")
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
@@ -2496,12 +2508,14 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
                     from_str = from_date
                     to_str = to_date
                 customer_name = user.attribute3 if user.attribute3 else "Internal"
-                subject = f"ITS - {user.name}  {customer_name} - WFH | {from_str} to {to_str} ({days_val} Days)"
+                wfh_days_fmt = fmt_days(days_val)
+                wfh_day_label = "Day" if float(days_val or 0) == 1.0 else "Days"
+                subject = f"ITS - {user.name}  {customer_name} - WFH | {from_str} to {to_str} ({wfh_days_fmt} {wfh_day_label})"
                 content = f"""
                 <p>An employee has requested to work from home. Details below:</p>
                 <div style="font-size: 18px; font-weight: 700; color: #4f46e5; margin: 20px 0;">
                     WFH Request: {from_str} to {to_str}<br>
-                    <span style="font-size: 14px; font-weight: 500; color: #64748b;">Duration: {days_val} Days</span>
+                    <span style="font-size: 14px; font-weight: 500; color: #64748b;">Duration: {wfh_days_fmt} {wfh_day_label}</span>
                 </div>
                 <p><strong>Employee:</strong> {user.name}</p>
                 <p><strong>Reason:</strong> {request.reason}</p>
