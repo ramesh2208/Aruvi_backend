@@ -3441,17 +3441,23 @@ def get_clients(db: Session = Depends(get_db)):
     clients = db.query(models.CompanyClient).all()
     res = []
     for c in clients:
-        sites = db.query(models.ClientSite).filter(models.ClientSite.client_id == c.cl_id).all()
+        # Use client_ref_no to link instead of client_id
+        subs = db.query(models.SubClient).filter(models.SubClient.client_ref_no == c.client_ref_no).all()
         sites_list = []
-        for s in sites:
-            sites_list.append(schemas.ClientSiteSchema(
-                site_id=s.site_id,
-                client_id=s.client_id,
-                gst_pct=s.gst_pct,
-                short_code=s.short_code,
-                currency=s.currency,
-                location=s.location,
+        for s in subs:
+            sites_list.append(schemas.SubClientSchema(
+                sub_cl_id=s.sub_cl_id,
+                sub_client_name=s.sub_client_name,
+                client_ref_no=s.client_ref_no,
+                sub_gst_no=s.sub_gst_no,
+                sub_msme_no=s.sub_msme_no,
+                sub_pan=s.sub_pan,
+                sub_tds_p=s.sub_tds_p,
+                sub_gst_p=s.sub_gst_p,
+                sub_short_code=s.sub_short_code,
+                sub_location=s.sub_location,
                 ship_to=s.ship_to,
+                currency=s.currency,
                 status=s.status
             ))
 
@@ -3513,17 +3519,22 @@ def get_client(client_id: int, db: Session = Depends(get_db)):
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
     
-    sites = db.query(models.ClientSite).filter(models.ClientSite.client_id == client_id).all()
+    subs = db.query(models.SubClient).filter(models.SubClient.client_ref_no == client.client_ref_no).all()
     sites_list = []
-    for s in sites:
-        sites_list.append(schemas.ClientSiteSchema(
-            site_id=s.site_id,
-            client_id=s.client_id,
-            gst_pct=s.gst_pct,
-            short_code=s.short_code,
-            currency=s.currency,
-            location=s.location,
+    for s in subs:
+        sites_list.append(schemas.SubClientSchema(
+            sub_cl_id=s.sub_cl_id,
+            sub_client_name=s.sub_client_name,
+            client_ref_no=s.client_ref_no,
+            sub_gst_no=s.sub_gst_no,
+            sub_msme_no=s.sub_msme_no,
+            sub_pan=s.sub_pan,
+            sub_tds_p=s.sub_tds_p,
+            sub_gst_p=s.sub_gst_p,
+            sub_short_code=s.sub_short_code,
+            sub_location=s.sub_location,
             ship_to=s.ship_to,
+            currency=s.currency,
             status=s.status
         ))
 
@@ -3580,22 +3591,28 @@ def update_client(client_id: int, client_req: schemas.ClientApplyRequest, db: Se
     client.status = client_req.status
     client.last_update_date = now
     
-    # Sync sites: For simplicity, delete and recreated if provided
+    # Sync sites: For simplicity, delete and recreate if provided
     if client_req.sites is not None:
-        db.query(models.ClientSite).filter(models.ClientSite.client_id == client_id).delete()
+        db.query(models.SubClient).filter(models.SubClient.client_ref_no == client.client_ref_no).delete()
         for s in client_req.sites:
-            db.add(models.ClientSite(
-                client_id=client_id,
-                gst_pct=s.gst_pct,
-                short_code=s.short_code,
-                currency=s.currency,
-                location=s.location,
-                ship_to=s.ship_to,
+            db.add(models.SubClient(
+                sub_client_name=s.sub_client_name,
+                client_ref_no=client.client_ref_no,
+                sub_gst_no=s.sub_gst_no or "",
+                sub_msme_no=s.sub_msme_no or "",
+                sub_pan=s.sub_pan or "",
+                sub_tds_p=s.sub_tds_p or 0,
+                sub_gst_p=s.sub_gst_p or "",
+                sub_short_code=s.sub_short_code or "",
+                sub_location=s.sub_location or "",
+                ship_to=s.ship_to or "",
+                currency=s.currency or "INR",
                 status=s.status or "Active",
                 creation_date=now,
                 last_update_date=now,
                 created_by="Admin",
-                last_updated_by="Admin"
+                last_updated_by="Admin",
+                last_update_login="Admin"
             ))
 
     db.commit()
@@ -3665,29 +3682,33 @@ def create_client(client_req: schemas.ClientApplyRequest, db: Session = Depends(
         print(f"DEBUG: Main client profile added with ID: {new_client.cl_id}")
 
         if client_req.sites:
-            print(f"DEBUG: Adding {len(client_req.sites)} sites for client {new_client.cl_id}")
-            for site_req in client_req.sites:
-                new_site = models.ClientSite(
-                    client_id=new_client.cl_id,
+            print(f"DEBUG: Adding {len(client_req.sites)} sub-clients for client {new_client.client_ref_no}")
+            for sub_req in client_req.sites:
+                new_sub = models.SubClient(
+                    sub_client_name=sub_req.sub_client_name,
                     client_ref_no=new_client.client_ref_no,
-                    gst_pct=site_req.gst_pct,
-                    short_code=site_req.short_code,
-                    currency=site_req.currency,
-                    location=site_req.location,
-                    ship_to=site_req.ship_to,
-                    status=site_req.status or "Active",
+                    sub_gst_no=sub_req.sub_gst_no or "",
+                    sub_msme_no=sub_req.sub_msme_no or "",
+                    sub_pan=sub_req.sub_pan or "",
+                    sub_tds_p=sub_req.sub_tds_p or 0,
+                    sub_gst_p=sub_req.sub_gst_p or "",
+                    sub_short_code=sub_req.sub_short_code or "",
+                    sub_location=sub_req.sub_location or "",
+                    ship_to=sub_req.ship_to or "",
+                    currency=sub_req.currency or "INR",
+                    status=sub_req.status or "Active",
                     creation_date=now,
                     last_update_date=now,
                     created_by="Admin",
                     last_updated_by="Admin",
                     last_update_login="Admin"
                 )
-                db.add(new_site)
+                db.add(new_sub)
         
         db.commit()
         db.refresh(new_client)
-        print(f"SUCCESS: Client and sites created successfully for ID: {new_client.cl_id}")
-        return {"message": "Client and sites created successfully", "client_id": new_client.cl_id}
+        print(f"SUCCESS: Client and sub-clients created successfully for ID: {new_client.cl_id}")
+        return {"message": "Client and sub-clients created successfully", "client_id": new_client.cl_id}
     except Exception as e:
         db.rollback()
         print(f"ERROR: Failed to create client: {str(e)}")
