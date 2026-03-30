@@ -768,7 +768,7 @@ def get_leave_stats(emp_id: str, db: Session = Depends(get_db)):
     stats["total"] = cl_total + sl_total + mp_total
     stats["availed"] = cl_availed + sl_availed + mp_availed
 
-    return stats
+    return {**stats, "has_record": len(leave_rows) > 0}
 
 
 @app.get("/wfh-history/{emp_id}")
