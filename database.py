@@ -13,7 +13,7 @@ DATABASE = "aruvi_test"
 import socket
 encoded_password = quote_plus(PASSWORD)
 
-# Auto-resolve Host if it's an IP (often helps with GoDaddy firewall)
+# Auto-resolve Host if it's an IP (often helps with GoDaddy firewall) last
 try:
     if HOST.replace('.', '').isdigit():
         RESOLVED_HOST = socket.gethostbyaddr(HOST)[0]
@@ -47,4 +47,3 @@ def get_db():
         yield db
     finally:
         db.close()
-        #last
