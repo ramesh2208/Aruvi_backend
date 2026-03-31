@@ -28,68 +28,54 @@ import models, schemas, database
 from database import engine, SessionLocal
 
 
-# DATABASE INITIALIZATION
+# -- DB INITIALIZATION AND MIGRATIONS --
 try:
     print(" INFO: Attempting database initialization...")
+    # Initial check if DB is reachable by running a simple create_all
     models.Base.metadata.create_all(bind=engine)
     print(" SUCCESS: Database initialization complete.")
+
+    # Only attempt migrations if the connection was successful
+    def run_migrations():
+        from sqlalchemy import text
+        db = SessionLocal()
+        try:
+            # WFH Migration
+            try:
+                db.execute(text("SELECT to_date FROM xxits_aruvi_wfh_det_t LIMIT 1"))
+            except:
+                print(" Migration: Adding to_date to xxits_aruvi_wfh_det_t")
+                db.execute(text("ALTER TABLE xxits_aruvi_wfh_det_t ADD COLUMN to_date VARCHAR(20)"))
+                db.commit()
+            
+            try:
+                db.execute(text("SELECT days FROM xxits_aruvi_wfh_det_t LIMIT 1"))
+            except:
+                print(" Migration: Adding days to xxits_aruvi_wfh_det_t")
+                db.execute(text("ALTER TABLE xxits_aruvi_wfh_det_t ADD COLUMN days VARCHAR(15)"))
+                db.commit()
+
+            # Revision Migration
+            try:
+                db.execute(text("SELECT revision FROM xxits_aruvi_emp_leave_t LIMIT 1"))
+            except:
+                print(" Migration: Adding revision to xxits_aruvi_emp_leave_t")
+                db.execute(text("ALTER TABLE xxits_aruvi_emp_leave_t ADD COLUMN revision VARCHAR(240)"))
+                db.commit()
+            
+            db.execute(text("UPDATE xxits_aruvi_emp_leave_t SET revision = '0' WHERE revision IS NULL OR revision = ''"))
+            db.commit()
+
+        except Exception as me:
+            print(f" WARNING: Migration error: {me}")
+        finally:
+            db.close()
+
+    run_migrations()
+
 except Exception as e:
-    print(f" WARNING: Database initialization failed: {e}")
-    print(" INFO: Application starting without DB connection; expect errors on DB endpoints.")
-
-
-# Proactive Migration for WFH table
-def migrate_wfh_table():
-    from sqlalchemy import text
-    db = SessionLocal()
-    try:
-        try:
-            db.execute(text("SELECT to_date FROM xxits_aruvi_wfh_det_t LIMIT 1"))
-        except Exception:
-            print(" Migration: Adding to_date to xxits_aruvi_wfh_det_t")
-            db.execute(text("ALTER TABLE xxits_aruvi_wfh_det_t ADD COLUMN to_date VARCHAR(20)"))
-            db.commit()
-
-        try:
-            db.execute(text("SELECT days FROM xxits_aruvi_wfh_det_t LIMIT 1"))
-        except Exception:
-            print(" Migration: Adding days to xxits_aruvi_wfh_det_t")
-            db.execute(text("ALTER TABLE xxits_aruvi_wfh_det_t ADD COLUMN days VARCHAR(15)"))
-            db.commit()
-    except Exception as e:
-        print(f" Migration Error: {e}")
-    finally:
-        db.close()
-
-
-try:
-    migrate_wfh_table()
-except:
-    pass
- 
- 
-def migrate_revision_column():
-    from sqlalchemy import text
-    db = SessionLocal()
-    try:
-        try:
-            db.execute(text("SELECT revision FROM xxits_aruvi_emp_leave_t LIMIT 1"))
-        except Exception:
-            print(" Migration: Adding revision to xxits_aruvi_emp_leave_t")
-            db.execute(text("ALTER TABLE xxits_aruvi_emp_leave_t ADD COLUMN revision VARCHAR(240)"))
-            db.commit()
-        # Always ensure NULLs are converted to '0'
-        db.execute(text("UPDATE xxits_aruvi_emp_leave_t SET revision = '0' WHERE revision IS NULL OR revision = ''"))
-        db.commit()
-    except Exception as e:
-        print(f" Migration Error (Revision): {e}")
-    finally:
-        db.close()
-
-try:
-    migrate_revision_column()
-except:
-    pass
+    print(f" WARNING: Database connection failed: {e}")
+    print(" INFO: Application starting in limited mode (No DB). Please whitelist Render IP on your database host.")
 
 # In-memory OTP storage
 otp_store = {}
