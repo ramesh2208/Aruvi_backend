@@ -29,7 +29,33 @@ import models, schemas, database
 from database import engine, SessionLocal
 
 
+app = FastAPI()
+
 # ─── DB connection with retry (fixes Render cold start + GoDaddy MySQL) ───────
+def run_migrations_with_retry(max_retries: int = 3, delay: int = 5):
+    """Checks for and adds missing columns automatically — prevents schema downtime."""
+    import sqlalchemy
+    for attempt in range(1, max_retries + 1):
+        try:
+            print(f"[DB] Migration check (attempt {attempt}/{max_retries})...")
+            with engine.begin() as conn:
+                # Add to_date to WFH table if missing
+                try:
+                    conn.execute(sqlalchemy.text("ALTER TABLE xxits_aruvi_wfh_det_t ADD COLUMN to_date VARCHAR(20)"))
+                    print(" ✅ Migration: Added to_date to xxits_aruvi_wfh_det_t")
+                except: pass
+                
+                # Add revision to Leave table if missing
+                try:
+                    conn.execute(sqlalchemy.text("ALTER TABLE xxits_aruvi_emp_leave_t ADD COLUMN revision VARCHAR(10)"))
+                    print(" ✅ Migration: Added revision to xxits_aruvi_emp_leave_t")
+                except: pass
+            return True
+        except Exception as e:
+            print(f"❌ Migration failed: {e}")
+            time.sleep(delay)
+    return False
+
 def create_tables_with_retry(max_retries: int = 5, delay: int = 5):
     """Retry DB connection on startup — handles Render cold start and GoDaddy MySQL wake-up."""
     for attempt in range(1, max_retries + 1):
@@ -47,70 +73,22 @@ def create_tables_with_retry(max_retries: int = 5, delay: int = 5):
                 print("❌ CRITICAL: Could not connect to database after all retries. App will start anyway.")
                 return False
 
-create_tables_with_retry()
-
-
-# ─── Proactive Migration for WFH table ────────────────────────────────────────
-def migrate_wfh_table():
-    from sqlalchemy import text
-    db = SessionLocal()
-    try:
-        try:
-            db.execute(text("SELECT to_date FROM xxits_aruvi_wfh_det_t LIMIT 1"))
-        except Exception:
-            print(" Migration: Adding to_date to xxits_aruvi_wfh_det_t")
-            db.execute(text("ALTER TABLE xxits_aruvi_wfh_det_t ADD COLUMN to_date VARCHAR(20)"))
-            db.commit()
-
-        try:
-            db.execute(text("SELECT days FROM xxits_aruvi_wfh_det_t LIMIT 1"))
-        except Exception:
-            print(" Migration: Adding days to xxits_aruvi_wfh_det_t")
-            db.execute(text("ALTER TABLE xxits_aruvi_wfh_det_t ADD COLUMN days VARCHAR(15)"))
-            db.commit()
-    except Exception as e:
-        print(f" Migration Error (WFH): {e}")
-    finally:
-        db.close()
-
-
-def migrate_revision_column():
-    from sqlalchemy import text
-    db = SessionLocal()
-    try:
-        try:
-            db.execute(text("SELECT revision FROM xxits_aruvi_emp_leave_t LIMIT 1"))
-        except Exception:
-            print(" Migration: Adding revision to xxits_aruvi_emp_leave_t")
-            db.execute(text("ALTER TABLE xxits_aruvi_emp_leave_t ADD COLUMN revision VARCHAR(240)"))
-            db.commit()
-        db.execute(text("UPDATE xxits_aruvi_emp_leave_t SET revision = '0' WHERE revision IS NULL OR revision = ''"))
-        db.commit()
-    except Exception as e:
-        print(f" Migration Error (Revision): {e}")
-    finally:
-        db.close()
-
-
-def run_migrations_with_retry(max_retries: int = 3, delay: int = 5):
-    """Run migrations with retry — DB may not be ready immediately."""
-    for attempt in range(1, max_retries + 1):
-        try:
-            migrate_wfh_table()
-            migrate_revision_column()
-            print("✅ Migrations complete.")
-            return
-        except Exception as e:
-            print(f"⚠️  Migration attempt {attempt} failed: {e}")
-            if attempt < max_retries:
-                time.sleep(delay)
-
-run_migrations_with_retry()
+@app.on_event("startup")
+def startup_event():
+    """Run DB initialization in background on startup to avoid Render port-binding timeout."""
+    import threading
+    
+    def init_db():
+        if create_tables_with_retry():
+            run_migrations_with_retry()
+    
+    # Run in a separate thread so FastAPI can start and listen on port immediately
+    thread = threading.Thread(target=init_db)
+    thread.setDaemon(True)
+    thread.start()
 
 # ─── In-memory OTP storage ────────────────────────────────────────────────────
 otp_store = {}
-
-app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
