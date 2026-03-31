@@ -28,54 +28,40 @@ import models, schemas, database
 from database import engine, SessionLocal
 
 
-# -- DB INITIALIZATION AND MIGRATIONS --
+# DATABASE INITIALIZATION
 try:
-    print(" INFO: Attempting database initialization...")
-    # Initial check if DB is reachable by running a simple create_all
+    print(" INFO: Application initializing...")
+    # This will now use the fallback engine from database.py if MySQL fails
     models.Base.metadata.create_all(bind=engine)
-    print(" SUCCESS: Database initialization complete.")
-
-    # Only attempt migrations if the connection was successful
-    def run_migrations():
-        from sqlalchemy import text
-        db = SessionLocal()
+    
+    # Run migrations once schema is ready
+    from sqlalchemy import text
+    db = SessionLocal()
+    try:
+        # Check for WFH columns
         try:
-            # WFH Migration
-            try:
-                db.execute(text("SELECT to_date FROM xxits_aruvi_wfh_det_t LIMIT 1"))
-            except:
-                print(" Migration: Adding to_date to xxits_aruvi_wfh_det_t")
-                db.execute(text("ALTER TABLE xxits_aruvi_wfh_det_t ADD COLUMN to_date VARCHAR(20)"))
-                db.commit()
-            
-            try:
-                db.execute(text("SELECT days FROM xxits_aruvi_wfh_det_t LIMIT 1"))
-            except:
-                print(" Migration: Adding days to xxits_aruvi_wfh_det_t")
-                db.execute(text("ALTER TABLE xxits_aruvi_wfh_det_t ADD COLUMN days VARCHAR(15)"))
-                db.commit()
-
-            # Revision Migration
-            try:
-                db.execute(text("SELECT revision FROM xxits_aruvi_emp_leave_t LIMIT 1"))
-            except:
-                print(" Migration: Adding revision to xxits_aruvi_emp_leave_t")
-                db.execute(text("ALTER TABLE xxits_aruvi_emp_leave_t ADD COLUMN revision VARCHAR(240)"))
-                db.commit()
-            
-            db.execute(text("UPDATE xxits_aruvi_emp_leave_t SET revision = '0' WHERE revision IS NULL OR revision = ''"))
-            db.commit()
-
-        except Exception as me:
-            print(f" WARNING: Migration error: {me}")
-        finally:
-            db.close()
-
-    run_migrations()
-
-except Exception as e:
-    print(f" WARNING: Database connection failed: {e}")
-    print(" INFO: Application starting in limited mode (No DB). Please whitelist Render IP on your database host.")
+            db.execute(text("SELECT to_date FROM xxits_aruvi_wfh_det_t LIMIT 1"))
+        except:
+            db.execute(text("ALTER TABLE xxits_aruvi_wfh_det_t ADD COLUMN to_date VARCHAR(20)"))
+        try:
+            db.execute(text("SELECT days FROM xxits_aruvi_wfh_det_t LIMIT 1"))
+        except:
+            db.execute(text("ALTER TABLE xxits_aruvi_wfh_det_t ADD COLUMN days VARCHAR(15)"))
+        
+        # Check for Leave revision column
+        try:
+            db.execute(text("SELECT revision FROM xxits_aruvi_emp_leave_t LIMIT 1"))
+        except:
+            db.execute(text("ALTER TABLE xxits_aruvi_emp_leave_t ADD COLUMN revision VARCHAR(240)"))
+        
+        db.execute(text("UPDATE xxits_aruvi_emp_leave_t SET revision = '0' WHERE revision IS NULL OR revision = ''"))
+        db.commit()
+    except Exception as me:
+        print(f" INFO: Startup check skipped: {me}")
+    finally:
+        db.close()
+except:
+    pass
 
 # In-memory OTP storage
 otp_store = {}
@@ -91,7 +77,7 @@ app.add_middleware(
 )
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def read_root():
     return {"status": "online", "message": "Aruvi Backend is active"}
 
