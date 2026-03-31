@@ -38,8 +38,8 @@ except Exception as e:
     # We continue so the app can start and we can see logs on Render.
     # Most endpoints will fail, but the server stays up for diagnostics.
 
+# Proactive Migration for WFH table last time
 
-# Proactive Migration for WFH table
 def migrate_wfh_table():
     from sqlalchemy import text
     db = SessionLocal()
