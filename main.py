@@ -28,40 +28,56 @@ import models, schemas, database
 from database import engine, SessionLocal
 
 
-# DATABASE INITIALIZATION
-try:
-    print(" INFO: Application initializing...")
-    # This will now use the fallback engine from database.py if MySQL fails
-    models.Base.metadata.create_all(bind=engine)
-    
-    # Run migrations once schema is ready
+# Create tables if they don't exist
+models.Base.metadata.create_all(bind=engine)
+
+
+# Proactive Migration for WFH table
+def migrate_wfh_table():
     from sqlalchemy import text
     db = SessionLocal()
     try:
-        # Check for WFH columns
         try:
             db.execute(text("SELECT to_date FROM xxits_aruvi_wfh_det_t LIMIT 1"))
-        except:
+        except Exception:
+            print(" Migration: Adding to_date to xxits_aruvi_wfh_det_t")
             db.execute(text("ALTER TABLE xxits_aruvi_wfh_det_t ADD COLUMN to_date VARCHAR(20)"))
+            db.commit()
+
         try:
             db.execute(text("SELECT days FROM xxits_aruvi_wfh_det_t LIMIT 1"))
-        except:
+        except Exception:
+            print(" Migration: Adding days to xxits_aruvi_wfh_det_t")
             db.execute(text("ALTER TABLE xxits_aruvi_wfh_det_t ADD COLUMN days VARCHAR(15)"))
-        
-        # Check for Leave revision column
-        try:
-            db.execute(text("SELECT revision FROM xxits_aruvi_emp_leave_t LIMIT 1"))
-        except:
-            db.execute(text("ALTER TABLE xxits_aruvi_emp_leave_t ADD COLUMN revision VARCHAR(240)"))
-        
-        db.execute(text("UPDATE xxits_aruvi_emp_leave_t SET revision = '0' WHERE revision IS NULL OR revision = ''"))
-        db.commit()
-    except Exception as me:
-        print(f" INFO: Startup check skipped: {me}")
+            db.commit()
+    except Exception as e:
+        print(f" Migration Error: {e}")
     finally:
         db.close()
-except:
-    pass
+
+
+migrate_wfh_table()
+ 
+ 
+def migrate_revision_column():
+    from sqlalchemy import text
+    db = SessionLocal()
+    try:
+        try:
+            db.execute(text("SELECT revision FROM xxits_aruvi_emp_leave_t LIMIT 1"))
+        except Exception:
+            print(" Migration: Adding revision to xxits_aruvi_emp_leave_t")
+            db.execute(text("ALTER TABLE xxits_aruvi_emp_leave_t ADD COLUMN revision VARCHAR(240)"))
+            db.commit()
+        # Always ensure NULLs are converted to '0'
+        db.execute(text("UPDATE xxits_aruvi_emp_leave_t SET revision = '0' WHERE revision IS NULL OR revision = ''"))
+        db.commit()
+    except Exception as e:
+        print(f" Migration Error (Revision): {e}")
+    finally:
+        db.close()
+
+migrate_revision_column()
 
 # In-memory OTP storage
 otp_store = {}
@@ -77,7 +93,7 @@ app.add_middleware(
 )
 
 
-@app.api_route("/", methods=["GET", "HEAD"])
+@app.get("/")
 def read_root():
     return {"status": "online", "message": "Aruvi Backend is active"}
 
