@@ -17,7 +17,11 @@ engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
     pool_recycle=300,
     pool_pre_ping=True,
-    connect_args={"connect_timeout": 10}
+    connect_args={
+        "connect_timeout": 30,
+        "charset": "utf8mb4",
+        "ssl": {"disabled": True}
+    }
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
