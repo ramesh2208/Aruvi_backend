@@ -237,96 +237,108 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
     print(" LOGIN ATTEMPT (DEBUG MODE)")
     print("=" * 60)
 
-    username_input = request.username.strip().lower()
-    input_pwd = request.password.strip()
-    print(f" Username input: {username_input}")
-    user = db.query(models.EmpDet).filter(
-        or_(
-            func.lower(func.trim(models.EmpDet.p_mail)) == username_input,
-            func.lower(func.trim(models.EmpDet.mail)) == username_input,
-            func.lower(func.trim(models.EmpDet.emp_id)) == username_input,
-            func.lower(func.replace(func.trim(models.EmpDet.emp_id), " ", "")) == username_input.replace(" ", "")
-        )
-    ).first()
+    try:
+        username_input = request.username.strip().lower()
+        input_pwd = request.password.strip()
+        print(f" Username input: {username_input}")
+        
+        # This query triggers the DB connection
+        user = db.query(models.EmpDet).filter(
+            or_(
+                func.lower(func.trim(models.EmpDet.p_mail)) == username_input,
+                func.lower(func.trim(models.EmpDet.mail)) == username_input,
+                func.lower(func.trim(models.EmpDet.emp_id)) == username_input,
+                func.lower(func.replace(func.trim(models.EmpDet.emp_id), " ", "")) == username_input.replace(" ", "")
+            )
+        ).first()
 
-    if not user:
-        print(f" User not found for input: {username_input}")
-        raise HTTPException(status_code=404, detail="Invalid Username")
+        if not user:
+            print(f" User not found for input: {username_input}")
+            raise HTTPException(status_code=404, detail="Invalid Username")
 
-    print(f" User FOUND: {user.emp_id} ({user.p_mail})")
+        print(f" User FOUND: {user.emp_id} ({user.p_mail})")
 
-    input_md5 = hashlib.md5(input_pwd.encode()).hexdigest()
-    print("\n PASSWORD DEBUG")
-    print("Input password:", input_pwd)
-    print("Input MD5:", input_md5)
-    print("DB attribute15:", user.attribute15)
-    print("DB password column:", user.password)
+        input_md5 = hashlib.md5(input_pwd.encode()).hexdigest()
+        print("\n PASSWORD DEBUG")
+        print("Input password:", input_pwd)
+        print("Input MD5:", input_md5)
+        print("DB attribute15:", user.attribute15)
+        print("DB password column:", user.password)
 
-    password_valid = False
-    if user.attribute15 and user.attribute15.lower() == input_md5.lower():
-        print(" Match via attribute15 MD5")
-        password_valid = True
-    if not password_valid and user.password and user.password.lower() == input_md5.lower():
-        print(" Match via password column MD5")
-        password_valid = True
-    if not password_valid and user.password == input_pwd:
-        print(" Match via PLAINTEXT password")
-        password_valid = True
-    if not password_valid and user.password and user.attribute15:
-        try:
-            AES_KEY = b"1234567890abcdef"
-            encrypted_bytes = base64.b64decode(user.password)
-            iv_bytes = base64.b64decode(user.attribute15)
-            if len(iv_bytes) == 16:
-                cipher = AES.new(AES_KEY, AES.MODE_CBC, iv_bytes)
-                decrypted = unpad(cipher.decrypt(encrypted_bytes), 16).decode()
-                print(" AES decrypted password:", decrypted)
-                if decrypted == input_pwd:
-                    print(" Match via AES decrypted password")
-                    password_valid = True
-        except Exception as e:
-            print(" AES decrypt failed:", str(e))
+        password_valid = False
+        if user.attribute15 and user.attribute15.lower() == input_md5.lower():
+            print(" Match via attribute15 MD5")
+            password_valid = True
+        if not password_valid and user.password and user.password.lower() == input_md5.lower():
+            print(" Match via password column MD5")
+            password_valid = True
+        if not password_valid and user.password == input_pwd:
+            print(" Match via PLAINTEXT password")
+            password_valid = True
+        if not password_valid and user.password and user.attribute15:
+            try:
+                AES_KEY = b"1234567890abcdef"
+                encrypted_bytes = base64.b64decode(user.password)
+                iv_bytes = base64.b64decode(user.attribute15)
+                if len(iv_bytes) == 16:
+                    cipher = AES.new(AES_KEY, AES.MODE_CBC, iv_bytes)
+                    decrypted = unpad(cipher.decrypt(encrypted_bytes), 16).decode()
+                    print(" AES decrypted password:", decrypted)
+                    if decrypted == input_pwd:
+                        print(" Match via AES decrypted password")
+                        password_valid = True
+            except Exception as e:
+                print(" AES decrypt failed:", str(e))
 
-    if not password_valid:
-        print(" PASSWORD FAILED")
-        raise HTTPException(status_code=401, detail="Invalid Password")
+        if not password_valid:
+            print(" PASSWORD FAILED")
+            raise HTTPException(status_code=401, detail="Invalid Password")
 
-    print(" PASSWORD VERIFIED")
+        print(" PASSWORD VERIFIED")
 
-    is_global_admin = False
-    role_type = "Employee"
-    if user.dom_id:
-        try:
-            d_id = int(str(user.dom_id).strip())
-            domain_obj = db.query(models.Domain).filter(models.Domain.dom_id == d_id).first()
-            if domain_obj and domain_obj.domain:
-                if any(x in domain_obj.domain.lower() for x in ["admin", "executive", "management"]):
-                    role_type = "Admin"
-                    is_global_admin = True
-        except:
-            pass
+        is_global_admin = False
+        role_type = "Employee"
+        if user.dom_id:
+            try:
+                d_id = int(str(user.dom_id).strip())
+                domain_obj = db.query(models.Domain).filter(models.Domain.dom_id == d_id).first()
+                if domain_obj and domain_obj.domain:
+                    if any(x in domain_obj.domain.lower() for x in ["admin", "executive", "management"]):
+                        role_type = "Admin"
+                        is_global_admin = True
+            except:
+                pass
 
-    is_manager = db.query(models.EmpDet).filter(
-        func.lower(func.trim(models.EmpDet.assign_manager)) == user.emp_id.lower().strip()
-    ).first() is not None
-    if is_manager and role_type != "Admin":
-        role_type = "Admin"
+        is_manager = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.assign_manager)) == user.emp_id.lower().strip()
+        ).first() is not None
+        if is_manager and role_type != "Admin":
+            role_type = "Admin"
 
-    has_2fa = bool(user.auth_key and user.auth_key.strip())
-    print(f" 2FA Enabled: {has_2fa}")
-    print(f" Role: {role_type}, Global Admin: {is_global_admin}, Manager: {is_manager}")
-    print("=" * 60)
+        has_2fa = bool(user.auth_key and user.auth_key.strip())
+        print(f" 2FA Enabled: {has_2fa}")
+        print(f" Role: {role_type}, Global Admin: {is_global_admin}, Manager: {is_manager}")
+        print("=" * 60)
 
-    return {
-        "access_token": "temp",
-        "token_type": "bearer",
-        "username": user.p_mail or "",
-        "role_type": role_type,
-        "is_global_admin": is_global_admin,
-        "user_id": user.emp_id or "",
-        "name": user.name or "User",
-        "requires_2fa": has_2fa
-    }
+        return {
+            "access_token": "temp",
+            "token_type": "bearer",
+            "username": user.p_mail or "",
+            "role_type": role_type,
+            "is_global_admin": is_global_admin,
+            "user_id": user.emp_id or "",
+            "name": user.name or "User",
+            "requires_2fa": has_2fa
+        }
+    except Exception as e:
+        error_msg = str(e)
+        print(f" ERROR DURING LOGIN: {error_msg}")
+        if "timed out" in error_msg.lower() or "connection" in error_msg.lower():
+            raise HTTPException(
+                status_code=500, 
+                detail="Database Connection Timeout. Please whitelist Render's IP on GoDaddy MySQL (Remote MySQL) settings."
+            )
+        raise HTTPException(status_code=500, detail=f"Server error: {error_msg}")
 
 
 @app.post("/forgot-password")
