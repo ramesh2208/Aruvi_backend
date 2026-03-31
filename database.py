@@ -13,7 +13,7 @@ DATABASE = "aruvi_test"
 import socket
 encoded_password = quote_plus(PASSWORD)
 
-# Auto-resolve Host if it's an IP (often helps with GoDaddy firewall) last
+# Auto-resolve Host if it's an IP (often helps with GoDaddy firewall)
 try:
     if HOST.replace('.', '').isdigit():
         RESOLVED_HOST = socket.gethostbyaddr(HOST)[0]
@@ -24,16 +24,14 @@ except Exception as e:
     print(f"DEBUG: Host resolution failed for {HOST}: {e}")
     RESOLVED_HOST = HOST
 
-SQLALCHEMY_DATABASE_URL = f"mysql+pymysql://{USERNAME}:{encoded_password}@{RESOLVED_HOST}:{PORT}/{DATABASE}"
+SQLALCHEMY_DATABASE_URL = f"mysql+mysqlconnector://{USERNAME}:{encoded_password}@{RESOLVED_HOST}:{PORT}/{DATABASE}"
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
     pool_recycle=300,
     pool_pre_ping=True,
     connect_args={
-        "connect_timeout": 30,
-        "charset": "utf8mb4",
-        "ssl": {"disabled": True}
+        "connection_timeout": 30
     }
 )
 
