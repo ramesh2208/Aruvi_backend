@@ -1,42 +1,31 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from urllib.parse import quote_plus
 
-# Database Credentials
 USERNAME = "aruvitest"
 PASSWORD = "Ti*&#V*&urAtEst"
-HOST = "184.168.119.82"
+HOST = "82.119.168.184.host.secureserver.net"
 PORT = "3306"
 DATABASE = "aruvi_test"
 
-import socket
 encoded_password = quote_plus(PASSWORD)
 
-# Auto-resolve Host if it's an IP (often helps with GoDaddy firewall)
-try:
-    if HOST.replace('.', '').isdigit():
-        RESOLVED_HOST = socket.gethostbyaddr(HOST)[0]
-        print(f"DEBUG: Auto-resolved {HOST} to {RESOLVED_HOST}")
-    else:
-        RESOLVED_HOST = HOST
-except Exception as e:
-    print(f"DEBUG: Host resolution failed for {HOST}: {e}")
-    RESOLVED_HOST = HOST
-
-SQLALCHEMY_DATABASE_URL = f"mysql+mysqlconnector://{USERNAME}:{encoded_password}@{RESOLVED_HOST}:{PORT}/{DATABASE}"
+# Connecting to GoDaddy MySQL with increased timeout
+SQLALCHEMY_DATABASE_URL = f"mysql+pymysql://{USERNAME}:{encoded_password}@{HOST}:{PORT}/{DATABASE}"
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
-    pool_recycle=300,
-    pool_pre_ping=True,
+    pool_recycle=120,    # Reduced recycle to handle GoDaddy's aggressive connection closing
+    pool_pre_ping=True,   # Heartbeat to check if connection is alive
     connect_args={
-        "connection_timeout": 30
+        "connect_timeout": 60,   # High timeout for cloud latency
+        "read_timeout": 60,
+        "write_timeout": 60
     }
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
 Base = declarative_base()
 
 def get_db():
@@ -45,3 +34,14 @@ def get_db():
         yield db
     finally:
         db.close()
+
+# Startup test
+def test_db_connection():
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        print("✅ DB Connected successfully!")
+        return True
+    except Exception as e:
+        print(f"❌ DB Connection FAILED: {e}")
+        return False
