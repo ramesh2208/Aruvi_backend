@@ -28,8 +28,14 @@ import models, schemas, database
 from database import engine, SessionLocal
 
 
-# Create tables if they don't exist
-models.Base.metadata.create_all(bind=engine)
+# DATABASE INITIALIZATION
+try:
+    print(" INFO: Attempting database initialization...")
+    models.Base.metadata.create_all(bind=engine)
+    print(" SUCCESS: Database initialization complete.")
+except Exception as e:
+    print(f" WARNING: Database initialization failed: {e}")
+    print(" INFO: Application starting without DB connection; expect errors on DB endpoints.")
 
 
 # Proactive Migration for WFH table
@@ -56,7 +62,10 @@ def migrate_wfh_table():
         db.close()
 
 
-migrate_wfh_table()
+try:
+    migrate_wfh_table()
+except:
+    pass
  
  
 def migrate_revision_column():
@@ -77,7 +86,10 @@ def migrate_revision_column():
     finally:
         db.close()
 
-migrate_revision_column()
+try:
+    migrate_revision_column()
+except:
+    pass
 
 # In-memory OTP storage
 otp_store = {}
