@@ -29,7 +29,14 @@ from database import engine, SessionLocal
 
 
 # Create tables if they don't exist
-models.Base.metadata.create_all(bind=engine)
+try:
+    print("Connecting to database and creating tables...")
+    models.Base.metadata.create_all(bind=engine)
+    print("✅ Database tables created/verified.")
+except Exception as e:
+    print(f"❌ CRITICAL DATABASE ERROR: {e}")
+    # We continue so the app can start and we can see logs on Render.
+    # Most endpoints will fail, but the server stays up for diagnostics.
 
 
 # Proactive Migration for WFH table
@@ -56,7 +63,11 @@ def migrate_wfh_table():
         db.close()
 
 
-migrate_wfh_table()
+# Try migrating tables during startup
+try:
+    migrate_wfh_table()
+except Exception as e:
+    print(f" Migration Warning (WFH): {e}")
  
  
 def migrate_revision_column():
@@ -77,7 +88,10 @@ def migrate_revision_column():
     finally:
         db.close()
 
-migrate_revision_column()
+try:
+    migrate_revision_column()
+except Exception as e:
+    print(f" Migration Warning (Revision): {e}")
 
 # In-memory OTP storage
 otp_store = {}
@@ -96,6 +110,16 @@ app.add_middleware(
 @app.get("/")
 def read_root():
     return {"status": "online", "message": "Aruvi Backend is active"}
+
+
+@app.get("/diag/ip")
+def get_diag_ip():
+    try:
+        # This helps identify which IP Render is using to connect to GoDaddy
+        response = requests.get("https://api.ipify.org?format=json", timeout=5)
+        return {"ip": response.json().get("ip"), "note": "Use this IP for whitelisting in MySQL settings if possible, or use '%' for all."}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def get_db():
