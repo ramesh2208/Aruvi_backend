@@ -246,7 +246,6 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         user = db.query(models.EmpDet).filter(
             or_(
                 func.lower(func.trim(models.EmpDet.p_mail)) == username_input,
-                func.lower(func.trim(models.EmpDet.mail)) == username_input,
                 func.lower(func.trim(models.EmpDet.emp_id)) == username_input,
                 func.lower(func.replace(func.trim(models.EmpDet.emp_id), " ", "")) == username_input.replace(" ", "")
             )
