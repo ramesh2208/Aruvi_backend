@@ -254,7 +254,7 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         print(f"❌ DB ERROR during login query: {db_err}")
         raise HTTPException(
             status_code=503,
-            detail="Database connection error. The server may be waking up — please try again in 30 seconds."
+            detail="Database connection error. Invalid Credentials !"
         )
 
     if not user:
