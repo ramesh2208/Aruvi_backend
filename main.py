@@ -916,7 +916,7 @@ def register_push_token(req: schemas.PushTokenRegisterRequest, db: Session = Dep
     user = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == emp_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    user.attribute10 = req.push_token
+    user.attribute7 = req.push_token
     user.last_update_date = datetime.now()
     db.commit()
     return {"message": "Push token registered successfully"}
@@ -1197,10 +1197,10 @@ async def apply_leave(
                     """
                     body = get_email_template(manager.name, "Leave Request", content, emp_name)
                     background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
-                    if manager.attribute10:
+                    if manager.attribute7:
                         p_title = "New Leave Request"
                         p_msg = f"{emp_name} has requested {leave_type} from {from_date} to {to_date}."
-                        background_tasks.add_task(send_expo_push_notification, [manager.attribute10], p_title, p_msg)
+                        background_tasks.add_task(send_expo_push_notification, [manager.attribute7], p_title, p_msg)
         except Exception as mail_err:
             print(f" Non-critical error sending mail: {mail_err}")
 
@@ -1348,10 +1348,10 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
             """
             body = get_email_template(emp_user.name, f"Leave Request {request_item.action}", content, leave.approved_by or "Manager")
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
-            if emp_user.attribute10:
+            if emp_user.attribute7:
                 p_title = f"Leave Request {request_item.action}"
                 p_msg = f"Your {leave.leave_type} request has been {request_item.action.lower()} by {leave.approved_by or 'Manager'}."
-                background_tasks.add_task(send_expo_push_notification, [emp_user.attribute10], p_title, p_msg)
+                background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7], p_title, p_msg)
     except Exception as e:
         print(f" Email notification failed: {e}")
     return {"message": f"Leave request {request_item.action.lower()} successfully",
@@ -1763,10 +1763,10 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
                 """
                 body = get_email_template(manager.name, "New Overtime Request", content, user.name)
                 background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
-                if manager.attribute10:
+                if manager.attribute7:
                     p_title = "New OT Request"
                     p_msg = f"{user.name} requested OT for {ot_date_clean} ({request.duration})."
-                    background_tasks.add_task(send_expo_push_notification, [manager.attribute10], p_title, p_msg)
+                    background_tasks.add_task(send_expo_push_notification, [manager.attribute7], p_title, p_msg)
         return {"message": "OT request submitted successfully", "ot_id": new_ot.ot_id}
     except HTTPException:
         db.rollback()
@@ -1950,10 +1950,10 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                     '''
                     body = get_email_template(manager.name, "Permission Request", content, user.name)
                     background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
-                    if manager.attribute10:
+                    if manager.attribute7:
                         p_title = "New Permission Request"
                         p_msg = f"{user.name} requested permission for {request.date} ({f_display} to {t_display})."
-                        background_tasks.add_task(send_expo_push_notification, [manager.attribute10], p_title, p_msg)
+                        background_tasks.add_task(send_expo_push_notification, [manager.attribute7], p_title, p_msg)
         except Exception as mail_err:
             print(f"   Non-critical email error: {mail_err}")
 
@@ -2028,10 +2028,10 @@ def approve_permission(request: schemas.PermissionApprovalAction, background_tas
             '''
             body = get_email_template(emp_user.name, f"Permission Request {new_action}", content, admin_user.name if admin_user else "Manager")
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
-            if emp_user.attribute10:
+            if emp_user.attribute7:
                 p_title = f"Permission Request {new_action}"
                 p_msg = f"Your permission request for {perm_date} has been {new_action.lower()}."
-                background_tasks.add_task(send_expo_push_notification, [emp_user.attribute10], p_title, p_msg)
+                background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7], p_title, p_msg)
     except Exception as e:
         print(f"Email notification failed: {e}")
 
@@ -2123,10 +2123,10 @@ def approve_ot(request: schemas.OverTimeApprovalAction, background_tasks: Backgr
             """
             body = get_email_template(emp_user.name, "OT Request Update", content, "HR Team")
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
-            if emp_user.attribute10:
+            if emp_user.attribute7:
                 p_title = f"OT Request {request.action.upper()}"
                 p_msg = f"Your OT request for {ot.ot_date} has been {request.action.lower()}."
-                background_tasks.add_task(send_expo_push_notification, [emp_user.attribute10], p_title, p_msg)
+                background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7], p_title, p_msg)
     except Exception as e:
         print(f" Email notification failed: {e}")
     return {"message": f"OT request {request.action.lower()} successfully"}
@@ -2207,10 +2207,10 @@ def approve_wfh(request: schemas.WFHApprovalAction, background_tasks: Background
             """
             body = get_email_template(emp_user.name, "WFH Request Update", content, "HR Team")
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
-            if emp_user.attribute10:
+            if emp_user.attribute7:
                 p_title = f"WFH Request {request.action.upper()}"
                 p_msg = f"Your WFH request for {wfh.from_date} has been {request.action.lower()}."
-                background_tasks.add_task(send_expo_push_notification, [emp_user.attribute10], p_title, p_msg)
+                background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7], p_title, p_msg)
     except Exception as e:
         print(f" Email notification failed: {e}")
     return {"message": f"WFH request {request.action.lower()} successfully"}
@@ -2305,10 +2305,10 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
                 """
                 body = get_email_template(manager.name, "Work From Home Request", content, user.name)
                 background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
-                if manager.attribute10:
+                if manager.attribute7:
                     p_title = "New WFH Request"
                     p_msg = f"{user.name} requested WFH from {from_str} to {to_str}."
-                    background_tasks.add_task(send_expo_push_notification, [manager.attribute10], p_title, p_msg)
+                    background_tasks.add_task(send_expo_push_notification, [manager.attribute7], p_title, p_msg)
         return {"message": "WFH request submitted successfully", "wfh_id": new_wfh.wfh_id}
     except HTTPException:
         db.rollback()
