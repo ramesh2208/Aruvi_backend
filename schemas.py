@@ -334,3 +334,7 @@ class ProjectAllocationResponse(BaseModel):
     dept_name: Optional[str] = None
     dom_name: Optional[str] = None
     project_name: Optional[str] = None
+
+class PushTokenRegisterRequest(BaseModel):
+    user_id: str
+    push_token: str
