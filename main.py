@@ -893,27 +893,38 @@ def send_email_notification(to_email: str, subject: str, body_html: str):
         return False
 
 
-def send_expo_push_notification(tokens: list, title: str, message: str, data: dict = None):
-    if not tokens:
-        return
+def send_expo_push_notification(tokens, title, message, data=None):
+    """Dispatches notifications via Expo's push gateway."""
     url = "https://exp.host/--/api/v2/push/send"
-    payload = []
+    print(f"\n🔔 [EXPO PUSH] PREPARING TO SEND:")
+    print(f"   Tokens: {tokens}")
+    print(f"   Title: {title}")
+    
+    payloads = []
     for token in tokens:
-        if token and str(token).startswith("ExponentPushToken"):
-            payload.append({
-                "to": token,
+        if token and str(token).strip().startswith("ExponentPushToken"):
+            payload = {
+                "to": token.strip(),
                 "title": title,
                 "body": message,
                 "data": data or {},
                 "sound": "default"
-            })
-    if not payload:
+            }
+            payloads.append(payload)
+    
+    if not payloads:
+        print("   ⚠️ [EXPO PUSH] ABORTED: No valid ExponentPushTokens found.")
         return
+
     try:
-        requests.post(url, json=payload, timeout=10)
-        print(f" PUSH SENT to {len(payload)} devices: {title}")
+        response = requests.post(url, json=payloads, headers={"Accept": "application/json"}, timeout=10)
+        print(f"   [EXPO PUSH] RESPONSE CODE: {response.status_code}")
+        if response.status_code == 200:
+            print(f"   ✅ [EXPO PUSH] SENT successfully to {len(payloads)} devices!")
+        else:
+            print(f"   ❌ [EXPO PUSH] FAILED: {response.text}")
     except Exception as e:
-        print(f" Push Notification Error: {e}")
+        print(f"   ❌ [EXPO PUSH] ERROR: {str(e)}")
 
 
 @app.post("/register-push-token")
@@ -944,6 +955,13 @@ def register_push_token(req: schemas.PushTokenRegisterRequest, db: Session = Dep
         db.rollback()
         print(f"❌ [PUSH] SAVE FAILED: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to save token to database")
+
+
+@app.post("/test-push")
+def test_push(req: schemas.PushTokenRegisterRequest, db: Session = Depends(get_db)):
+    """A hidden endpoint to manually trigger a push notification for testing."""
+    send_expo_push_notification([req.push_token], "Aruvi Test Notification", "If you see this, push notifications are working perfectly!")
+    return {"message": "Test push triggered"}
 
 
 def fmt_days(d):
@@ -1357,7 +1375,10 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
                 balance.available_leave = float(balance.available_leave) + l_days
     db.commit()
     try:
-        emp_user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == leave.emp_id).first()
+        emp_user = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == (leave.emp_id or "").strip().lower()
+        ).first()
+
         if emp_user and emp_user.p_mail:
             subject = f"RE: ITS-{emp_user.name}-{leave.leave_type} Request on {leave.from_date}"
             content = f"""
