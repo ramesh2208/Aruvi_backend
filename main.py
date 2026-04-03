@@ -50,6 +50,12 @@ def run_migrations_with_retry(max_retries: int = 3, delay: int = 5):
                     conn.execute(sqlalchemy.text("ALTER TABLE xxits_aruvi_emp_leave_t ADD COLUMN revision VARCHAR(10)"))
                     print(" ✅ Migration: Added revision to xxits_aruvi_emp_leave_t")
                 except: pass
+
+                # Add attribute7 to EmpDet for Push Notifications if missing
+                try:
+                    conn.execute(sqlalchemy.text("ALTER TABLE xxits_emp_det_t ADD COLUMN attribute7 VARCHAR(255)"))
+                    print(" ✅ Migration: Added attribute7 to xxits_emp_det_t")
+                except: pass
             return True
         except Exception as e:
             print(f"❌ Migration failed: {e}")
@@ -912,14 +918,32 @@ def send_expo_push_notification(tokens: list, title: str, message: str, data: di
 
 @app.post("/register-push-token")
 def register_push_token(req: schemas.PushTokenRegisterRequest, db: Session = Depends(get_db)):
-    emp_id = req.user_id.strip().lower()
-    user = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == emp_id).first()
+    emp_id = req.user_id.strip().upper() # Use UPPER for matching EmpDet PK
+    print(f"\n📥 [PUSH] REGISTER TOKEN REQUEST for: {emp_id}")
+    print(f"   Token: {req.push_token[:30]}...")
+
+    # Case-insensitive robust match
+    user = db.query(models.EmpDet).filter(
+        func.lower(func.trim(models.EmpDet.emp_id)) == req.user_id.strip().lower()
+    ).first()
+
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        print(f"❌ [PUSH] USER NOT FOUND: {emp_id}")
+        raise HTTPException(status_code=404, detail=f"User {emp_id} not found")
+
+    print(f"✅ [PUSH] USER FOUND: {user.name}")
     user.attribute7 = req.push_token
     user.last_update_date = datetime.now()
-    db.commit()
-    return {"message": "Push token registered successfully"}
+    
+    try:
+        db.commit()
+        db.refresh(user)
+        print(f"🚀 [PUSH] TOKEN SUCCESSFULLY SAVED to attribute7 for {user.emp_id}")
+        return {"message": "Push token registered successfully", "user_id": user.emp_id}
+    except Exception as e:
+        db.rollback()
+        print(f"❌ [PUSH] SAVE FAILED: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to save token to database")
 
 
 def fmt_days(d):
