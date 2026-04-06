@@ -733,7 +733,39 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         total_hours_float = hours + (minutes / 60)
 
         if total_hours_float < 4:
-            checkin_record.status = "A"
+            # Check Casual Leave balance
+            cl_balance = db.query(models.LeaveDet).filter(
+                models.LeaveDet.emp_id == emp_id,
+                func.lower(models.LeaveDet.leave_type).contains("casual")
+            ).first()
+
+            if cl_balance and float(cl_balance.available_leave or 0) >= 0.5:
+                # Deduct 0.5 days of casual leave for LT4
+                cl_balance.available_leave = float(cl_balance.available_leave) - 0.5
+                cl_balance.availed_leave = float(cl_balance.availed_leave or 0) + 0.5
+                db.add(cl_balance)
+                
+                # Insert into EmpLeave
+                new_leave = models.EmpLeave(
+                    l_det_id=cl_balance.l_det_id,
+                    emp_id=emp_id,
+                    leave_type="Casual Leave",
+                    from_date=today_date.strftime("%Y-%m-%d"),
+                    to_date=today_date.strftime("%Y-%m-%d"),
+                    days="0.5",
+                    reason="Auto-deducted: Worked less than 4 hours",
+                    status="Approved",
+                    applied_date=now.strftime("%Y-%m-%d"),
+                    attribute1="0.5",
+                    created_by=emp_id,
+                    creation_date=now,
+                    last_updated_by=emp_id,
+                    last_update_date=now
+                )
+                db.add(new_leave)
+                checkin_record.status = "CL"
+            else:
+                checkin_record.status = "A"
         else:
             checkin_record.status = "P"
 
@@ -1040,6 +1072,8 @@ async def apply_leave(
         days: float = Form(...),
         reason: str = Form(...),
         status: str = Form(...),
+        is_half_day: Optional[str] = Form(None),
+        half_day_date: Optional[str] = Form(None),
         attachments: Optional[List[UploadFile]] = File(None),
         db: Session = Depends(get_db)
 ):
@@ -1051,6 +1085,10 @@ async def apply_leave(
 
     if not user:
         raise HTTPException(status_code=404, detail=f"Employee with ID {emp_id} not found in the system.")
+        
+    if half_day_date and days % 1 != 0:
+        reason += f" [Half Day Date: {half_day_date}]"
+
 
     emp_name = user.name if user else 'Unknown'
     normalized_leave_type = (leave_type or "").strip().lower()
@@ -1219,7 +1257,7 @@ async def apply_leave(
                 file=primary_attachment_path,
                 attribute14=attr14_paths,
                 applied_date=datetime.now().strftime('%Y-%m-%d'),
-                mail_id_message_id="", hr_action="", hr_approval="", admin_approval="",
+                mail_message_id="", hr_action="", hr_approval="", admin_approval="",
                 lop_days="0",
                 remarks="", approved_by="", reporting_manager=user.assign_manager or "", approver=user.project_manager or "", revision="0",
                 attribute_category="", attribute1=fmt_days(requested_days),
@@ -1257,7 +1295,7 @@ async def apply_leave(
                 file=primary_attachment_path,
                 attribute14=attr14_paths,
                 applied_date=datetime.now().strftime('%Y-%m-%d'),
-                mail_id_message_id="", hr_action="", hr_approval="", admin_approval="",
+                mail_message_id="", hr_action="", hr_approval="", admin_approval="",
                 lop_days=fmt_days(lop_days_val),
                 remarks="", approved_by="", reporting_manager=user.assign_manager or "", approver=user.project_manager or "", revision="0",
                 attribute_category="", attribute1=fmt_days(requested_days),
@@ -1283,7 +1321,7 @@ async def apply_leave(
                     subject = f"ITS - {emp_name} - {leave_type} Request | {from_date} ({summary_msg})"
                     content = f"""
                     <p><strong>Good Day!</strong></p>
-                    <p>I hope this mail_id finds you well.</p>
+                    <p>I hope this email finds you well.</p>
                     <p>I am requesting leave from <strong>{from_date}</strong> to <strong>{to_date}</strong>.</p>
                     <p><strong>No of Days:</strong> {summary_msg}</p>
                     <p><strong>Reason:</strong> {reason}</p>
@@ -1294,8 +1332,8 @@ async def apply_leave(
                         p_title = "New Leave Request"
                         p_msg = f"{emp_name} has requested {leave_type} from {from_date} to {to_date}."
                         background_tasks.add_task(send_expo_push_notification, [manager.attribute7], p_title, p_msg)
-        except Exception as mail_id_err:
-            print(f" Non-critical error sending mail_id: {mail_id_err}")
+        except Exception as mail_err:
+            print(f" Non-critical error sending email: {mail_err}")
 
     except HTTPException:
         db.rollback()
@@ -2037,7 +2075,7 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                     subject = f"ITS - {user.name} - Permission Request | {request.date} | {f_display} to {t_display}"
                     content = f'''
                     <p><strong>Good Day!</strong></p>
-                    <p>I hope this mail_id finds you well.</p>
+                    <p>I hope this email finds you well.</p>
                     <p>I would like to request permission on <strong>{request.date}</strong>
                        from <strong>{f_display}</strong> to <strong>{t_display}</strong>.</p>
                     <p><strong>Approved Hours:</strong> {approved_hrs} hr</p>
@@ -2050,8 +2088,8 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                         p_title = "New Permission Request"
                         p_msg = f"{user.name} requested permission for {request.date} ({f_display} to {t_display})."
                         background_tasks.add_task(send_expo_push_notification, [manager.attribute7], p_title, p_msg)
-        except Exception as mail_id_err:
-            print(f"   Non-critical email error: {mail_id_err}")
+        except Exception as mail_err:
+            print(f"   Non-critical email error: {mail_err}")
 
         return {"message": "Permission applied successfully", "p_id": new_perm.p_id, "approved_hrs": approved_hrs, "lop_hrs": round(lop_hrs, 2)}
 
