@@ -650,7 +650,7 @@ def get_attendance_logs(manager_id: Optional[str] = None, db: Session = Depends(
             "empId": e_id,
             "inTime": log.in_time if log and log.in_time else "--:--",
             "outTime": log.out_time if log and log.out_time else "--:--",
-            "totalHours": log.Total_hours if log and log.Total_hours else "0h 0m",
+            "totalHours": log.Total_hours if log and log.Total_hours else "0Hr 0Min",
             "status": log.status if log and log.status else "Absent"
         })
     return results
@@ -674,7 +674,7 @@ def check_in(request: schemas.CheckInRequest, db: Session = Depends(get_db)):
             t_date=today_date,
             t_day=now.strftime("%A"),
             month=now.strftime("%B"),
-            status="Pending",
+            status="P",
             created_by=emp_id,
             creation_date=now,
             last_updated_by=emp_id,
@@ -729,15 +729,11 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
 
         hours = total_seconds // 3600
         minutes = (total_seconds % 3600) // 60
-        checkin_record.Total_hours = f"{hours}h {minutes}m"
+        checkin_record.Total_hours = f"{hours}Hr {minutes}Min"
         total_hours_float = hours + (minutes / 60)
 
         if total_hours_float < 4:
-            checkin_record.status = "LT4"
-        elif total_hours_float < 6:
-            checkin_record.status = "LT6"
-        elif total_hours_float < 8:
-            checkin_record.status = "LT8"
+            checkin_record.status = "A"
         else:
             checkin_record.status = "P"
 
@@ -754,7 +750,7 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
 
     return {
         "message": "Check-out successful",
-        "total_hours": checkin_record.Total_hours or "0h 0m",
+        "total_hours": checkin_record.Total_hours or "0Hr 0Min",
         "status": checkin_record.status
     }
 
@@ -1151,6 +1147,24 @@ async def apply_leave(
             if max_excess > 0:
                 lop_days_val = min(requested_days, max_excess)
                 cl_days_to_deduct = requested_days - lop_days_val
+
+        elif normalized_leave_type == "sick leave":
+            # Fetch sick leave balance row
+            sl_balance_row = db.query(models.LeaveDet).filter(
+                func.lower(func.trim(models.LeaveDet.emp_id)) == emp_id.strip().lower(),
+                func.lower(func.trim(models.LeaveDet.leave_type)).contains('sick')
+            ).first()
+            if sl_balance_row:
+                sl_available = float(sl_balance_row.available_leave or 0)
+                if sl_available <= 0:
+                    # No sick leave balance at all — all goes to LOP
+                    lop_days_val = requested_days
+                    cl_days_to_deduct = 0.0
+                elif requested_days > sl_available:
+                    # Partial: use available SL, rest goes to LOP
+                    cl_days_to_deduct = sl_available
+                    lop_days_val = requested_days - sl_available
+                # else: enough balance, cl_days_to_deduct remains = requested_days, lop_days_val = 0
 
         l_type_lower = leave_type.lower()
         balance_row = None
