@@ -28,6 +28,40 @@ from sqlalchemy import extract
 import models, schemas, database
 from database import engine, SessionLocal
 
+# ─── DB Error Handler Helper ──────────────────────────────────────────────────
+def handle_db_error(e: Exception):
+    err_msg = str(e)
+    print(f"❌ DATABASE ERROR: {err_msg}")
+    
+    # Check for IP restriction error (MySQL 1130)
+    if "is not allowed to connect" in err_msg or "1130" in err_msg:
+        import re
+        ip_match = re.search(r"Host '([\d\.]+)' is not allowed", err_msg)
+        server_ip = ip_match.group(1) if ip_match else "Unknown"
+        # Try to get the real external IP as well for clarity
+        try:
+            real_ip = requests.get("https://api.ipify.org?format=json", timeout=1).json().get("ip")
+            if real_ip: server_ip = real_ip
+        except: pass
+            
+        raise HTTPException(
+            status_code=503,
+            detail=f"IP RESTRICTED: Please whitelist our server IP '{server_ip}' in your GoDaddy Remote MySQL settings. (Error: 1130)"
+        )
+    
+    # Specific timeout or connection refused
+    if "Connection refused" in err_msg or "Timed out" in err_msg or "timeout" in err_msg.lower():
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection timeout. The server/database is taking too long to respond. Please try again in 30 seconds."
+        )
+
+    # Generic DB error
+    raise HTTPException(
+        status_code=503,
+        detail="Database unavailable. The server may be waking up - please wait 30 seconds and try again."
+    )
+
 
 app = FastAPI()
 
@@ -71,7 +105,14 @@ def create_tables_with_retry(max_retries: int = 5, delay: int = 5):
             print("✅ Database tables created/verified.")
             return True
         except Exception as e:
-            print(f"❌ DB connection failed (attempt {attempt}): {e}")
+            err_msg = str(e)
+            print(f"❌ DB connection failed (attempt {attempt}): {err_msg}")
+            if "is not allowed to connect" in err_msg or "1130" in err_msg:
+                try:
+                    current_ip = requests.get("https://api.ipify.org?format=json", timeout=2).json().get("ip")
+                    print(f"⚠️  IP RESTRICTION DETECTED: Please add '{current_ip}' to GoDaddy Remote MySQL whitelists.")
+                except: pass
+            
             if attempt < max_retries:
                 print(f"   Retrying in {delay}s...")
                 time.sleep(delay)
@@ -257,11 +298,7 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
             )
         ).first()
     except Exception as db_err:
-        print(f"❌ DB ERROR during login query: {db_err}")
-        raise HTTPException(
-            status_code=503,
-            detail="Database connection error. Invalid Credentials !"
-        )
+        handle_db_error(db_err)
 
     if not user:
         print(f" User not found for input: {username_input}")
@@ -341,7 +378,7 @@ def forgot_password(request: schemas.ForgotPasswordRequest, background_tasks: Ba
     try:
         user = db.query(models.EmpDet).filter(func.lower(models.EmpDet.p_mail) == email).first()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     if not user:
         raise HTTPException(status_code=404, detail="Email not found in our records")
     otp = ''.join(random.choices(string.digits, k=6))
@@ -405,7 +442,7 @@ def get_user_auth_key(request: GetAuthKeyRequest, db: Session = Depends(get_db))
     try:
         user = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.p_mail)) == p_mail).first()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if not user.auth_key:
@@ -443,7 +480,7 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
     try:
         user = db.query(models.EmpDet).filter(func.trim(models.EmpDet.emp_id) == emp_id).first()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if not user.auth_key:
@@ -496,7 +533,7 @@ def reset_password(request: schemas.ResetPasswordRequest, db: Session = Depends(
     try:
         user = db.query(models.EmpDet).filter(func.lower(models.EmpDet.p_mail) == email).first()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     AES_KEY = b"1234567890abcdef"
@@ -522,7 +559,7 @@ def get_employees(manager_id: Optional[str] = None, db: Session = Depends(get_db
                 func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
         employees = query.all()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     results = []
     for emp in employees:
         domain_name = "Employee"
@@ -554,7 +591,7 @@ def get_employee_profile(emp_id: str, db: Session = Depends(get_db)):
         user = db.query(models.EmpDet).filter(
             func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()).first()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     if not user:
         raise HTTPException(status_code=404, detail="Employee not found")
     domain_name = "N/A"
@@ -601,7 +638,7 @@ def get_attendance_logs(manager_id: Optional[str] = None, db: Session = Depends(
         employees = query.all()
         logs = db.query(models.CheckIn).filter(models.CheckIn.t_date == today).all()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     logs_map = {log.emp_id.strip(): log for log in logs if log.emp_id}
     results = []
     for emp in employees:
@@ -649,7 +686,7 @@ def check_in(request: schemas.CheckInRequest, db: Session = Depends(get_db)):
         return {"message": "Check-in successful", "id": new_checkin.check_in_id}
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
 
 
 @app.post("/check-out")
@@ -663,7 +700,7 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
             models.CheckIn.t_date == today_date
         ).order_by(models.CheckIn.check_in_id.desc()).first()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     if not checkin_record:
         raise HTTPException(status_code=404, detail="No check-in found for today")
     checkin_record.out_time = request.out_time
@@ -732,7 +769,7 @@ def get_check_status(emp_id: str, db: Session = Depends(get_db)):
             models.CheckIn.t_date == today_date
         ).order_by(models.CheckIn.check_in_id.desc()).first()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     if record:
         return {
             "checked_in": True,
@@ -753,7 +790,7 @@ def get_attendance_month(emp_id: str, month: int, year: int, db: Session = Depen
             extract('year', models.CheckIn.t_date) == year
         ).all()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     for log in logs:
         if hasattr(log, 't_date') and log.t_date:
             if not isinstance(log.t_date, str):
@@ -768,7 +805,7 @@ def get_leave_stats(emp_id: str, db: Session = Depends(get_db)):
         leave_rows = db.query(models.LeaveDet).filter(
             func.lower(func.trim(models.LeaveDet.emp_id)) == emp_id.lower()).all()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     stats: dict = {
         "casualLeave": {"total": 0, "availed": 0},
         "sickLeave": {"total": 0, "availed": 0},
@@ -820,7 +857,7 @@ def get_wfh_history(emp_id: str, db: Session = Depends(get_db)):
             func.lower(func.trim(models.WFHDet.emp_id)) == emp_id.lower()
         ).order_by(models.WFHDet.wfh_id.desc()).all()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     return [
         {
             "wfh_id": row.wfh_id,
@@ -842,7 +879,7 @@ def get_leave_history(emp_id: str, db: Session = Depends(get_db)):
             func.lower(func.trim(models.EmpLeave.emp_id)) == emp_id.lower()
         ).order_by(models.EmpLeave.l_id.desc()).all()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     return [
         {
             "l_id": row.l_id,
@@ -1014,7 +1051,7 @@ async def apply_leave(
     try:
         user = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()).first()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
 
     if not user:
         raise HTTPException(status_code=404, detail=f"Employee with ID {emp_id} not found in the system.")
@@ -1274,7 +1311,7 @@ def get_pending_leaves(manager_id: Optional[str] = None, db: Session = Depends(g
                 func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
         pending = query.order_by(models.EmpLeave.creation_date.desc()).all()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     results = []
     for leave, emp in pending:
         results.append({
@@ -1304,7 +1341,7 @@ def get_all_leave_history(manager_id: Optional[str] = None, db: Session = Depend
                 func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
         all_leaves = query.order_by(models.EmpLeave.creation_date.desc()).all()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     results = []
     for leave, emp in all_leaves:
         results.append({
@@ -1330,7 +1367,7 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
     try:
         leave = db.query(models.EmpLeave).filter(models.EmpLeave.l_id == request_item.l_id).first()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     if not leave:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Leave request not found")
     old_status = leave.status
@@ -1466,7 +1503,7 @@ def get_notifications(
             func.lower(func.trim(models.EmpDet.emp_id)) == user_id
         ).first()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
 
     last_clear_date: Optional[datetime] = None
     if user and user.attribute8 and str(user.attribute8).strip():
@@ -1744,7 +1781,7 @@ def clear_all_notifications(user_id: str, db: Session = Depends(get_db)):
             func.lower(func.trim(models.EmpDet.emp_id)) == user_id
         ).first()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     if not user:
         raise HTTPException(status_code=404, detail=f"User '{user_id}' not found")
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1835,7 +1872,7 @@ def get_pending_permissions(manager_id: Optional[str] = None, db: Session = Depe
                 func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
         pending = query.order_by(models.EmpPermission.creation_date.desc()).all()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
 
     results = []
     for perm, emp in pending:
@@ -1872,7 +1909,7 @@ def get_all_permission_history(manager_id: Optional[str] = None, db: Session = D
                 func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
         all_perms = query.order_by(models.EmpPermission.creation_date.desc()).all()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
 
     results = []
     for perm, emp in all_perms:
@@ -2018,7 +2055,7 @@ def approve_permission(request: schemas.PermissionApprovalAction, background_tas
     try:
         perm = db.query(models.EmpPermission).filter(models.EmpPermission.p_id == request.p_id).first()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     if not perm:
         raise HTTPException(status_code=404, detail="Permission request not found")
 
@@ -2095,7 +2132,7 @@ def get_pending_ot(manager_id: Optional[str] = None, db: Session = Depends(get_d
                 func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
         pending = query.order_by(models.OverTimeDet.creation_date.desc()).all()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     results = []
     for ot, emp in pending:
         results.append({
@@ -2122,7 +2159,7 @@ def get_all_ot_history(manager_id: Optional[str] = None, db: Session = Depends(g
                 func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
         all_ot = query.order_by(models.OverTimeDet.creation_date.desc()).all()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     results = []
     for ot, emp in all_ot:
         results.append({
@@ -2142,7 +2179,7 @@ def approve_ot(request: schemas.OverTimeApprovalAction, background_tasks: Backgr
     try:
         ot = db.query(models.OverTimeDet).filter(models.OverTimeDet.ot_id == request.ot_id).first()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     if not ot:
         raise HTTPException(status_code=404, detail="OT request not found")
     ot.status = request.action
@@ -2189,7 +2226,7 @@ def get_pending_wfh(manager_id: Optional[str] = None, db: Session = Depends(get_
                 func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
         pending = query.order_by(models.WFHDet.creation_date.desc()).all()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     results = []
     for wfh, emp in pending:
         results.append({
@@ -2223,7 +2260,7 @@ def get_all_wfh_history(manager_id: Optional[str] = None, db: Session = Depends(
             })
         return results
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
 
 
 @app.post("/admin/approve-wfh")
@@ -2231,7 +2268,7 @@ def approve_wfh(request: schemas.WFHApprovalAction, background_tasks: Background
     try:
         wfh = db.query(models.WFHDet).filter(models.WFHDet.wfh_id == request.wfh_id).first()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     if not wfh:
         raise HTTPException(status_code=404, detail="WFH request not found")
     wfh.status = request.action
@@ -2268,7 +2305,7 @@ def get_wfh_stats(emp_id: str, db: Session = Depends(get_db)):
         wfh_records = db.query(models.WFHDet).filter(
             func.lower(func.trim(models.WFHDet.emp_id)) == emp_id.lower()).all()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     total_wfh = len(wfh_records)
     approved_wfh = sum(1 for r in wfh_records if r.status and r.status.lower() == 'approved')
     rejected_wfh = sum(1 for r in wfh_records if r.status and r.status.lower() == 'rejected')
@@ -2433,7 +2470,7 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
         user = db.query(models.EmpDet).filter(
             func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()).first()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     if not user:
         raise HTTPException(status_code=404, detail=f"User {emp_id} not found")
     today = datetime.now()
@@ -2688,7 +2725,7 @@ def get_holidays(db: Session = Depends(get_db)):
     try:
         holidays = db.query(models.HolidayDet).filter(models.HolidayDet.year == current_year).all()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     return [{"id": h.holiday_id, "date": h.Office_Holiday_Date, "name": h.Holiday_Name, "year": h.year, "month": h.Month} for h in holidays]
 
 
@@ -2697,7 +2734,7 @@ def timesheet_action(action_req: schemas.TimesheetApprovalAction, background_tas
     try:
         ts = db.query(models.TimesheetDet).filter(models.TimesheetDet.t_id == action_req.t_id).first()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     if not ts:
         raise HTTPException(status_code=404, detail="Timesheet record not found")
     ts.status = action_req.action
@@ -2822,7 +2859,7 @@ def get_ot_stats(emp_id: str, db: Session = Depends(get_db)):
         ot_records = db.query(models.OverTimeDet).filter(
             func.lower(func.trim(models.OverTimeDet.emp_id)) == emp_id.lower()).all()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
     total_ot = 0.0
     approved_ot = 0.0
 
@@ -2867,7 +2904,7 @@ def get_ot_history(emp_id: str, db: Session = Depends(get_db)):
             func.lower(func.trim(models.OverTimeDet.emp_id)) == emp_id.lower()
         ).order_by(models.OverTimeDet.ot_id.desc()).all()
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
 
 
 @app.get("/admin/roles", response_model=List[schemas.RoleResponse])
