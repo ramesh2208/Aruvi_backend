@@ -380,7 +380,7 @@ def forgot_password(request: schemas.ForgotPasswordRequest, background_tasks: Ba
     except Exception as e:
         handle_db_error(e)
     if not user:
-        raise HTTPException(status_code=404, detail="Email not found in our records")
+        raise HTTPException(status_code=404, detail="Email_id not found in our records")
     otp = ''.join(random.choices(string.digits, k=6))
     otp_store[email] = {"otp": otp, "expires_at": datetime.now() + timedelta(minutes=5)}
     print(f" Generated OTP: {otp}")
@@ -438,7 +438,7 @@ class GetAuthKeyResponse(BaseModel):
 def get_user_auth_key(request: GetAuthKeyRequest, db: Session = Depends(get_db)):
     p_mail = request.p_mail.strip().lower()
     if not p_mail:
-        raise HTTPException(status_code=400, detail="Email is required")
+        raise HTTPException(status_code=400, detail="Email_id is required")
     try:
         user = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.p_mail)) == p_mail).first()
     except Exception as e:
@@ -572,7 +572,7 @@ def get_employees(manager_id: Optional[str] = None, db: Session = Depends(get_db
             "name": emp.name or "Unknown",
             "phone": emp.phone_number or emp.alt_phone_number or "N/A",
             "status": "active" if not emp.end_date else "inactive",
-            "email": emp.p_mail or emp.mail or "",
+            "email": emp.p_mail or emp.mail_id or "",
             "department": domain_name,
             "designation": emp.role_type or "Employee",
             "doj": emp.date_of_joining or "",
@@ -612,10 +612,10 @@ def get_employee_profile(emp_id: str, db: Session = Depends(get_db)):
         "domain": domain_name,
         "department": user.dpt_id or "N/A",
         "role": user.role_type or "N/A",
-        "email": user.mail or user.p_mail,
+        "email": user.mail_id or user.p_mail,
         "p_mail": user.p_mail,
-        "mail": user.mail,
-        "personal_mail": user.mail,
+        "mail": user.mail_id,
+        "personal_mail": user.mail_id,
         "professional_mail": user.p_mail,
         "permanent_address": user.p_address,
         "password": user.password,
@@ -899,10 +899,10 @@ def get_leave_history(emp_id: str, db: Session = Depends(get_db)):
 
 def send_email_notification(to_email: str, subject: str, body_html: str):
     if not to_email:
-        print(" Email notification skipped: No recipient email provided")
+        print(" Email_id notification skipped: No recipient email provided")
         return False
 
-    url = "http://devbms.ilantechsolutions.com/attendance/send-mail/"
+    url = "http://devbms.ilantechsolutions.com/attendance/send-mail_id/"
     api_key = "my_secret_key_123"
 
     payload = {
@@ -1205,7 +1205,7 @@ async def apply_leave(
                 file=primary_attachment_path,
                 attribute14=attr14_paths,
                 applied_date=datetime.now().strftime('%Y-%m-%d'),
-                mail_message_id="", hr_action="", hr_approval="", admin_approval="",
+                mail_id_message_id="", hr_action="", hr_approval="", admin_approval="",
                 lop_days="0",
                 remarks="", approved_by="", reporting_manager=user.assign_manager or "", approver=user.project_manager or "", revision="0",
                 attribute_category="", attribute1=fmt_days(requested_days),
@@ -1243,7 +1243,7 @@ async def apply_leave(
                 file=primary_attachment_path,
                 attribute14=attr14_paths,
                 applied_date=datetime.now().strftime('%Y-%m-%d'),
-                mail_message_id="", hr_action="", hr_approval="", admin_approval="",
+                mail_id_message_id="", hr_action="", hr_approval="", admin_approval="",
                 lop_days=fmt_days(lop_days_val),
                 remarks="", approved_by="", reporting_manager=user.assign_manager or "", approver=user.project_manager or "", revision="0",
                 attribute_category="", attribute1=fmt_days(requested_days),
@@ -1269,7 +1269,7 @@ async def apply_leave(
                     subject = f"ITS - {emp_name} - {leave_type} Request | {from_date} ({summary_msg})"
                     content = f"""
                     <p><strong>Good Day!</strong></p>
-                    <p>I hope this mail finds you well.</p>
+                    <p>I hope this mail_id finds you well.</p>
                     <p>I am requesting leave from <strong>{from_date}</strong> to <strong>{to_date}</strong>.</p>
                     <p><strong>No of Days:</strong> {summary_msg}</p>
                     <p><strong>Reason:</strong> {reason}</p>
@@ -1280,8 +1280,8 @@ async def apply_leave(
                         p_title = "New Leave Request"
                         p_msg = f"{emp_name} has requested {leave_type} from {from_date} to {to_date}."
                         background_tasks.add_task(send_expo_push_notification, [manager.attribute7], p_title, p_msg)
-        except Exception as mail_err:
-            print(f" Non-critical error sending mail: {mail_err}")
+        except Exception as mail_id_err:
+            print(f" Non-critical error sending mail_id: {mail_id_err}")
 
     except HTTPException:
         db.rollback()
@@ -1435,7 +1435,7 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
                 p_msg = f"Your {leave.leave_type} request has been {request_item.action.lower()} by {leave.approved_by or 'Manager'}."
                 background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7], p_title, p_msg)
     except Exception as e:
-        print(f" Email notification failed: {e}")
+        print(f" Email_id notification failed: {e}")
     return {"message": f"Leave request {request_item.action.lower()} successfully",
             "approved_by": leave.approved_by}
 
@@ -2023,7 +2023,7 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                     subject = f"ITS - {user.name} - Permission Request | {request.date} | {f_display} to {t_display}"
                     content = f'''
                     <p><strong>Good Day!</strong></p>
-                    <p>I hope this mail finds you well.</p>
+                    <p>I hope this mail_id finds you well.</p>
                     <p>I would like to request permission on <strong>{request.date}</strong>
                        from <strong>{f_display}</strong> to <strong>{t_display}</strong>.</p>
                     <p><strong>Approved Hours:</strong> {approved_hrs} hr</p>
@@ -2036,8 +2036,8 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                         p_title = "New Permission Request"
                         p_msg = f"{user.name} requested permission for {request.date} ({f_display} to {t_display})."
                         background_tasks.add_task(send_expo_push_notification, [manager.attribute7], p_title, p_msg)
-        except Exception as mail_err:
-            print(f"   Non-critical email error: {mail_err}")
+        except Exception as mail_id_err:
+            print(f"   Non-critical email error: {mail_id_err}")
 
         return {"message": "Permission applied successfully", "p_id": new_perm.p_id, "approved_hrs": approved_hrs, "lop_hrs": round(lop_hrs, 2)}
 
@@ -2115,7 +2115,7 @@ def approve_permission(request: schemas.PermissionApprovalAction, background_tas
                 p_msg = f"Your permission request for {perm_date} has been {new_action.lower()}."
                 background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7], p_title, p_msg)
     except Exception as e:
-        print(f"Email notification failed: {e}")
+        print(f"Email_id notification failed: {e}")
 
     return {"message": f"Permission {new_action.lower()} successfully"}
 
@@ -2210,7 +2210,7 @@ def approve_ot(request: schemas.OverTimeApprovalAction, background_tasks: Backgr
                 p_msg = f"Your OT request for {ot.ot_date} has been {request.action.lower()}."
                 background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7], p_title, p_msg)
     except Exception as e:
-        print(f" Email notification failed: {e}")
+        print(f" Email_id notification failed: {e}")
     return {"message": f"OT request {request.action.lower()} successfully"}
 
 
@@ -2294,7 +2294,7 @@ def approve_wfh(request: schemas.WFHApprovalAction, background_tasks: Background
                 p_msg = f"Your WFH request for {wfh.from_date} has been {request.action.lower()}."
                 background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7], p_title, p_msg)
     except Exception as e:
-        print(f" Email notification failed: {e}")
+        print(f" Email_id notification failed: {e}")
     return {"message": f"WFH request {request.action.lower()} successfully"}
 
 
@@ -2569,7 +2569,7 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
                     "id": f"admin_leave_{leave.l_id}", "title": "New Leave Request",
                     "message": f"{name} applied for {leave.leave_type} ({leave.days} days)",
                     "time": leave.creation_date.strftime("%Y-%m-%d %H:%M") if leave.creation_date else "",
-                    "type": "alert", "icon": "mail-unread-outline"
+                    "type": "alert", "icon": "mail_id-unread-outline"
                 })
         except Exception as e:
             print(f"Error fetching admin notifications: {e}")
@@ -2585,7 +2585,7 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
                     "id": f"mgr_leave_{leave.l_id}", "title": "New Leave Request (Team)",
                     "message": f"{name} applied for {leave.leave_type} ({leave.days} days)",
                     "time": leave.creation_date.strftime("%Y-%m-%d %H:%M") if leave.creation_date else "",
-                    "type": "alert", "icon": "mail-unread-outline"
+                    "type": "alert", "icon": "mail_id-unread-outline"
                 })
         except Exception as e:
             print(f"Error fetching manager notifications: {e}")
@@ -2759,7 +2759,7 @@ def timesheet_action(action_req: schemas.TimesheetApprovalAction, background_tas
             </body></html>"""
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
     except Exception as e:
-        print(f" Email notification failed: {e}")
+        print(f" Email_id notification failed: {e}")
     return {"message": f"Timesheet {action_req.action} successfully"}
 
 
@@ -3046,7 +3046,7 @@ def get_clients(db: Session = Depends(get_db)):
         last_update_dt = c.last_update_date if not (c.last_update_date and "0000-00-00" in str(c.last_update_date)) else None
         res.append({
             "client_id": c.cl_id, "client_ref_no": c.client_ref_no, "client_name": c.client_name,
-            "mobile_no": c.mobile_no, "country_code": c.country_code, "email_id": c.email,
+            "mobile_no": c.mobile_no, "country_code": c.country_code, "email": c.email,
             "gst_available": c.gst, "gst": c.gst_no, "msme_available": c.msme, "msme": c.msme_no,
             "pan_no": c.pan, "address": c.address, "status": c.status or "Active",
             "company_name": c.company_name, "website": c.website, "short_code": c.short_code,
@@ -3079,7 +3079,7 @@ def get_client(client_id: int, db: Session = Depends(get_db)):
     last_update_dt = client.last_update_date if not (client.last_update_date and "0000-00-00" in str(client.last_update_date)) else None
     return {
         "client_id": client.cl_id, "client_ref_no": client.client_ref_no, "client_name": client.client_name,
-        "company_name": client.company_name, "mobile_no": client.mobile_no, "email_id": client.email,
+        "company_name": client.company_name, "mobile_no": client.mobile_no, "email": client.email,
         "gst_available": client.gst, "gst": client.gst_no, "msme_available": client.msme,
         "msme": client.msme_no, "pan_no": client.pan, "status": client.status or "Active",
         "website": client.website, "short_code": client.short_code, "currency": client.currency,
@@ -3096,7 +3096,7 @@ def update_client(client_id: int, client_req: schemas.ClientApplyRequest, db: Se
     client.client_name = client_req.client_name
     client.company_name = client_req.company_name
     client.mobile_no = client_req.mobile_no
-    client.email = client_req.email_id
+    client.email = client_req.email
     client.gst = client_req.gst_available
     client.gst_no = client_req.gst
     client.msme = client_req.msme_available
@@ -3154,7 +3154,7 @@ def create_client(client_req: schemas.ClientApplyRequest, db: Session = Depends(
             company_name=client_req.company_name, country_code="",
             mobile_no=client_req.mobile_no or "", gst=client_req.gst_available or "No",
             gst_value="", gst_no=client_req.gst or "", website=client_req.website or "",
-            email=client_req.email_id or "", msme=client_req.msme_available or "No",
+            email=client_req.email or "", msme=client_req.msme_available or "No",
             msme_no=client_req.msme or "", pan=client_req.pan_no or "",
             short_code=client_req.short_code or "", currency=client_req.currency or "INR",
             address=client_req.address or "", status=client_req.status or "Active",
