@@ -1195,14 +1195,21 @@ async def apply_leave(
             if sl_balance_row:
                 sl_available = float(sl_balance_row.available_leave or 0)
                 if sl_available <= 0:
-                    # No sick leave balance at all — all goes to LOP
-                    lop_days_val = requested_days
-                    cl_days_to_deduct = 0.0
+                    raise HTTPException(status_code=400, detail="No sick leave balance available. You cannot apply for sick leave.")
                 elif requested_days > sl_available:
-                    # Partial: use available SL, rest goes to LOP
-                    cl_days_to_deduct = sl_available
-                    lop_days_val = requested_days - sl_available
-                # else: enough balance, cl_days_to_deduct remains = requested_days, lop_days_val = 0
+                    raise HTTPException(status_code=400, detail=f"Insufficient sick leave balance. Available: {sl_available} days, Requested: {requested_days} days.")
+                # Attachment validation for 2+ days
+                if requested_days >= 2:
+                    if not attachments or len(attachments) == 0:
+                        raise HTTPException(status_code=400, detail="Attachment is mandatory for Sick Leave requests lasting 2 days or more.")
+                # Set leave calculation
+                cl_days_to_deduct = sl_available
+                lop_days_val = 0.0
+            elif requested_days > sl_available:
+                # Partial: use available SL, rest goes to LOP
+                cl_days_to_deduct = sl_available
+                lop_days_val = requested_days - sl_available
+            # else: enough balance, cl_days_to_deduct remains = requested_days, lop_days_val = 0.0
 
         l_type_lower = leave_type.lower()
         balance_row = None
@@ -1239,62 +1246,48 @@ async def apply_leave(
 
         if cl_days_to_deduct > 0 and req_from:
             if lop_days_val > 0:
-                split_days = int(cl_days_to_deduct)
-                future_dt = req_from + timedelta(days=split_days - 1)
-                rec1_to = future_dt.strftime('%Y-%m-%d')
-            else:
-                rec1_to = to_date
 
-            new_leave = models.EmpLeave(
-                l_det_id=det_id,
-                emp_id=emp_id.strip(),
-                leave_type=leave_type,
-                from_date=from_date,
-                to_date=rec1_to,
-                days=fmt_days(cl_days_to_deduct),
-                reason=reason + (" (Part 1: CL)" if lop_days_val > 0 else ""),
-                status=status,
-                file=primary_attachment_path,
-                attribute14=attr14_paths,
-                applied_date=datetime.now().strftime('%Y-%m-%d'),
-                mail_message_id="", hr_action="", hr_approval="", admin_approval="",
-                lop_days="0",
-                remarks="", approved_by="", reporting_manager=user.assign_manager or "", approver=user.project_manager or "", revision="0",
-                attribute_category="", attribute1=fmt_days(requested_days),
-                attribute2="", attribute3="", attribute4="", attribute5="",
-                last_update_login="", created_by=emp_id.strip(), creation_date=datetime.now(),
-                last_updated_by=emp_id.strip(), last_update_date=datetime.now()
-            )
-            db.add(new_leave)
-
-            if balance_row:
-                balance_row.availed_leave = float(balance_row.availed_leave or 0) + cl_days_to_deduct
-                if balance_row.available_leave is not None:
-                    balance_row.available_leave = float(balance_row.available_leave or 0) - cl_days_to_deduct
-                db.add(balance_row)
-
-        if lop_days_val > 0 and req_from:
-            if cl_days_to_deduct > 0:
-                split_offset = int(cl_days_to_deduct)
-                future_dt_2 = req_from + timedelta(days=split_offset)
-                rec2_from = future_dt_2.strftime('%Y-%m-%d')
-                rec2_reason = reason + " (Part 2: LOP)"
-            else:
-                rec2_from = from_date
-                rec2_reason = reason + " (Limit Reached: LOP)"
-
+        # Create single record with combined leave + LOP
+        new_leave = models.EmpLeave(
+            l_det_id=det_id,
+            emp_id=emp_id.strip(),
+            leave_type=leave_type,
+            from_date=req_from.strftime('%d-%b-%y'),
+            to_date=req_to.strftime('%d-%b-%y'),
+            days=fmt_days(cl_days_to_deduct),
+            reason=reason + (" + LOP: " + fmt_days(lop_days_val) + " days" if lop_days_val > 0 else ""),
+            status=status,
+            file=primary_attachment_path,
+            attribute14=attr14_paths,
+            applied_date=datetime.now().strftime('%d-%b-%y'),
+            mail_message_id="", hr_action="", hr_approval="", admin_approval="",
+            lop_days=fmt_days(lop_days_val),
+            remarks="", approved_by="", reporting_manager=user.assign_manager or "", approver=user.project_manager or "", revision="0",
+            attribute_category="", attribute1=fmt_days(requested_days),
+            attribute2="", attribute3="", attribute4="", attribute5="",
+            last_update_login="", created_by=emp_id.strip(), creation_date=datetime.now(),
+            last_updated_by=emp_id.strip(), last_update_date=datetime.now()
+        )
+        db.add(new_leave)
+        if balance_row:
+            balance_row.availed_leave = float(balance_row.availed_leave or 0) + cl_days_to_deduct
+            if balance_row.available_leave is not None:
+                balance_row.available_leave = float(balance_row.available_leave or 0) - cl_days_to_deduct
+            db.add(balance_row)
+        elif lop_days_val > 0 and req_from:
+            # This case should not happen with the fix above, but keeping for safety
             lop_leave = models.EmpLeave(
                 l_det_id=det_id,
                 emp_id=emp_id.strip(),
-                leave_type="LOP",
-                from_date=rec2_from,
-                to_date=to_date,
+                leave_type=leave_type,
+                from_date=req_from.strftime('%d-%b-%y'),  # Fix date format for LOP-only leave record
+                to_date=req_to.strftime('%d-%b-%y'),  # Fix date format for LOP-only leave record
                 days=fmt_days(lop_days_val),
-                reason=rec2_reason,
+                reason=reason + " (LOP Only)",
                 status=status,
                 file=primary_attachment_path,
                 attribute14=attr14_paths,
-                applied_date=datetime.now().strftime('%Y-%m-%d'),
+                applied_date=datetime.now().strftime('%d-%b-%y'),
                 mail_message_id="", hr_action="", hr_approval="", admin_approval="",
                 lop_days=fmt_days(lop_days_val),
                 remarks="", approved_by="", reporting_manager=user.assign_manager or "", approver=user.project_manager or "", revision="0",
@@ -3239,6 +3232,251 @@ def create_client(client_req: schemas.ClientApplyRequest, db: Session = Depends(
         db.rollback()
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ─── ATTENDANCE REPORT ENDPOINTS ─────────────────────────────────────────────────
+
+@app.get("/attendance-report/{emp_id}")
+def get_attendance_report(emp_id: str, start_date: str, end_date: str, db: Session = Depends(get_db)):
+    """Get attendance report for an employee combining data from BMS, CheckIn, and DailyAttendanceReport"""
+    emp_id = emp_id.strip()
+    try:
+        start_dt = parse_date(start_date)
+        end_dt = parse_date(end_date)
+        if not start_dt or not end_dt:
+            raise HTTPException(status_code=400, detail="Invalid date format")
+    except:
+        raise HTTPException(status_code=400, detail="Invalid date format")
+
+    try:
+        # Get employee details
+        emp = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()
+        ).first()
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found")
+
+        # Get attendance data from DailyAttendanceReport
+        attendance_reports = db.query(models.DailyAttendanceReport).filter(
+            models.DailyAttendanceReport.Employee_Code == emp.emp_id,
+            models.DailyAttendanceReport.Date >= start_date,
+            models.DailyAttendanceReport.Date <= end_date
+        ).all()
+
+        # Get check-in data
+        checkin_data = db.query(models.CheckIn).filter(
+            func.lower(func.trim(models.CheckIn.emp_id)) == emp_id.lower(),
+            models.CheckIn.t_date >= start_dt.date(),
+            models.CheckIn.t_date <= end_dt.date()
+        ).all()
+
+        # Get BMS data
+        bms_data = db.query(models.BMS).filter(
+            func.lower(func.trim(models.BMS.emp_id)) == emp_id.lower(),
+            models.BMS.attendance_date >= start_dt.date(),
+            models.BMS.attendance_date <= end_dt.date()
+        ).all()
+
+        # Combine data
+        result = []
+        checkin_map = {str(checkin.t_date): checkin for checkin in checkin_data}
+        bms_map = {str(bms.attendance_date): bms for bms in bms_data}
+
+        for report in attendance_reports:
+            report_date = report.Date
+            checkin = checkin_map.get(report_date)
+            bms = bms_map.get(report_date)
+
+            # Determine min_in and max_out from BMS and CheckIn
+            min_in = bms.min_in if bms else None
+            max_out = bms.max_out if bms else None
+            
+            # Fallback to CheckIn data if BMS data not available
+            if not min_in and checkin:
+                min_in = checkin.in_time
+            if not max_out and checkin:
+                max_out = checkin.out_time
+
+            result.append({
+                "date": report_date,
+                "employee_code": report.Employee_Code,
+                "employee_name": report.Employee_Name,
+                "company": report.Company,
+                "department": report.Department,
+                "category": report.Category,
+                "designation": report.Degination,
+                "grade": report.Grade,
+                "team": report.Team,
+                "shift": report.Shift,
+                "in_time": report.In_Time,
+                "out_time": report.Out_Time,
+                "duration": report.Duration,
+                "late_by": report.Late_By,
+                "early_by": report.Early_By,
+                "status": report.Status,
+                "punch_records": report.Punch_Records,
+                "overtime": report.Overtime,
+                "min_in": min_in,  # From BMS or CheckIn
+                "max_out": max_out,  # From BMS or CheckIn
+                "checkin_in_time": checkin.in_time if checkin else None,
+                "checkin_out_time": checkin.out_time if checkin else None,
+                "checkin_total_hours": checkin.Total_hours if checkin else None,
+                "checkin_status": checkin.status if checkin else None
+            })
+
+        return {
+            "employee": {
+                "emp_id": emp.emp_id,
+                "name": emp.name,
+                "department": emp.dpt_id,
+                "designation": emp.role_type
+            },
+            "attendance_data": result,
+            "summary": {
+                "total_days": len(result),
+                "present": len([r for r in result if r["status"] == "P"]),
+                "absent": len([r for r in result if r["status"] == "A"]),
+                "late": len([r for r in result if r["late_by"] and r["late_by"] != ""]),
+                "early": len([r for r in result if r["early_by"] and r["early_by"] != ""])
+            }
+        }
+    except Exception as e:
+        handle_db_error(e)
+
+
+@app.get("/attendance-summary/{emp_id}")
+def get_attendance_summary(emp_id: str, month: int, year: int, db: Session = Depends(get_db)):
+    """Get attendance summary for an employee for a specific month"""
+    emp_id = emp_id.strip()
+    try:
+        # Get employee details
+        emp = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()
+        ).first()
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found")
+
+        # Get attendance data from DailyAttendanceReport for the month
+        attendance_reports = db.query(models.DailyAttendanceReport).filter(
+            models.DailyAttendanceReport.Employee_Code == emp.emp_id,
+            extract('month', func.str_to_date(models.DailyAttendanceReport.Date, '%d-%b-%Y')) == month,
+            extract('year', func.str_to_date(models.DailyAttendanceReport.Date, '%d-%b-%Y')) == year
+        ).all()
+
+        # Get check-in data for the month
+        checkin_data = db.query(models.CheckIn).filter(
+            func.lower(func.trim(models.CheckIn.emp_id)) == emp_id.lower(),
+            extract('month', models.CheckIn.t_date) == month,
+            extract('year', models.CheckIn.t_date) == year
+        ).all()
+
+        # Get BMS data for the month
+        bms_data = db.query(models.BMS).filter(
+            func.lower(func.trim(models.BMS.emp_id)) == emp_id.lower(),
+            extract('month', models.BMS.attendance_date) == month,
+            extract('year', models.BMS.attendance_date) == year
+        ).all()
+
+        # Calculate summary
+        total_days = len(attendance_reports)
+        present = len([r for r in attendance_reports if r.Status == "P"])
+        absent = len([r for r in attendance_reports if r.Status == "A"])
+        late = len([r for r in attendance_reports if r.Late_By and r.Late_By != ""])
+        early = len([r for r in attendance_reports if r.Early_By and r.Early_By != ""])
+        
+        # Calculate overtime from checkin data
+        total_overtime = 0
+        for checkin in checkin_data:
+            if checkin.Total_hours and "Hr" in checkin.Total_hours:
+                try:
+                    hours_part = checkin.Total_hours.split("Hr")[0].strip()
+                    hours = int(hours_part)
+                    if hours > 8:  # Assuming 8 hours is regular work time
+                        total_overtime += (hours - 8)
+                except:
+                    pass
+
+        return {
+            "employee": {
+                "emp_id": emp.emp_id,
+                "name": emp.name,
+                "department": emp.dpt_id,
+                "designation": emp.role_type
+            },
+            "month": month,
+            "year": year,
+            "summary": {
+                "total_days": total_days,
+                "present": present,
+                "absent": absent,
+                "late": late,
+                "early": early,
+                "attendance_percentage": round((present / total_days * 100) if total_days > 0 else 0, 2),
+                "total_overtime_hours": total_overtime
+            },
+            "data_sources": {
+                "daily_attendance_reports": len(attendance_reports),
+                "checkin_records": len(checkin_data),
+                "bms_records": len(bms_data)
+            }
+        }
+    except Exception as e:
+        handle_db_error(e)
+
+
+@app.get("/team-attendance/{manager_id}")
+def get_team_attendance(manager_id: str, start_date: str, end_date: str, db: Session = Depends(get_db)):
+    """Get attendance report for all employees under a manager"""
+    manager_id = manager_id.strip()
+    try:
+        start_dt = parse_date(start_date)
+        end_dt = parse_date(end_date)
+        if not start_dt or not end_dt:
+            raise HTTPException(status_code=400, detail="Invalid date format")
+    except:
+        raise HTTPException(status_code=400, detail="Invalid date format")
+
+    try:
+        # Get all employees under this manager
+        employees = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.lower()
+        ).all()
+
+        if not employees:
+            return {"message": "No employees found under this manager", "team_attendance": []}
+
+        team_attendance = []
+        for emp in employees:
+            # Get attendance summary for each employee
+            attendance_reports = db.query(models.DailyAttendanceReport).filter(
+                models.DailyAttendanceReport.Employee_Code == emp.emp_id,
+                models.DailyAttendanceReport.Date >= start_date,
+                models.DailyAttendanceReport.Date <= end_date
+            ).all()
+
+            present = len([r for r in attendance_reports if r.Status == "P"])
+            absent = len([r for r in attendance_reports if r.Status == "A"])
+            total_days = len(attendance_reports)
+
+            team_attendance.append({
+                "emp_id": emp.emp_id,
+                "name": emp.name,
+                "department": emp.dpt_id,
+                "designation": emp.role_type,
+                "total_days": total_days,
+                "present": present,
+                "absent": absent,
+                "attendance_percentage": round((present / total_days * 100) if total_days > 0 else 0, 2)
+            })
+
+        return {
+            "manager_id": manager_id,
+            "period": {"start_date": start_date, "end_date": end_date},
+            "team_size": len(employees),
+            "team_attendance": team_attendance
+        }
+    except Exception as e:
+        handle_db_error(e)
 
 
 app.include_router(router)
