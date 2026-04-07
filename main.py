@@ -1262,7 +1262,6 @@ async def apply_leave(
             file=primary_attachment_path,
             attribute14=attr14_paths,
             applied_date=datetime.now().strftime('%d-%b-%Y'),
-            applied_date=datetime.now().strftime('%d-%b-%Y'),
             mail_message_id="", hr_action="", hr_approval="", admin_approval="",
             lop_days=fmt_days(lop_days_val),
             remarks="", approved_by="", reporting_manager=user.assign_manager or "", approver=user.project_manager or "", revision="0",
