@@ -1246,6 +1246,11 @@ async def apply_leave(
 
         if cl_days_to_deduct > 0 and req_from:
             if lop_days_val > 0:
+                split_days = int(cl_days_to_deduct)
+                future_dt = req_from + timedelta(days=split_days - 1)
+                rec1_to = future_dt.strftime('%Y-%m-%d')
+            else:
+                rec1_to = to_date
 
         # Create single record with combined leave + LOP
         new_leave = models.EmpLeave(
