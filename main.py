@@ -1245,26 +1245,24 @@ async def apply_leave(
         lop_days_val = float(Decimal(str(float(lop_days_val))).quantize(_twodp, rounding=ROUND_HALF_UP))
 
         if cl_days_to_deduct > 0 and req_from:
-            if lop_days_val > 0:
-                split_days = int(cl_days_to_deduct)
-                future_dt = req_from + timedelta(days=split_days - 1)
-                rec1_to = future_dt.strftime('%Y-%m-%d')
-            else:
-                rec1_to = to_date
+            # Always use the full requested date range for single record
+            # The record covers the entire leave period with both sick leave and LOP
+            rec1_to = req_to.strftime('%d-%b-%Y')
 
         # Create single record with combined leave + LOP
         new_leave = models.EmpLeave(
             l_det_id=det_id,
             emp_id=emp_id.strip(),
             leave_type=leave_type,
-            from_date=req_from.strftime('%d-%b-%y'),
-            to_date=req_to.strftime('%d-%b-%y'),
+            from_date=req_from.strftime('%d-%b-%Y'),
+            to_date=rec1_to,
             days=fmt_days(cl_days_to_deduct),
             reason=reason + (" + LOP: " + fmt_days(lop_days_val) + " days" if lop_days_val > 0 else ""),
             status=status,
             file=primary_attachment_path,
             attribute14=attr14_paths,
-            applied_date=datetime.now().strftime('%d-%b-%y'),
+            applied_date=datetime.now().strftime('%d-%b-%Y'),
+            applied_date=datetime.now().strftime('%d-%b-%Y'),
             mail_message_id="", hr_action="", hr_approval="", admin_approval="",
             lop_days=fmt_days(lop_days_val),
             remarks="", approved_by="", reporting_manager=user.assign_manager or "", approver=user.project_manager or "", revision="0",
@@ -1285,14 +1283,14 @@ async def apply_leave(
                 l_det_id=det_id,
                 emp_id=emp_id.strip(),
                 leave_type=leave_type,
-                from_date=req_from.strftime('%d-%b-%y'),  # Fix date format for LOP-only leave record
-                to_date=req_to.strftime('%d-%b-%y'),  # Fix date format for LOP-only leave record
+                from_date=req_from.strftime('%d-%b-%Y'),  # Fix date format for LOP-only leave record
+                to_date=req_to.strftime('%d-%b-%Y'),  # Fix date format for LOP-only leave record
                 days=fmt_days(lop_days_val),
                 reason=reason + " (LOP Only)",
                 status=status,
                 file=primary_attachment_path,
                 attribute14=attr14_paths,
-                applied_date=datetime.now().strftime('%d-%b-%y'),
+                applied_date=datetime.now().strftime('%d-%b-%Y'),
                 mail_message_id="", hr_action="", hr_approval="", admin_approval="",
                 lop_days=fmt_days(lop_days_val),
                 remarks="", approved_by="", reporting_manager=user.assign_manager or "", approver=user.project_manager or "", revision="0",
@@ -1347,7 +1345,102 @@ async def apply_leave(
 
 @app.post("/send-leave-notification")
 def send_leave_notification(notification: dict, db: Session = Depends(get_db)):
-    return {"message": "Notification processed"}
+    try:
+        emp_id = notification.get("emp_id", "").strip()
+        emp_name = notification.get("emp_name", "Employee")
+        leave_type = notification.get("leave_type", "Leave")
+        from_date = notification.get("from_date", "")
+        to_date = notification.get("to_date", "")
+        days = notification.get("days", 0)
+        is_half_day = notification.get("is_half_day", False)
+        status = notification.get("status", "Pending")
+        
+        print(f"\n--- LEAVE NOTIFICATION: {emp_name} ({emp_id}) ---")
+        print(f" Leave Type: {leave_type}")
+        print(f" Dates: {from_date} to {to_date}")
+        print(f" Days: {days} {'(Half Day)' if is_half_day else ''}")
+        
+        # Get employee details to find assigned manager
+        try:
+            user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == emp_id).first()
+            if not user:
+                print(" Employee not found for notification")
+                return {"message": "Employee not found"}
+                
+            # Get assigned manager details
+            assign_manager_id = user.assign_manager
+            if not assign_manager_id:
+                print(" No assigned manager found for employee")
+                return {"message": "No assigned manager found"}
+                
+            manager = db.query(models.EmpDet).filter(models.EmpDet.emp_id == assign_manager_id).first()
+            if not manager:
+                print(f" Manager not found with ID: {assign_manager_id}")
+                return {"message": "Manager not found"}
+                
+            manager_email = manager.p_mail or manager.mail_id
+            if not manager_email:
+                print(" Manager email not found")
+                return {"message": "Manager email not found"}
+                
+            print(f" Sending notification to manager: {manager.name} ({manager_email})")
+            
+            # Create email content
+            content = f"""
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
+                    <h1 style="margin: 0; font-size: 24px;">Leave Request Notification</h1>
+                    <p style="margin: 10px 0 0 0; opacity: 0.9;">New leave application received</p>
+                </div>
+                
+                <div style="background: #f8f9fa; padding: 30px; border-radius: 0 0 10px 10px;">
+                    <div style="background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                        <h3 style="margin: 0 0 15px 0; color: #333;">Employee Details</h3>
+                        <p style="margin: 5px 0;"><strong>Name:</strong> {emp_name}</p>
+                        <p style="margin: 5px 0;"><strong>Employee ID:</strong> {emp_id}</p>
+                        <p style="margin: 5px 0;"><strong>Department:</strong> {user.dpt_id or 'N/A'}</p>
+                    </div>
+                    
+                    <div style="background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                        <h3 style="margin: 0 0 15px 0; color: #333;">Leave Details</h3>
+                        <p style="margin: 5px 0;"><strong>Type:</strong> {leave_type}</p>
+                        <p style="margin: 5px 0;"><strong>From:</strong> {from_date}</p>
+                        <p style="margin: 5px 0;"><strong>To:</strong> {to_date}</p>
+                        <p style="margin: 5px 0;"><strong>Duration:</strong> {days} {('day' if days == 1 else 'days')} {'(Half Day)' if is_half_day else ''}</p>
+                        <p style="margin: 5px 0;"><strong>Status:</strong> <span style="background: #fff3cd; color: #856404; padding: 4px 8px; border-radius: 4px; font-size: 12px;">{status}</span></p>
+                    </div>
+                    
+                    <div style="text-align: center; margin-top: 25px;">
+                        <p style="margin: 0; color: #6c757d; font-size: 14px;">Please review this leave request in the system.</p>
+                    </div>
+                </div>
+                
+                <div style="text-align: center; margin-top: 20px; color: #6c757d; font-size: 12px;">
+                    <p>This is an automated notification from Aruvi Leave Management System</p>
+                </div>
+            </div>
+            """
+            
+            # Send email to manager
+            subject = f"Leave Request: {emp_name} - {leave_type} ({from_date} to {to_date})"
+            body = get_email_template(manager.name or "Manager", subject, content, "Aruvi Leave System")
+            
+            email_sent = send_email_notification(manager_email, subject, body)
+            
+            if email_sent:
+                print(f" Email notification sent successfully to {manager_email}")
+                return {"message": "Notification sent successfully", "manager_email": manager_email}
+            else:
+                print(f" Failed to send email to {manager_email}")
+                return {"message": "Failed to send notification"}
+                
+        except Exception as e:
+            print(f" Error processing notification: {str(e)}")
+            return {"message": f"Error processing notification: {str(e)}"}
+            
+    except Exception as e:
+        print(f" General error in send-leave-notification: {str(e)}")
+        return {"message": f"General error: {str(e)}"}
 
 
 @app.get("/admin/pending-leaves")
