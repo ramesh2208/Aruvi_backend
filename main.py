@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, case
 from datetime import datetime, timedelta, date
@@ -13,6 +14,7 @@ import string
 import hashlib
 import base64
 import time
+import jwt
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -27,6 +29,18 @@ from sqlalchemy import extract
 import sqlalchemy
 import models, schemas, database
 from database import engine, SessionLocal
+
+# JWT Configuration
+SECRET_KEY = "your-secret-key-here-change-in-production"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 1440  # 24 hours
+
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
 
 # ─── DB Error Handler Helper ──────────────────────────────────────────────────
 def handle_db_error(e: Exception):
@@ -377,6 +391,9 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
 
     print(" PASSWORD VERIFIED")
 
+    # Generate proper JWT token
+    access_token = create_access_token(data={"sub": user.emp_id})
+    
     is_global_admin = False
     role_type = "Employee"
     if user.dom_id:
@@ -401,7 +418,7 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
     print("=" * 60)
 
     return {
-        "access_token": "temp",
+        "access_token": access_token,
         "token_type": "bearer",
         "username": user.p_mail or "",
         "role_type": role_type,
