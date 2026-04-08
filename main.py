@@ -366,7 +366,7 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
             ).first()
         except Exception as db_err:
             print(f" Database query error: {db_err}")
-            raise HTTPException(status_code=500, detail="Database query failed")
+            handle_db_error(db_err)
 
         if not user:
             print(f" User not found for input: {username_input}")
