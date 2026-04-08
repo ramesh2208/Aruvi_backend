@@ -764,6 +764,7 @@ def check_in(request: schemas.CheckInRequest, db: Session = Depends(get_db)):
         ).first()
         if existing:
             return {"message": "Already checked in today", "id": existing.check_in_id}
+        
         new_checkin = models.CheckIn(
             emp_id=emp_id,
             in_time=request.in_time,
@@ -791,6 +792,8 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
     emp_id = request.emp_id.strip()
     now = datetime.now()
     today_date = now.date()
+
+    # ✅ Check-in record fetch
     try:
         checkin_record = db.query(models.CheckIn).filter(
             models.CheckIn.emp_id == emp_id,
@@ -798,72 +801,92 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         ).order_by(models.CheckIn.check_in_id.desc()).first()
     except Exception as e:
         handle_db_error(e)
+
     if not checkin_record:
         raise HTTPException(status_code=404, detail="No check-in found for today")
-    checkin_record.out_time = request.out_time
-    checkin_record.last_update_date = now
-    checkin_record.last_updated_by = emp_id
+
     try:
         fmt = "%H:%M:%S"
-        t1 = datetime.strptime(checkin_record.in_time.strip(), fmt)
-        t2 = datetime.strptime(request.out_time.strip(), fmt)
+
+        # ✅ in_time DB-ல இருந்து எடுக்கும், strip பண்ணும்
+        raw_in_time = (checkin_record.in_time or "").strip()
+        raw_out_time = (request.out_time or "").strip()
+
+        print(f"DEBUG in_time from DB : '{raw_in_time}'")
+        print(f"DEBUG out_time from request: '{raw_out_time}'")
+
+        if not raw_in_time or not raw_out_time:
+            raise ValueError("in_time or out_time is empty")
+
+        t1 = datetime.strptime(raw_in_time, fmt)
+        t2 = datetime.strptime(raw_out_time, fmt)
+
+        # ✅ Grace period - Check-in
         grace_start_time = datetime.strptime("09:30:00", fmt)
-        grace_end_time = datetime.strptime("10:00:00", fmt)
+        grace_end_time   = datetime.strptime("10:00:00", fmt)
+
+        # ✅ Grace period - Check-out
         checkout_grace_start = datetime.strptime("18:30:00", fmt)
-        checkout_grace_end = datetime.strptime("19:00:00", fmt)
+        checkout_grace_end   = datetime.strptime("19:00:00", fmt)
 
         if grace_start_time <= t1 <= grace_end_time:
             t1 = grace_start_time
             checkin_record.in_time = "09:30:00"
+
         if checkout_grace_start <= t2 <= checkout_grace_end:
             t2 = checkout_grace_end
             checkin_record.out_time = "19:00:00"
+        else:
+            checkin_record.out_time = raw_out_time
 
+        # ✅ Total hours calculate
         delta = t2 - t1
         total_seconds = int(delta.total_seconds())
         if total_seconds < 0:
             total_seconds = 0
 
-        hours = total_seconds // 3600
+        hours   = total_seconds // 3600
         minutes = (total_seconds % 3600) // 60
         calculated_total_hours = f"{hours}Hr {minutes}Min"
-        checkin_record.Total_hours = calculated_total_hours
         total_hours_float = hours + (minutes / 60)
-        
-        print(f"✅ Calculated Total_hours: {calculated_total_hours} for emp_id: {emp_id}")
-        print(f"   In_time: {checkin_record.in_time}")
-        print(f"   Out_time: {checkin_record.out_time}")
+
+        # ✅ DB-ல save பண்ணு
+        checkin_record.Total_hours      = calculated_total_hours
+        checkin_record.last_update_date = now
+        checkin_record.last_updated_by  = emp_id
+
+        print(f"✅ Total_hours calculated : {calculated_total_hours} for emp_id: {emp_id}")
+        print(f"   In_time  : {checkin_record.in_time}")
+        print(f"   Out_time : {checkin_record.out_time}")
         print(f"   Hours: {hours}, Minutes: {minutes}")
 
+        # ✅ 4 மணி நேரத்துக்கு கீழே இருந்தா Leave deduct
         if total_hours_float < 4:
-            # Check Casual Leave balance
             cl_balance = db.query(models.LeaveDet).filter(
                 models.LeaveDet.emp_id == emp_id,
                 func.lower(models.LeaveDet.leave_type).contains("casual")
             ).first()
 
             if cl_balance and float(cl_balance.available_leave or 0) >= 0.5:
-                # Deduct 0.5 days of casual leave for LT4
                 cl_balance.available_leave = float(cl_balance.available_leave) - 0.5
-                cl_balance.availed_leave = float(cl_balance.availed_leave or 0) + 0.5
+                cl_balance.availed_leave   = float(cl_balance.availed_leave or 0) + 0.5
                 db.add(cl_balance)
-                
-                # Insert into EmpLeave
+
                 new_leave = models.EmpLeave(
-                    l_det_id=cl_balance.l_det_id,
-                    emp_id=emp_id,
-                    leave_type="Casual Leave",
-                    from_date=today_date.strftime("%Y-%m-%d"),
-                    to_date=today_date.strftime("%Y-%m-%d"),
-                    days="0.5",
-                    reason="Auto-deducted: Worked less than 4 hours",
-                    status="Approved",
-                    applied_date=now.strftime("%Y-%m-%d"),
-                    attribute1="0.5",
-                    created_by=emp_id,
-                    creation_date=now,
-                    last_updated_by=emp_id,
-                    last_update_date=now
+                    l_det_id     = cl_balance.l_det_id,
+                    emp_id       = emp_id,
+                    leave_type   = "Casual Leave",
+                    from_date    = today_date.strftime("%Y-%m-%d"),
+                    to_date      = today_date.strftime("%Y-%m-%d"),
+                    days         = "0.5",
+                    reason       = "Auto-deducted: Worked less than 4 hours",
+                    status       = "Approved",
+                    applied_date = now.strftime("%Y-%m-%d"),
+                    attribute1   = "0.5",
+                    created_by        = emp_id,
+                    creation_date     = now,
+                    last_updated_by   = emp_id,
+                    last_update_date  = now
                 )
                 db.add(new_leave)
                 checkin_record.status = "CL"
@@ -872,21 +895,29 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         else:
             checkin_record.status = "P"
 
+        # ✅ எல்லாத்தையும் ஒரே commit-ல save பண்ணு
         db.commit()
+        db.refresh(checkin_record)
+
     except Exception as e:
         db.rollback()
-        print(f" Check-out Error: {str(e)}")
+        print(f"❌ Check-out Error: {str(e)}")
+
+        # ✅ Error-லயும் out_time + Total_hours save பண்ணு
         try:
-            checkin_record.out_time = request.out_time
-            checkin_record.status = "Error"
+            checkin_record.out_time      = request.out_time
+            checkin_record.Total_hours   = "0Hr 0Min"
+            checkin_record.status        = "Error"
+            checkin_record.last_update_date = now
+            checkin_record.last_updated_by  = emp_id
             db.commit()
         except:
             db.rollback()
 
     return {
-        "message": "Check-out successful",
-        "total_hours": checkin_record.Total_hours or "0Hr 0Min",
-        "status": checkin_record.status
+        "message"     : "Check-out successful",
+        "total_hours" : checkin_record.Total_hours or "0Hr 0Min",
+        "status"      : checkin_record.status
     }
 
 
@@ -901,12 +932,13 @@ def get_check_status(emp_id: str, db: Session = Depends(get_db)):
         ).order_by(models.CheckIn.check_in_id.desc()).first()
     except Exception as e:
         handle_db_error(e)
+
     if record:
         return {
-            "checked_in": True,
-            "in_time": record.in_time,
-            "out_time": record.out_time,
-            "total_hours": record.Total_hours
+            "checked_in"  : True,
+            "in_time"     : record.in_time,
+            "out_time"    : record.out_time,
+            "total_hours" : record.Total_hours or "0Hr 0Min"
         }
     return {"checked_in": False}
 
