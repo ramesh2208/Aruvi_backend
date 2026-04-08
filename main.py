@@ -930,7 +930,7 @@ def send_email_notification(to_email: str, subject: str, body_html: str):
         print(" Email_id notification skipped: No recipient email provided")
         return False
 
-    url = "http://devbms.ilantechsolutions.com/attendance/send-mail_id/"
+    url = "https://devbms.ilantechsolutions.com/attendance/send-mail/"
     api_key = "my_secret_key_123"
 
     payload = {
