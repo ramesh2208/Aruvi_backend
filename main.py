@@ -14,7 +14,7 @@ import string
 import hashlib
 import base64
 import time
-import jwt
+from jose import jwt
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -344,7 +344,7 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
     input_pwd = request.password.strip()
     print(f" Username input: {username_input}")
 
-    # ── Graceful DB error handling ──────────────────────────────────────────
+    # ── Graceful DB error handling ──────────────────────────────────────────---
     try:
         user = db.query(models.EmpDet).filter(
             or_(
