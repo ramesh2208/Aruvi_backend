@@ -864,8 +864,9 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         checkin_record.Total_hours      = calculated_total_hours
         checkin_record.last_update_date = now
         checkin_record.last_updated_by  = emp_id
-
-        print(f"✅ Total_hours stored : {calculated_total_hours} (In: {raw_in_time}, Out: {raw_out_time})")
+        
+        db.add(checkin_record)
+        print(f"✅ Saving Total_hours: {calculated_total_hours} for {emp_id}")
 
         # ✅ Automatic Leave Deduction (< 4 hours)
         if total_hours_float < 4:
@@ -903,16 +904,20 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
 
         db.commit()
         db.refresh(checkin_record)
+        print(f"✅ Successfully committed Total_hours: {checkin_record.Total_hours}")
 
     except Exception as e:
         db.rollback()
         print(f"❌ Check-out Error: {str(e)}")
+        # Final attempt to save basic info
         try:
-            checkin_record.out_time      = request.out_time
-            if not checkin_record.Total_hours:
-                checkin_record.Total_hours = "0Hr 0Min"
+            checkin_record.out_time = request.out_time
+            if request.total_hours:
+                checkin_record.Total_hours = request.total_hours
             checkin_record.last_update_date = now
+            db.add(checkin_record)
             db.commit()
+            print("⚠️ Saved partial check-out data after error.")
         except:
             db.rollback()
 
