@@ -334,17 +334,17 @@ def auto_calculate_hours_endpoint(request: schemas.AutoCalculateHoursRequest, db
     return result
 
 # ─── LOGIN ────────────────────────────────────────────────────────────────────────────
+
 @app.post("/login", response_model=schemas.Token)
 def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
     print("\n" + "=" * 60)
     print(" LOGIN ATTEMPT")
     print("=" * 60)
-
     username_input = request.username.strip().lower()
     input_pwd = request.password.strip()
     print(f" Username input: {username_input}")
 
-    # ── Graceful DB error handling ──────────────────────────────────────────---
+    # ── Graceful DB error handling ──────────────────────────────────────────
     try:
         user = db.query(models.EmpDet).filter(
             or_(
@@ -364,14 +364,26 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
 
     input_md5 = hashlib.md5(input_pwd.encode()).hexdigest()
     print(f" Input MD5: {input_md5}")
+    print(f" User password: {user.password}")
+    print(f" User attribute15: {user.attribute15}")
 
     password_valid = False
-    if user.attribute15 and user.attribute15.lower() == input_md5.lower():
-        password_valid = True
-    if not password_valid and user.password and user.password.lower() == input_md5.lower():
-        password_valid = True
+    
+    # Check password validation
+    if user.attribute15 and user.attribute15.strip():
+        if user.attribute15.lower() == input_md5.lower():
+            password_valid = True
+            print("✅ Password matched via attribute15 (MD5)")
+    
+    if not password_valid and user.password and user.password.strip():
+        if user.password.lower() == input_md5.lower():
+            password_valid = True
+            print("✅ Password matched via password field (MD5)")
+    
     if not password_valid and user.password == input_pwd:
         password_valid = True
+        print("✅ Password matched via direct comparison")
+    
     if not password_valid and user.password and user.attribute15:
         try:
             AES_KEY = b"1234567890abcdef"
@@ -382,14 +394,15 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
                 decrypted = unpad(cipher.decrypt(encrypted_bytes), 16).decode()
                 if decrypted == input_pwd:
                     password_valid = True
+                    print("✅ Password matched via AES decryption")
         except Exception as e:
-            print(f" AES decrypt failed: {str(e)}")
+            print(f"❌ AES decrypt failed: {str(e)}")
 
     if not password_valid:
-        print(" PASSWORD FAILED")
+        print("❌ PASSWORD FAILED - No validation method worked")
         raise HTTPException(status_code=401, detail="Invalid Password")
 
-    print(" PASSWORD VERIFIED")
+    print("✅ PASSWORD VERIFIED")
 
     # Generate proper JWT token
     access_token = create_access_token(data={"sub": user.emp_id})
