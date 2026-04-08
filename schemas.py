@@ -27,6 +27,9 @@ class CheckOutRequest(BaseModel):
     emp_id: str
     out_time: str # "HH:MM:SS"
 
+class AutoCalculateHoursRequest(BaseModel):
+    emp_id: str
+
 class DashboardResponse(BaseModel):
     emp_name: Optional[str] = "User"
     domain_name: str
