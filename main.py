@@ -717,6 +717,7 @@ def check_in(request: schemas.CheckInRequest, db: Session = Depends(get_db)):
             t_day=now.strftime("%A"),
             month=now.strftime("%B"),
             status="P",
+            Total_hours="0Hr 0Min",
             created_by=emp_id,
             creation_date=now,
             last_updated_by=emp_id,
