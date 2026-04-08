@@ -26,6 +26,7 @@ class CheckInRequest(BaseModel):
 class CheckOutRequest(BaseModel):
     emp_id: str
     out_time: str # "HH:MM:SS"
+    total_hours: Optional[str] = None
 
 class AutoCalculateHoursRequest(BaseModel):
     emp_id: str
