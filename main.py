@@ -844,21 +844,24 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         # ✅ Total hours calculation
         delta = t2 - t1
         total_seconds = int(delta.total_seconds())
+        if total_seconds < 0: total_seconds += 24 * 3600
         
-        # Handle overnight shift (if t2 < t1, assume next day)
-        if total_seconds < 0:
-            total_seconds += 24 * 3600
-
         hours   = total_seconds // 3600
         minutes = (total_seconds % 3600) // 60
         
-        # Priority to frontend if it sent a non-zero value, else use backend calculation
-        if request.total_hours and request.total_hours != "0Hr 0Min" and request.total_hours != "0Hr 00Min":
+        # Priority to frontend if provided, but ALWAYS update total_hours_float
+        if request.total_hours and request.total_hours not in ["0Hr 0Min", "0Hr 00Min"]:
             calculated_total_hours = request.total_hours
+            try:
+                # Expected format "XHr YMin"
+                h_str = calculated_total_hours.split('Hr')[0].strip()
+                m_str = calculated_total_hours.split('Hr')[1].split('Min')[0].strip()
+                total_hours_float = int(h_str) + (int(m_str) / 60)
+            except:
+                total_hours_float = hours + (minutes / 60)
         else:
             calculated_total_hours = f"{hours}Hr {minutes:02d}Min"
-            
-        total_hours_float = hours + (minutes / 60)
+            total_hours_float = hours + (minutes / 60)
 
         # ✅ Persist to DB
         checkin_record.Total_hours      = calculated_total_hours
@@ -866,7 +869,7 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         checkin_record.last_updated_by  = emp_id
         
         db.add(checkin_record)
-        print(f"✅ Saving Total_hours: {calculated_total_hours} for {emp_id}")
+        print(f"DEBUG: Processing {emp_id} - {calculated_total_hours} (float: {total_hours_float})")
 
         # ✅ Automatic Leave/LOP Deduction Policy
         days_to_deduct = 0.0
