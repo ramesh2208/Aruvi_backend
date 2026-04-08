@@ -24,7 +24,7 @@ from Crypto.Util.Padding import pad, unpad
 import pyotp
 from cryptography.fernet import Fernet
 from sqlalchemy import extract
-
+import sqlalchemy
 import models, schemas, database
 from database import engine, SessionLocal
 
@@ -68,7 +68,7 @@ app = FastAPI()
 # ─── DB connection with retry (fixes Render cold start + GoDaddy MySQL) ───────
 def run_migrations_with_retry(max_retries: int = 3, delay: int = 5):
     """Checks for and adds missing columns automatically — prevents schema downtime."""
-    import sqlalchemy
+ 
     for attempt in range(1, max_retries + 1):
         try:
             print(f"[DB] Migration check (attempt {attempt}/{max_retries})...")
