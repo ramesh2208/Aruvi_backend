@@ -841,18 +841,28 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         else:
             checkin_record.out_time = raw_out_time
 
-        # ✅ Total hours calculate
-        delta = t2 - t1
-        total_seconds = int(delta.total_seconds())
-        if total_seconds < 0:
-            total_seconds = 0
+        # ✅ Total hours calculation
+        if request.total_hours and request.total_hours != "0Hr 0Min":
+            calculated_total_hours = request.total_hours
+            # Try to get float for leave logic
+            try:
+                h_part = int(calculated_total_hours.split('Hr')[0].strip())
+                m_part = int(calculated_total_hours.split('Hr')[1].split('Min')[0].strip())
+                total_hours_float = h_part + (m_part / 60)
+            except:
+                total_hours_float = 0 # Fallback
+        else:
+            delta = t2 - t1
+            total_seconds = int(delta.total_seconds())
+            if total_seconds < 0:
+                total_seconds = 0
 
-        hours   = total_seconds // 3600
-        minutes = (total_seconds % 3600) // 60
-        calculated_total_hours = f"{hours}Hr {minutes}Min"
-        total_hours_float = hours + (minutes / 60)
+            hours   = total_seconds // 3600
+            minutes = (total_seconds % 3600) // 60
+            calculated_total_hours = f"{hours}Hr {minutes}Min"
+            total_hours_float = hours + (minutes / 60)
 
-        # ✅ DB-ல save பண்ணு
+        # ✅ Persist to DB
         checkin_record.Total_hours      = calculated_total_hours
         checkin_record.last_update_date = now
         checkin_record.last_updated_by  = emp_id
