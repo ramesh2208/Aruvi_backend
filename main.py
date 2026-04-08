@@ -806,34 +806,36 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="No check-in found for today")
 
     try:
-        fmt = "%H:%M:%S"
-
-        # ✅ in_time DB-ல இருந்து எடுக்கும், strip பண்ணும்
+        # ✅ in_time DB-ல இருந்து எடுக்கும்
         raw_in_time = (checkin_record.in_time or "").strip()
         raw_out_time = (request.out_time or "").strip()
 
         print(f"DEBUG in_time from DB : '{raw_in_time}'")
         print(f"DEBUG out_time from request: '{raw_out_time}'")
 
-        if not raw_in_time or not raw_out_time:
-            raise ValueError("in_time or out_time is empty")
+        if not raw_in_time:
+            # Fallback
+            checkin_record.in_time = raw_out_time
+            raw_in_time = raw_out_time
 
-        t1 = datetime.strptime(raw_in_time, fmt)
-        t2 = datetime.strptime(raw_out_time, fmt)
+        # ✅ Robust parsing using helper
+        t1 = parse_time_str(raw_in_time)
+        t2 = parse_time_str(raw_out_time)
 
-        # ✅ Grace period - Check-in
-        grace_start_time = datetime.strptime("09:30:00", fmt)
-        grace_end_time   = datetime.strptime("10:00:00", fmt)
+        if not t1 or not t2:
+            raise ValueError(f"Could not parse times: in={raw_in_time}, out={raw_out_time}")
 
-        # ✅ Grace period - Check-out
-        checkout_grace_start = datetime.strptime("18:30:00", fmt)
-        checkout_grace_end   = datetime.strptime("19:00:00", fmt)
+        # ✅ Grace period calculations
+        grace_start_time = parse_time_str("09:30:00")
+        grace_end_time   = parse_time_str("10:00:00")
+        checkout_grace_start = parse_time_str("18:30:00")
+        checkout_grace_end   = parse_time_str("19:00:00")
 
-        if grace_start_time <= t1 <= grace_end_time:
+        if grace_start_time and grace_end_time and grace_start_time <= t1 <= grace_end_time:
             t1 = grace_start_time
             checkin_record.in_time = "09:30:00"
 
-        if checkout_grace_start <= t2 <= checkout_grace_end:
+        if checkout_grace_start and checkout_grace_end and checkout_grace_start <= t2 <= checkout_grace_end:
             t2 = checkout_grace_end
             checkin_record.out_time = "19:00:00"
         else:
@@ -856,11 +858,8 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         checkin_record.last_updated_by  = emp_id
 
         print(f"✅ Total_hours calculated : {calculated_total_hours} for emp_id: {emp_id}")
-        print(f"   In_time  : {checkin_record.in_time}")
-        print(f"   Out_time : {checkin_record.out_time}")
-        print(f"   Hours: {hours}, Minutes: {minutes}")
 
-        # ✅ 4 மணி நேரத்துக்கு கீழே இருந்தா Leave deduct
+        # ✅ Automatic Leave Deduction (< 4 hours)
         if total_hours_float < 4:
             cl_balance = db.query(models.LeaveDet).filter(
                 models.LeaveDet.emp_id == emp_id,
@@ -876,13 +875,12 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
                     l_det_id     = cl_balance.l_det_id,
                     emp_id       = emp_id,
                     leave_type   = "Casual Leave",
-                    from_date    = today_date.strftime("%Y-%m-%d"),
-                    to_date      = today_date.strftime("%Y-%m-%d"),
+                    from_date    = today_date.strftime("%d-%b-%Y"),
+                    to_date      = today_date.strftime("%d-%b-%Y"),
                     days         = "0.5",
                     reason       = "Auto-deducted: Worked less than 4 hours",
                     status       = "Approved",
-                    applied_date = now.strftime("%Y-%m-%d"),
-                    attribute1   = "0.5",
+                    applied_date = now.strftime("%d-%b-%Y"),
                     created_by        = emp_id,
                     creation_date     = now,
                     last_updated_by   = emp_id,
@@ -895,21 +893,17 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         else:
             checkin_record.status = "P"
 
-        # ✅ எல்லாத்தையும் ஒரே commit-ல save பண்ணு
         db.commit()
         db.refresh(checkin_record)
 
     except Exception as e:
         db.rollback()
         print(f"❌ Check-out Error: {str(e)}")
-
-        # ✅ Error-லயும் out_time + Total_hours save பண்ணு
         try:
             checkin_record.out_time      = request.out_time
-            checkin_record.Total_hours   = "0Hr 0Min"
-            checkin_record.status        = "Error"
+            if not checkin_record.Total_hours:
+                checkin_record.Total_hours = "0Hr 0Min"
             checkin_record.last_update_date = now
-            checkin_record.last_updated_by  = emp_id
             db.commit()
         except:
             db.rollback()
