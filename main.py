@@ -868,26 +868,43 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         db.add(checkin_record)
         print(f"✅ Saving Total_hours: {calculated_total_hours} for {emp_id}")
 
-        # ✅ Automatic Leave Deduction (< 4 hours)
+        # ✅ Automatic Leave/LOP Deduction Policy
+        days_to_deduct = 0.0
+        new_status = "P"
+        leave_reason = ""
+
         if total_hours_float < 4:
+            days_to_deduct = 1.0
+            new_status = "CL"
+            leave_reason = "Auto-deducted: Worked less than 4 hours"
+        elif 4 <= total_hours_float < 6:
+            days_to_deduct = 0.5
+            new_status = "0.5CL"
+            leave_reason = "Auto-deducted: Worked 4-6 hours"
+        else:
+            new_status = "P"
+
+        if days_to_deduct > 0:
             cl_balance = db.query(models.LeaveDet).filter(
                 models.LeaveDet.emp_id == emp_id,
                 func.lower(models.LeaveDet.leave_type).contains("casual")
             ).first()
 
-            if cl_balance and float(cl_balance.available_leave or 0) >= 0.5:
-                cl_balance.available_leave = float(cl_balance.available_leave) - 0.5
-                cl_balance.availed_leave   = float(cl_balance.availed_leave or 0) + 0.5
+            if cl_balance and float(cl_balance.available_leave or 0) >= days_to_deduct:
+                # Deduct from CL
+                cl_balance.available_leave = float(cl_balance.available_leave) - days_to_deduct
+                cl_balance.availed_leave   = float(cl_balance.availed_leave or 0) + days_to_deduct
                 db.add(cl_balance)
 
+                # Record in EmpLeave
                 new_leave = models.EmpLeave(
                     l_det_id     = cl_balance.l_det_id,
                     emp_id       = emp_id,
                     leave_type   = "Casual Leave",
                     from_date    = today_date.strftime("%d-%b-%Y"),
                     to_date      = today_date.strftime("%d-%b-%Y"),
-                    days         = "0.5",
-                    reason       = "Auto-deducted: Worked less than 4 hours",
+                    days         = str(days_to_deduct),
+                    reason       = leave_reason,
                     status       = "Approved",
                     applied_date = now.strftime("%d-%b-%Y"),
                     created_by        = emp_id,
@@ -896,9 +913,10 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
                     last_update_date  = now
                 )
                 db.add(new_leave)
-                checkin_record.status = "CL"
+                checkin_record.status = new_status
             else:
-                checkin_record.status = "A"
+                # No CL balance -> Mark as LOP
+                checkin_record.status = "LOP" if days_to_deduct == 1.0 else "0.5LOP"
         else:
             checkin_record.status = "P"
 
