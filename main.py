@@ -1,6 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, case
 from datetime import datetime, timedelta, date
@@ -14,7 +13,6 @@ import string
 import hashlib
 import base64
 import time
-from jose import jwt
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -29,23 +27,6 @@ from sqlalchemy import extract
 import sqlalchemy
 import models, schemas, database
 from database import engine, SessionLocal
-
-# JWT Configuration
-SECRET_KEY = "your-secret-key-here-change-in-production"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 1440  # 24 hours
-
-def create_access_token(data: dict):
-    try:
-        to_encode = data.copy()
-        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-        to_encode.update({"exp": expire})
-        encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-        return encoded_jwt
-    except Exception as e:
-        print(f"JWT Token creation error: {e}")
-        # Fallback to simple token if JWT fails
-        return f"fallback_token_{datetime.utcnow().timestamp()}"
 
 # ─── DB Error Handler Helper ──────────────────────────────────────────────────
 def handle_db_error(e: Exception):
@@ -339,131 +320,96 @@ def auto_calculate_hours_endpoint(request: schemas.AutoCalculateHoursRequest, db
     return result
 
 # ─── LOGIN ────────────────────────────────────────────────────────────────────────────
-
 @app.post("/login", response_model=schemas.Token)
 def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
+    print("\n" + "=" * 60)
+    print(" LOGIN ATTEMPT")
+    print("=" * 60)
+
+    username_input = request.username.strip().lower()
+    input_pwd = request.password.strip()
+    print(f" Username input: {username_input}")
+
+    # ── Graceful DB error handling ──────────────────────────────────────────
     try:
-        print("\n" + "=" * 60)
-        print(" LOGIN ATTEMPT")
-        print("=" * 60)
-        username_input = request.username.strip().lower()
-        input_pwd = request.password.strip()
-        print(f" Username input: {username_input}")
+        user = db.query(models.EmpDet).filter(
+            or_(
+                func.lower(func.trim(models.EmpDet.p_mail)) == username_input,
+                func.lower(func.trim(models.EmpDet.emp_id)) == username_input,
+                func.lower(func.replace(func.trim(models.EmpDet.emp_id), " ", "")) == username_input.replace(" ", "")
+            )
+        ).first()
+    except Exception as db_err:
+        handle_db_error(db_err)
 
-        # Check if database is available
-        if not db:
-            print(" Database connection failed")
-            raise HTTPException(status_code=500, detail="Database connection failed")
+    if not user:
+        print(f" User not found for input: {username_input}")
+        raise HTTPException(status_code=404, detail="Invalid Username")
 
-        # Find user
+    print(f" User FOUND: {user.emp_id} ({user.p_mail})")
+
+    input_md5 = hashlib.md5(input_pwd.encode()).hexdigest()
+    print(f" Input MD5: {input_md5}")
+
+    password_valid = False
+    if user.attribute15 and user.attribute15.lower() == input_md5.lower():
+        password_valid = True
+    if not password_valid and user.password and user.password.lower() == input_md5.lower():
+        password_valid = True
+    if not password_valid and user.password == input_pwd:
+        password_valid = True
+    if not password_valid and user.password and user.attribute15:
         try:
-            user = db.query(models.EmpDet).filter(
-                or_(
-                    func.lower(func.trim(models.EmpDet.p_mail)) == username_input,
-                    func.lower(func.trim(models.EmpDet.emp_id)) == username_input,
-                    func.lower(func.replace(func.trim(models.EmpDet.emp_id), " ", "")) == username_input.replace(" ", "")
-                )
-            ).first()
-        except Exception as db_err:
-            print(f" Database query error: {db_err}")
-            raise HTTPException(status_code=500, detail="Database query failed")
+            AES_KEY = b"1234567890abcdef"
+            encrypted_bytes = base64.b64decode(user.password)
+            iv_bytes = base64.b64decode(user.attribute15)
+            if len(iv_bytes) == 16:
+                cipher = AES.new(AES_KEY, AES.MODE_CBC, iv_bytes)
+                decrypted = unpad(cipher.decrypt(encrypted_bytes), 16).decode()
+                if decrypted == input_pwd:
+                    password_valid = True
+        except Exception as e:
+            print(f" AES decrypt failed: {str(e)}")
 
-        if not user:
-            print(f" User not found for input: {username_input}")
-            raise HTTPException(status_code=404, detail="Invalid Username")
+    if not password_valid:
+        print(" PASSWORD FAILED")
+        raise HTTPException(status_code=401, detail="Invalid Password")
 
-        print(f" User FOUND: {user.emp_id} ({user.p_mail})")
+    print(" PASSWORD VERIFIED")
 
-        # Password validation
-        input_md5 = hashlib.md5(input_pwd.encode()).hexdigest()
-        print(f" Input MD5: {input_md5}")
-        print(f" User password: {user.password}")
-        print(f" User attribute15: {user.attribute15}")
-
-        password_valid = False
-        
-        # Check password validation
-        if user.attribute15 and user.attribute15.strip():
-            if user.attribute15.lower() == input_md5.lower():
-                password_valid = True
-                print(" Password matched via attribute15 (MD5)")
-        
-        if not password_valid and user.password and user.password.strip():
-            if user.password.lower() == input_md5.lower():
-                password_valid = True
-                print(" Password matched via password field (MD5)")
-        
-        if not password_valid and user.password == input_pwd:
-            password_valid = True
-            print(" Password matched via direct comparison")
-        
-        if not password_valid and user.password and user.attribute15:
-            try:
-                AES_KEY = b"1234567890abcdef"
-                encrypted_bytes = base64.b64decode(user.password)
-                iv_bytes = base64.b64decode(user.attribute15)
-                if len(iv_bytes) == 16:
-                    cipher = AES.new(AES_KEY, AES.MODE_CBC, iv_bytes)
-                    decrypted = unpad(cipher.decrypt(encrypted_bytes), 16).decode()
-                    if decrypted == input_pwd:
-                        password_valid = True
-                        print(" Password matched via AES decryption")
-            except Exception as e:
-                print(f" AES decrypt failed: {str(e)}")
-
-        if not password_valid:
-            print(" PASSWORD FAILED - No validation method worked")
-            raise HTTPException(status_code=401, detail="Invalid Password")
-
-        print(" PASSWORD VERIFIED")
-
-        # Generate JWT token
+    is_global_admin = False
+    role_type = "Employee"
+    if user.dom_id:
         try:
-            access_token = create_access_token(data={"sub": user.emp_id})
-        except Exception as token_err:
-            print(f" Token generation error: {token_err}")
-            raise HTTPException(status_code=500, detail="Token generation failed")
-        
-        # Get user role
-        is_global_admin = False
-        role_type = "Employee"
-        if user.dom_id:
-            try:
-                d_id = int(str(user.dom_id).strip())
-                domain_obj = db.query(models.Domain).filter(models.Domain.dom_id == d_id).first()
-                if domain_obj and domain_obj.domain:
-                    if any(x in domain_obj.domain.lower() for x in ["admin", "executive", "management"]):
-                        role_type = "Admin"
-                        is_global_admin = True
-            except:
-                pass
+            d_id = int(str(user.dom_id).strip())
+            domain_obj = db.query(models.Domain).filter(models.Domain.dom_id == d_id).first()
+            if domain_obj and domain_obj.domain:
+                if any(x in domain_obj.domain.lower() for x in ["admin", "executive", "management"]):
+                    role_type = "Admin"
+                    is_global_admin = True
+        except:
+            pass
 
-        is_manager = db.query(models.EmpDet).filter(
-            func.lower(func.trim(models.EmpDet.assign_manager)) == user.emp_id.lower().strip()
-        ).first() is not None
-        if is_manager and role_type != "Admin":
-            role_type = "Admin"
+    is_manager = db.query(models.EmpDet).filter(
+        func.lower(func.trim(models.EmpDet.assign_manager)) == user.emp_id.lower().strip()
+    ).first() is not None
+    if is_manager and role_type != "Admin":
+        role_type = "Admin"
 
-        has_2fa = bool(user.auth_key and user.auth_key.strip())
-        print(f" 2FA: {has_2fa}, Role: {role_type}, Global Admin: {is_global_admin}")
-        print("=" * 60)
+    has_2fa = bool(user.auth_key and user.auth_key.strip())
+    print(f" 2FA: {has_2fa}, Role: {role_type}, Global Admin: {is_global_admin}")
+    print("=" * 60)
 
-        return {
-            "access_token": access_token,
-            "token_type": "bearer",
-            "username": user.p_mail or "",
-            "role_type": role_type,
-            "is_global_admin": is_global_admin,
-            "user_id": user.emp_id or "",
-            "name": user.name or "User",
-            "requires_2fa": has_2fa
-        }
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f" LOGIN ERROR: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error during login")
+    return {
+        "access_token": "temp",
+        "token_type": "bearer",
+        "username": user.p_mail or "",
+        "role_type": role_type,
+        "is_global_admin": is_global_admin,
+        "user_id": user.emp_id or "",
+        "name": user.name or "User",
+        "requires_2fa": has_2fa
+    }
 
 
 @app.post("/forgot-password")
@@ -826,14 +772,8 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
 
         hours = total_seconds // 3600
         minutes = (total_seconds % 3600) // 60
-        calculated_total_hours = f"{hours}Hr {minutes}Min"
-        checkin_record.Total_hours = calculated_total_hours
+        checkin_record.Total_hours = f"{hours}Hr {minutes}Min"
         total_hours_float = hours + (minutes / 60)
-        
-        print(f"✅ Calculated Total_hours: {calculated_total_hours} for emp_id: {emp_id}")
-        print(f"   In_time: {checkin_record.in_time}")
-        print(f"   Out_time: {checkin_record.out_time}")
-        print(f"   Hours: {hours}, Minutes: {minutes}")
 
         if total_hours_float < 4:
             # Check Casual Leave balance
