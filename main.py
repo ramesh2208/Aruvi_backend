@@ -277,7 +277,49 @@ def format_time_safe(t):
     return str(t)
 
 
-# ─── LOGIN ────────────────────────────────────────────────────────────────────
+def auto_calculate_total_hours(emp_id: str, db: Session):
+    """Automatically calculate Total_hours from in_time and out_time and store in check-in table"""
+    try:
+        # Get today's check-in record
+        today = datetime.now().date()
+        checkin_record = db.query(models.CheckIn).filter(
+            models.CheckIn.emp_id == emp_id,
+            models.CheckIn.t_date == today
+        ).first()
+        
+        if checkin_record and checkin_record.in_time and checkin_record.out_time:
+            # Parse times
+            in_time = datetime.strptime(checkin_record.in_time, "%I:%M:%S")
+            out_time = datetime.strptime(checkin_record.out_time, "%I:%M:%S")
+            
+            # Calculate total hours
+            delta = out_time - in_time
+            total_seconds = int(delta.total_seconds())
+            hours = total_seconds // 3600
+            minutes = (total_seconds % 3600) // 60
+            total_hours_str = f"{hours}h {minutes}m"
+            
+            # Update Total_hours in check-in table
+            checkin_record.Total_hours = total_hours_str
+            checkin_record.last_update_date = datetime.now()
+            db.commit()
+            
+            print(f"✅ Auto-calculated Total_hours: {total_hours_str} for {emp_id}")
+            return {"message": f"Total_hours auto-calculated: {total_hours_str}"}
+        else:
+            return {"message": "No complete check-in record found for auto-calculation"}
+    except Exception as e:
+        print(f"❌ Auto-calculation error: {str(e)}")
+        return {"error": str(e)}
+
+@app.post("/auto-calculate-hours")
+def auto_calculate_hours_endpoint(request: schemas.AutoCalculateHoursRequest, db: Session = Depends(get_db)):
+    """Endpoint to auto-calculate Total_hours from existing check-in record"""
+    emp_id = request.emp_id.strip()
+    result = auto_calculate_total_hours(emp_id, db)
+    return result
+
+# ─── LOGIN ────────────────────────────────────────────────────────────────────────────
 @app.post("/login", response_model=schemas.Token)
 def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
     print("\n" + "=" * 60)
