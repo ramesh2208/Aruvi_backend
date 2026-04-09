@@ -3380,7 +3380,7 @@ def get_clients(db: Session = Depends(get_db)):
         last_update_dt = c.last_update_date if not (c.last_update_date and "0000-00-00" in str(c.last_update_date)) else None
         res.append({
             "client_id": c.cl_id, "client_ref_no": c.client_ref_no, "client_name": c.client_name,
-            "mobile_no": c.mobile_no, "country_code": c.country_code, "email": c.email,
+            "mobile_no": c.mobile_no, "country_code": c.country_code, "email_id": c.email,
             "gst_available": c.gst, "gst": c.gst_no, "msme_available": c.msme, "msme": c.msme_no,
             "pan_no": c.pan, "address": c.address, "status": c.status or "Active",
             "company_name": c.company_name, "website": c.website, "short_code": c.short_code,
@@ -3413,7 +3413,7 @@ def get_client(client_id: int, db: Session = Depends(get_db)):
     last_update_dt = client.last_update_date if not (client.last_update_date and "0000-00-00" in str(client.last_update_date)) else None
     return {
         "client_id": client.cl_id, "client_ref_no": client.client_ref_no, "client_name": client.client_name,
-        "company_name": client.company_name, "mobile_no": client.mobile_no, "email": client.email,
+        "company_name": client.company_name, "mobile_no": client.mobile_no, "email_id": client.email,
         "gst_available": client.gst, "gst": client.gst_no, "msme_available": client.msme,
         "msme": client.msme_no, "pan_no": client.pan, "status": client.status or "Active",
         "website": client.website, "short_code": client.short_code, "currency": client.currency,
@@ -3430,7 +3430,7 @@ def update_client(client_id: int, client_req: schemas.ClientApplyRequest, db: Se
     client.client_name = client_req.client_name
     client.company_name = client_req.company_name
     client.mobile_no = client_req.mobile_no
-    client.email = client_req.email
+    client.email = client_req.email_id
     client.gst = client_req.gst_available
     client.gst_no = client_req.gst
     client.msme = client_req.msme_available
@@ -3488,7 +3488,7 @@ def create_client(client_req: schemas.ClientApplyRequest, db: Session = Depends(
             company_name=client_req.company_name, country_code="",
             mobile_no=client_req.mobile_no or "", gst=client_req.gst_available or "No",
             gst_value="", gst_no=client_req.gst or "", website=client_req.website or "",
-            email=client_req.email or "", msme=client_req.msme_available or "No",
+            email=client_req.email_id or "", msme=client_req.msme_available or "No",
             msme_no=client_req.msme or "", pan=client_req.pan_no or "",
             short_code=client_req.short_code or "", currency=client_req.currency or "INR",
             address=client_req.address or "", status=client_req.status or "Active",
