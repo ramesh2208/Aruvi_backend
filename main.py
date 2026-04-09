@@ -1512,7 +1512,7 @@ async def apply_leave(
             from_date=req_from.strftime('%d-%b-%Y'),
             to_date=req_to.strftime('%d-%b-%Y'),
             days=fmt_days(cl_days_to_deduct),
-            reason=reason + (" + LOP: " + fmt_days(lop_days_val) + " days" if lop_days_val > 0 else ""),
+            reason=reason,
             status=status,
             file=primary_attachment_path,
             attribute14=attr14_paths,
@@ -1529,16 +1529,87 @@ async def apply_leave(
             last_updated_by=emp_id.strip(), last_update_date=datetime.now()
         )
         db.add(new_leave)
+        db.flush() # Get the new_leave.l_id if needed, and prepare for CheckIn insertion
+
+        # ─── SYNC LEAVE TO CHECK-IN (ATTENDANCE) TABLE ───
+        try:
+            current_date = req_from
+            temp_cl = cl_days_to_deduct
+            temp_lop = lop_days_val
+            prefix = "CL" if "casual" in leave_type.lower() else "SL" if "sick" in leave_type.lower() else "LOP"
+            
+            while current_date <= req_to:
+                day_val = 0.5 if (requested_days == 0.5 or (is_half_day and is_half_day.lower() == "true")) else 1.0
+                day_status = ""
+                
+                if temp_cl >= day_val:
+                    day_status = f"{'0.5' if day_val == 0.5 else ''}{prefix}"
+                    temp_cl -= day_val
+                elif temp_cl > 0:
+                    day_status = f"0.5{prefix}"
+                    temp_cl = 0
+                elif temp_lop >= day_val:
+                    day_status = f"{'0.5' if day_val == 0.5 else ''}LOP"
+                    temp_lop -= day_val
+                elif temp_lop > 0:
+                    day_status = "0.5LOP"
+                    temp_lop = 0
+                else:
+                    # If we ran out of declared days but still in date range? Use prefix as fallback
+                    day_status = f"{prefix}"
+                
+                # Check for existing record for this date
+                existing_checkin = db.query(models.CheckIn).filter(
+                    models.CheckIn.emp_id == emp_id,
+                    models.CheckIn.t_date == current_date.date()
+                ).first()
+                
+                if existing_checkin:
+                    existing_checkin.status = day_status
+                    existing_checkin.last_updated_by = emp_id
+                    existing_checkin.last_update_date = datetime.now()
+                    # Keep existing times if they are there, otherwise mark as leave
+                    if not existing_checkin.Total_hours or existing_checkin.Total_hours == "0Hr 0Min":
+                        existing_checkin.Total_hours = "Leave"
+                else:
+                    new_attend = models.CheckIn(
+                        emp_id=emp_id,
+                        t_date=current_date.date(),
+                        t_day=current_date.strftime("%A"),
+                        month=current_date.strftime("%B"),
+                        status=day_status,
+                        in_time="--:--",
+                        out_time="--:--",
+                        Total_hours="Leave",
+                        created_by=emp_id,
+                        creation_date=datetime.now(),
+                        last_updated_by=emp_id,
+                        last_update_date=datetime.now()
+                    )
+                    db.add(new_attend)
+                
+                current_date += timedelta(days=1)
+                # If it was a single day half-leave, we don't want to loop forever or hit next days erroneously
+                if requested_days <= 0.5: break
+            
+            print(f"✅ Synced leave to attendance (CheckIn) for {emp_id}")
+        except Exception as sync_err:
+            print(f"❌ Error syncing leave to attendance: {sync_err}")
+            # We don't necessarily want to fail the whole leave application if this logic fails, 
+            # but it helps to know. Error handling is already outside.
+
 
         if balance_row and cl_days_to_deduct > 0:
-            balance_row.availed_leave = float(balance_row.availed_leave or 0) + cl_days_to_deduct
-            balance_row.available_leave = float(balance_row.available_leave or 0) - cl_days_to_deduct
-            db.add(balance_row)
-
-
-        db.commit()
-        db.refresh(new_leave)
-
+            try:
+                balance_row.availed_leave = float(balance_row.availed_leave or 0) + cl_days_to_deduct
+                balance_row.available_leave = float(balance_row.available_leave or 0) - cl_days_to_deduct
+                db.commit()
+                print(f"✅ Updated balance for {emp_id}: Available={balance_row.available_leave}, Availed={balance_row.availed_leave}")
+            except Exception as balance_err:
+                print(f"❌ Error updating balance: {balance_err}")
+                db.rollback()
+        
+        # Send notifications
         try:
             if user:
                 approvers = get_approvers(db, user)
@@ -1563,16 +1634,25 @@ async def apply_leave(
                         p_msg = f"{emp_name} has requested {leave_type} from {from_date} to {to_date}."
                         background_tasks.add_task(send_expo_push_notification, [appr["token"]], p_title, p_msg)
         except Exception as mail_err:
-            print(f" Non-critical error sending email: {mail_err}")
-
-    except HTTPException:
+            print(f"❌ Error sending notifications: {mail_err}")
+        
+        print(f"✅ Leave request submitted successfully for {emp_id}")
+        print(f"   Leave ID: {new_leave.l_id}")
+        print(f"   Leave Type: {leave_type}")
+        print(f"   Days: {fmt_days(cl_days_to_deduct)}")
+        print(f"   LOP Days: {fmt_days(lop_days_val)}")
+        
+        return {"message": "Leave request submitted successfully", "leave_id": new_leave.l_id}
+    
+    except HTTPException as http_err:
+        print(f"❌ HTTP Error in leave application: {http_err}")
         db.rollback()
-        raise
+        raise http_err
     except Exception as e:
-        db.rollback()
-        print(f" CRITICAL DATABASE ERROR: {str(e)}")
+        print(f"❌ CRITICAL DATABASE ERROR: {str(e)}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Database Insertion Error: {str(e)}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Leave application failed: {str(e)}")
 
     return {"message": "Leave request submitted successfully", "leave_id": new_leave.l_id}
 
