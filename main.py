@@ -1523,81 +1523,13 @@ async def apply_leave(
             reporting_manager=(user.assign_manager.strip() if user.assign_manager else "") if user else "", 
             approver=(user.project_manager.strip() if user.project_manager else "") if user else "", 
             revision="0",
-            attribute_category="", attribute1=fmt_days(requested_days),
+            attribute_category="", attribute1="", # No longer storing requested_days here as per user request
             attribute2="", attribute3="", attribute4="", attribute5="",
             last_update_login="", created_by=emp_id.strip(), creation_date=datetime.now(),
             last_updated_by=emp_id.strip(), last_update_date=datetime.now()
         )
         db.add(new_leave)
-        db.flush() # Get the new_leave.l_id if needed, and prepare for CheckIn insertion
-
-        # ─── SYNC LEAVE TO CHECK-IN (ATTENDANCE) TABLE ───
-        try:
-            current_date = req_from
-            temp_cl = cl_days_to_deduct
-            temp_lop = lop_days_val
-            prefix = "CL" if "casual" in leave_type.lower() else "SL" if "sick" in leave_type.lower() else "LOP"
-            
-            while current_date <= req_to:
-                day_val = 0.5 if (requested_days == 0.5 or (is_half_day and is_half_day.lower() == "true")) else 1.0
-                day_status = ""
-                
-                if temp_cl >= day_val:
-                    day_status = f"{'0.5' if day_val == 0.5 else ''}{prefix}"
-                    temp_cl -= day_val
-                elif temp_cl > 0:
-                    day_status = f"0.5{prefix}"
-                    temp_cl = 0
-                elif temp_lop >= day_val:
-                    day_status = f"{'0.5' if day_val == 0.5 else ''}LOP"
-                    temp_lop -= day_val
-                elif temp_lop > 0:
-                    day_status = "0.5LOP"
-                    temp_lop = 0
-                else:
-                    # If we ran out of declared days but still in date range? Use prefix as fallback
-                    day_status = f"{prefix}"
-                
-                # Check for existing record for this date
-                existing_checkin = db.query(models.CheckIn).filter(
-                    models.CheckIn.emp_id == emp_id,
-                    models.CheckIn.t_date == current_date.date()
-                ).first()
-                
-                if existing_checkin:
-                    existing_checkin.status = day_status
-                    existing_checkin.last_updated_by = emp_id
-                    existing_checkin.last_update_date = datetime.now()
-                    # Keep existing times if they are there, otherwise mark as leave
-                    if not existing_checkin.Total_hours or existing_checkin.Total_hours == "0Hr 0Min":
-                        existing_checkin.Total_hours = "Leave"
-                else:
-                    new_attend = models.CheckIn(
-                        emp_id=emp_id,
-                        t_date=current_date.date(),
-                        t_day=current_date.strftime("%A"),
-                        month=current_date.strftime("%B"),
-                        status=day_status,
-                        in_time="--:--",
-                        out_time="--:--",
-                        Total_hours="Leave",
-                        created_by=emp_id,
-                        creation_date=datetime.now(),
-                        last_updated_by=emp_id,
-                        last_update_date=datetime.now()
-                    )
-                    db.add(new_attend)
-                
-                current_date += timedelta(days=1)
-                # If it was a single day half-leave, we don't want to loop forever or hit next days erroneously
-                if requested_days <= 0.5: break
-            
-            print(f"✅ Synced leave to attendance (CheckIn) for {emp_id}")
-        except Exception as sync_err:
-            print(f"❌ Error syncing leave to attendance: {sync_err}")
-            # We don't necessarily want to fail the whole leave application if this logic fails, 
-            # but it helps to know. Error handling is already outside.
-
+        db.flush() # Get the new_leave.l_id if needed
 
         if balance_row and cl_days_to_deduct > 0:
             try:
@@ -1844,6 +1776,79 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
             balance.availed_leave = max(0.0, float(balance.availed_leave or 0) - l_days)
             if balance.available_leave is not None:
                 balance.available_leave = float(balance.available_leave) + l_days
+
+    # ─── SYNC LEAVE TO CHECK-IN ON APPROVAL ───
+    if request_item.action == 'Approved' and old_status != 'Approved':
+        try:
+            req_from = parse_date(leave.from_date)
+            req_to = parse_date(leave.to_date) if leave.to_date else req_from
+            if req_from and req_to:
+                current_date = req_from
+                # Based on the leave application, we will determine the day_status.
+                # Since the days and lop_days are formatted as strings, let's parse them safely.
+                cl_days = float(leave.days) if leave.days else 0.0
+                lop_days = float(leave.lop_days) if leave.lop_days else 0.0
+                requested_days = cl_days + lop_days
+                
+                temp_cl = cl_days
+                temp_lop = lop_days
+                prefix = "CL" if "casual" in (leave.leave_type or "").lower() else "SL" if "sick" in (leave.leave_type or "").lower() else "LOP"
+                
+                while current_date <= req_to:
+                    # check if the request was a half day (single day, total days = 0.5)
+                    day_val = 0.5 if requested_days == 0.5 else 1.0
+                    day_status = ""
+                    
+                    if temp_cl >= day_val:
+                        day_status = f"{'0.5' if day_val == 0.5 else ''}{prefix}"
+                        temp_cl -= day_val
+                    elif temp_cl > 0:
+                        day_status = f"0.5{prefix}"
+                        temp_cl = 0
+                    elif temp_lop >= day_val:
+                        day_status = f"{'0.5' if day_val == 0.5 else ''}LOP"
+                        temp_lop -= day_val
+                    elif temp_lop > 0:
+                        day_status = "0.5LOP"
+                        temp_lop = 0
+                    else:
+                        day_status = f"{prefix}"
+                    
+                    # Update or Insert CheckIn table
+                    existing_checkin = db.query(models.CheckIn).filter(
+                        models.CheckIn.emp_id == leave.emp_id,
+                        models.CheckIn.t_date == current_date.date()
+                    ).first()
+                    
+                    if existing_checkin:
+                        existing_checkin.status = day_status
+                        existing_checkin.last_updated_by = request_item.admin_id
+                        existing_checkin.last_update_date = datetime.now()
+                        if not existing_checkin.in_time or existing_checkin.in_time == "--:--":
+                            existing_checkin.in_time = "--:--"
+                            existing_checkin.out_time = "--:--"
+                            existing_checkin.Total_hours = "Leave"
+                    else:
+                        new_attend = models.CheckIn(
+                            emp_id=leave.emp_id,
+                            t_date=current_date.date(),
+                            t_day=current_date.strftime("%A"),
+                            month=current_date.strftime("%B"),
+                            status=day_status,
+                            in_time="--:--",
+                            out_time="--:--",
+                            Total_hours="Leave",
+                            created_by=request_item.admin_id,
+                            creation_date=datetime.now(),
+                            last_updated_by=request_item.admin_id,
+                            last_update_date=datetime.now()
+                        )
+                        db.add(new_attend)
+                    
+                    current_date += timedelta(days=1)
+        except Exception as e:
+            print(f"❌ Error syncing checkin for approval: {e}")
+
     db.commit()
     try:
         emp_user = db.query(models.EmpDet).filter(
