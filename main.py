@@ -27,8 +27,20 @@ import pyotp
 from cryptography.fernet import Fernet
 from sqlalchemy import extract
 import sqlalchemy
+import sys
+import os
+# Add current directory to sys.path to fix ModuleNotFoundError for local imports
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 import models, schemas, database
 from database import engine, SessionLocal
+
+# Handle MySQL zero dates "0000-00-00" which cause Pydantic validation errors
+def safe_dt(d):
+    if not d: return None
+    s = str(d).strip()
+    if "0000-00-00" in s: return None
+    return d
 
 # JWT Configuration
 SECRET_KEY = "your-secret-key-here-change-in-production"
@@ -652,7 +664,11 @@ def get_employees(manager_id: Optional[str] = None, db: Session = Depends(get_db
         )
         if manager_id:
             query = query.filter(
-                func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
+                or_(
+                    func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower(),
+                    func.lower(func.trim(models.EmpDet.project_manager)) == manager_id.strip().lower()
+                )
+            )
         employees = query.all()
     except Exception as e:
         handle_db_error(e)
@@ -730,7 +746,11 @@ def get_attendance_logs(manager_id: Optional[str] = None, db: Session = Depends(
         )
         if manager_id:
             query = query.filter(
-                func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
+                or_(
+                    func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower(),
+                    func.lower(func.trim(models.EmpDet.project_manager)) == manager_id.strip().lower()
+                )
+            )
         employees = query.all()
         logs = db.query(models.CheckIn).filter(models.CheckIn.t_date == today).all()
     except Exception as e:
@@ -901,6 +921,10 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
                 )
             ).first()
 
+            actual_leave_type = "Casual Leave"
+            l_det_id_val = None
+            
+            # Determine if we use CL or LOP
             if cl_balance and float(cl_balance.available_leave or 0) >= days_to_deduct:
                 # Deduct from CL balance
                 cl_balance.available_leave = float(cl_balance.available_leave) - days_to_deduct
@@ -908,45 +932,48 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
                 cl_balance.last_update_date = now
                 cl_balance.last_updated_by = emp_id
                 db.add(cl_balance)
-
-                # Record in EmpLeave (Leave History Tracking)
-                new_leave = models.EmpLeave(
-                    l_det_id     = cl_balance.l_det_id,
-                    emp_id       = emp_id,
-                    leave_type   = cl_balance.leave_type or "Casual Leave",
-                    from_date    = today_date.strftime("%d-%b-%Y"),
-                    to_date      = today_date.strftime("%d-%b-%Y"),
-                    days         = str(days_to_deduct),
-                    reason       = leave_reason,
-                    status       = "Approved",
-                    applied_date = now.strftime("%d-%b-%Y"),
-                    # Exhaustive field list to prevent DB constraint errors
-                    mail_message_id="", hr_action="", hr_approval="", admin_approval="",
-                    lop_days="0", remarks="Auto-generated on check-out", 
-                    approved_by="System", 
-                    reporting_manager="", 
-                    approver="", 
-                    revision="0",
-                    attribute_category="AUTO", 
-                    attribute1=str(days_to_deduct),
-                    attribute2="", attribute3="", attribute4="", attribute5="", 
-                    attribute6="", attribute7="", attribute8="", attribute9="",
-                    attribute10="", attribute11="", attribute12="", attribute13="",
-                    attribute14="",
-                    file="",
-                    created_by        = emp_id,
-                    creation_date     = now,
-                    last_updated_by   = emp_id,
-                    last_update_date  = now
-                )
-                db.add(new_leave)
-                # Apply Final Status
+                actual_leave_type = cl_balance.leave_type or "Casual Leave"
+                l_det_id_val = cl_balance.l_det_id
                 checkin_record.status = new_status
-                print(f"✅ Status updated to {new_status} (Leave applied) for {emp_id}")
             else:
-                # No CL balance -> Mark as LOP/0.5LOP
+                # No CL balance -> Mark as LOP/0.5LOP and record as "Loss of Pay"
                 checkin_record.status = "LOP" if days_to_deduct == 1.0 else "0.5LOP"
+                actual_leave_type = "Loss of Pay"
                 print(f"⚠️ Status updated to {checkin_record.status} (No CL balance) for {emp_id}")
+
+            # Record in EmpLeave (Leave History Tracking) for both CL and LOP
+            new_leave = models.EmpLeave(
+                l_det_id     = l_det_id_val,
+                emp_id       = emp_id,
+                leave_type   = actual_leave_type,
+                from_date    = today_date.strftime("%d-%b-%Y"),
+                to_date      = today_date.strftime("%d-%b-%Y"),
+                days         = str(days_to_deduct),
+                reason       = leave_reason,
+                status       = "Approved",
+                applied_date = now.strftime("%d-%b-%Y"),
+                # Exhaustive field list
+                mail_message_id="", hr_action="", hr_approval="", admin_approval="",
+                lop_days=str(days_to_deduct) if "LOP" in checkin_record.status else "0", 
+                remarks="Auto-generated on check-out", 
+                approved_by="System", 
+                reporting_manager="", 
+                approver="", 
+                revision="0",
+                attribute_category="AUTO", 
+                attribute1=str(days_to_deduct),
+                attribute2="", attribute3="", attribute4="", attribute5="", 
+                attribute6="", attribute7="", attribute8="", attribute9="",
+                attribute10="", attribute11="", attribute12="", attribute13="",
+                attribute14="",
+                file="",
+                created_by        = emp_id,
+                creation_date     = now,
+                last_updated_by   = emp_id,
+                last_update_date  = now
+            )
+            db.add(new_leave)
+            print(f"✅ Leave history record ({actual_leave_type} - {days_to_deduct} days) created for {emp_id}")
         else:
             # Enough hours worked (> 6 hours)
             checkin_record.status = "P"
@@ -1221,6 +1248,48 @@ def test_push(req: schemas.PushTokenRegisterRequest, db: Session = Depends(get_d
     return {"message": "Test push triggered"}
 
 
+def get_approvers(db: Session, user: models.EmpDet):
+    approvers = []
+    approver_ids = set()
+
+    # 1. Assign Manager
+    if user.assign_manager:
+        m = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == user.assign_manager.strip().lower()).first()
+        if m and m.emp_id not in approver_ids:
+            approvers.append({"email": m.p_mail, "name": m.name, "token": m.attribute7})
+            approver_ids.add(m.emp_id)
+
+    # 2. Project Manager
+    if user.project_manager:
+        pm = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == user.project_manager.strip().lower()).first()
+        if pm and pm.emp_id not in approver_ids:
+            approvers.append({"email": pm.p_mail, "name": pm.name, "token": pm.attribute7})
+            approver_ids.add(pm.emp_id)
+
+    # 3. Admins / Management
+    try:
+        # We manually filter because dom_id is a String in EmpDet but Integer in Domain
+        all_doms = db.query(models.Domain).filter(
+            or_(
+                func.lower(models.Domain.domain).contains("admin"),
+                func.lower(models.Domain.domain).contains("executive"),
+                func.lower(models.Domain.domain).contains("management")
+            )
+        ).all()
+        dom_ids = [str(d.dom_id) for d in all_doms]
+        
+        if dom_ids:
+            management_users = db.query(models.EmpDet).filter(models.EmpDet.dom_id.in_(dom_ids)).all()
+            for m_user in management_users:
+                if m_user.emp_id not in approver_ids:
+                    approvers.append({"email": m_user.p_mail, "name": m_user.name, "token": m_user.attribute7})
+                    approver_ids.add(m_user.emp_id)
+    except Exception as e:
+        print(f" Error fetching management users for notification: {e}")
+
+    return approvers
+
+
 def fmt_days(d):
     try:
         val = float(d)
@@ -1270,9 +1339,12 @@ async def apply_leave(
         db: Session = Depends(get_db)
 ):
     emp_id = emp_id.strip()
+    print(f"DEBUG: apply_leave for emp_id={emp_id}, type={leave_type}, days={days}")
     try:
         user = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()).first()
+        print(f"DEBUG: user found? {user.name if user else 'No'}")
     except Exception as e:
+        print(f"DEBUG: DB error fetching user: {e}")
         handle_db_error(e)
 
     if not user:
@@ -1322,90 +1394,26 @@ async def apply_leave(
         if requested_days <= 0:
             raise HTTPException(status_code=400, detail="Invalid leave days")
 
+        # Check for overlapping leave requests
         existing_leaves = db.query(models.EmpLeave).filter(
             func.lower(func.trim(models.EmpLeave.emp_id)) == emp_id.lower(),
             func.lower(func.trim(models.EmpLeave.status)).in_(["pending", "approved"])
         ).all()
+
         for row in existing_leaves:
             row_from = parse_date(row.from_date)
             row_to = parse_date(row.to_date) if row.to_date else row_from
-            if not row_from or not row_to:
-                continue
-            if row_from and row_to and (req_from <= row_to) and (req_to >= row_from):
-                existing_type = row.leave_type or "Leave"
+            if not row_from or not row_to: continue
+            if (req_from <= row_to) and (req_to >= row_from):
+                existing_type = row.leave_type or "Leave Request"
                 raise HTTPException(
                     status_code=400,
                     detail=f"You have already applied for {existing_type} on these dates ({row.from_date} to {row.to_date}). Please check your leave history."
                 )
 
-        if normalized_leave_type == "casual leave":
-            month_usage: dict[str, float] = {}
-            for row in existing_leaves:
-                if (row.leave_type or "").strip().lower() != "casual leave":
-                    continue
-                row_from = parse_date(row.from_date)
-                row_to = parse_date(row.to_date) if row.to_date else row_from
-                if not row_from or not row_to:
-                    continue
-                if row_from and row_to and row_to < row_from:
-                    row_from, row_to = row_to, row_from
-                if row_from and row_to:
-                    delta_days = (row_to - row_from).days + 1
-                    daily_share = float(row.days or 0) / (delta_days if delta_days > 0 else 1)
-                    cur = row_from
-                    while cur <= row_to:
-                        key = f"{cur.year}-{cur.month:02d}"
-                        month_usage[key] = month_usage.get(key, 0.0) + daily_share
-                        cur = cur + timedelta(days=1)
-
-            req_month_usage: dict[str, float] = {}
-            req_cur = req_from
-            req_daily_share = float(requested_days) / float((req_to - req_from).days + 1 or 1)
-            while req_cur <= req_to:
-                req_key = f"{req_cur.year}-{req_cur.month:02d}"
-                req_month_usage[req_key] = req_month_usage.get(req_key, 0.0) + req_daily_share
-                req_cur = req_cur + timedelta(days=1)
-
-            max_excess = 0.0
-            for month_key, req_value in req_month_usage.items():
-                used_value = month_usage.get(month_key, 0.0)
-                if used_value + req_value > 3.0:
-                    excess = (used_value + req_value) - 3.0
-                    if excess > max_excess:
-                        max_excess = excess
-
-            if max_excess > 0:
-                lop_days_val = min(requested_days, max_excess)
-                cl_days_to_deduct = requested_days - lop_days_val
-
-        elif normalized_leave_type == "sick leave":
-            # Fetch sick leave balance row
-            sl_balance_row = db.query(models.LeaveDet).filter(
-                func.lower(func.trim(models.LeaveDet.emp_id)) == emp_id.strip().lower(),
-                func.lower(func.trim(models.LeaveDet.leave_type)).contains('sick')
-            ).first()
-            if sl_balance_row:
-                sl_available = float(sl_balance_row.available_leave or 0)
-                if sl_available <= 0:
-                    raise HTTPException(status_code=400, detail="No sick leave balance available. You cannot apply for sick leave.")
-                elif requested_days > sl_available:
-                    raise HTTPException(status_code=400, detail=f"Insufficient sick leave balance. Available: {sl_available} days, Requested: {requested_days} days.")
-                # Attachment validation for 2+ days
-                if requested_days >= 2:
-                    if not attachments or len(attachments) == 0:
-                        raise HTTPException(status_code=400, detail="Attachment is mandatory for Sick Leave requests lasting 2 days or more.")
-                # Set leave calculation
-                cl_days_to_deduct = sl_available
-                lop_days_val = 0.0
-            elif requested_days > sl_available:
-                # Partial: use available SL, rest goes to LOP
-                cl_days_to_deduct = sl_available
-                lop_days_val = requested_days - sl_available
-            # else: enough balance, cl_days_to_deduct remains = requested_days, lop_days_val = 0.0
-
+        # ─ 1. Fetch Balance Row Early ──────────────────────────────────────────
         l_type_lower = leave_type.lower()
         balance_row = None
-
         if 'casual' in l_type_lower or 'cl' == l_type_lower:
             search_key = 'casual'
         elif 'sick' in l_type_lower or 'sl' == l_type_lower:
@@ -1428,26 +1436,81 @@ async def apply_leave(
                 func.lower(func.trim(models.LeaveDet.emp_id)) == emp_id.strip().lower(),
                 func.lower(func.trim(models.LeaveDet.leave_type)).contains(search_key)
             ).first()
+        
+        print(f"DEBUG: balance_row found? {'Yes' if balance_row else 'No'} key={search_key}")
+        sl_available = float(balance_row.available_leave or 0) if balance_row else 0.0
+        
+        # ─ 2. Calculate LOP based on Policy & Balance ───────────────────────
+        lop_days_val = 0.0
+        cl_days_to_deduct = requested_days
 
-        det_id = balance_row.l_det_id if balance_row else None
+        # Rule A: Casual Leave monthly limit (3 days max)
+        if normalized_leave_type == "casual leave":
+            month_usage: dict[str, float] = {}
+            for row in existing_leaves:
+                if (row.leave_type or "").strip().lower() != "casual leave":
+                    continue
+                row_from = parse_date(row.from_date)
+                row_to = parse_date(row.to_date) if row.to_date else row_from
+                if row_from and row_to:
+                    if row_to < row_from: row_from, row_to = row_to, row_from
+                    delta_days = (row_to - row_from).days + 1
+                    daily_share = float(row.days or 0) / (delta_days if delta_days > 0 else 1)
+                    cur = row_from
+                    while cur <= row_to:
+                        key = f"{cur.year}-{cur.month:02d}"
+                        month_usage[key] = month_usage.get(key, 0.0) + daily_share
+                        cur = cur + timedelta(days=1)
 
+            req_month_usage: dict[str, float] = {}
+            req_cur = req_from
+            req_daily_share = float(requested_days) / float((req_to - req_from).days + 1 or 1)
+            while req_cur <= req_to:
+                req_key = f"{req_cur.year}-{req_cur.month:02d}"
+                req_month_usage[req_key] = req_month_usage.get(req_key, 0.0) + req_daily_share
+                req_cur = req_cur + timedelta(days=1)
+
+            max_excess = 0.0
+            for month_key, req_value in req_month_usage.items():
+                used_value = month_usage.get(month_key, 0.0)
+                if used_value + req_value > 3.0:
+                    excess = (used_value + req_value) - 3.0
+                    if excess > max_excess: max_excess = excess
+            
+            if max_excess > 0:
+                policy_lop = min(requested_days, max_excess)
+                cl_days_to_deduct = requested_days - policy_lop
+                lop_days_val = policy_lop
+
+        # Rule B: Overall Balance Check (Applies to ALl types with balance)
+        if balance_row:
+            avail = float(balance_row.available_leave or 0)
+            print(f"DEBUG: checking balance: req_deduct={cl_days_to_deduct}, avail={avail}")
+            if cl_days_to_deduct > avail:
+                extra_lop = cl_days_to_deduct - avail
+                lop_days_val += extra_lop
+                cl_days_to_deduct = avail
+        else:
+            # No balance row found for this type? Entirely LOP
+            print(f"DEBUG: No balance_row for {leave_type}, forcing LOP")
+            lop_days_val = requested_days
+            cl_days_to_deduct = 0.0
+
+        # Rounded values for safety
         from decimal import Decimal, ROUND_HALF_UP
         _twodp = Decimal('0.01')
-        cl_days_to_deduct = float(Decimal(str(float(cl_days_to_deduct))).quantize(_twodp, rounding=ROUND_HALF_UP))
-        lop_days_val = float(Decimal(str(float(lop_days_val))).quantize(_twodp, rounding=ROUND_HALF_UP))
+        cl_days_to_deduct = float(Decimal(str(cl_days_to_deduct)).quantize(_twodp, rounding=ROUND_HALF_UP))
+        lop_days_val = float(Decimal(str(lop_days_val)).quantize(_twodp, rounding=ROUND_HALF_UP))
 
-        if cl_days_to_deduct > 0 and req_from:
-            # Always use the full requested date range for single record
-            # The record covers the entire leave period with both sick leave and LOP
-            rec1_to = req_to.strftime('%d-%b-%Y')
-
-        # Create single record with combined leave + LOP
+        # ─ 3. Final Persistence ───────────────────────────────────────────
+        det_id = balance_row.l_det_id if balance_row else None
+        
         new_leave = models.EmpLeave(
             l_det_id=det_id,
             emp_id=emp_id.strip(),
             leave_type=leave_type,
             from_date=req_from.strftime('%d-%b-%Y'),
-            to_date=rec1_to,
+            to_date=req_to.strftime('%d-%b-%Y'),
             days=fmt_days(cl_days_to_deduct),
             reason=reason + (" + LOP: " + fmt_days(lop_days_val) + " days" if lop_days_val > 0 else ""),
             status=status,
@@ -1456,69 +1519,49 @@ async def apply_leave(
             applied_date=datetime.now().strftime('%d-%b-%Y'),
             mail_message_id="", hr_action="", hr_approval="", admin_approval="",
             lop_days=fmt_days(lop_days_val),
-            remarks="", approved_by="", reporting_manager=user.assign_manager or "", approver=user.project_manager or "", revision="0",
+            remarks="", approved_by="", 
+            reporting_manager=(user.assign_manager.strip() if user.assign_manager else "") if user else "", 
+            approver=(user.project_manager.strip() if user.project_manager else "") if user else "", 
+            revision="0",
             attribute_category="", attribute1=fmt_days(requested_days),
             attribute2="", attribute3="", attribute4="", attribute5="",
             last_update_login="", created_by=emp_id.strip(), creation_date=datetime.now(),
             last_updated_by=emp_id.strip(), last_update_date=datetime.now()
         )
         db.add(new_leave)
-        if balance_row:
+
+        if balance_row and cl_days_to_deduct > 0:
             balance_row.availed_leave = float(balance_row.availed_leave or 0) + cl_days_to_deduct
-            if balance_row.available_leave is not None:
-                balance_row.available_leave = float(balance_row.available_leave or 0) - cl_days_to_deduct
+            balance_row.available_leave = float(balance_row.available_leave or 0) - cl_days_to_deduct
             db.add(balance_row)
-        elif lop_days_val > 0 and req_from:
-            # This case should not happen with the fix above, but keeping for safety
-            lop_leave = models.EmpLeave(
-                l_det_id=det_id,
-                emp_id=emp_id.strip(),
-                leave_type=leave_type,
-                from_date=req_from.strftime('%d-%b-%Y'),  # Fix date format for LOP-only leave record
-                to_date=req_to.strftime('%d-%b-%Y'),  # Fix date format for LOP-only leave record
-                days=fmt_days(lop_days_val),
-                reason=reason + " (LOP Only)",
-                status=status,
-                file=primary_attachment_path,
-                attribute14=attr14_paths,
-                applied_date=datetime.now().strftime('%d-%b-%Y'),
-                mail_message_id="", hr_action="", hr_approval="", admin_approval="",
-                lop_days=fmt_days(lop_days_val),
-                remarks="", approved_by="", reporting_manager=user.assign_manager or "", approver=user.project_manager or "", revision="0",
-                attribute_category="", attribute1=fmt_days(requested_days),
-                attribute2="", attribute3="", attribute4="", attribute5="",
-                last_update_login="", created_by=emp_id.strip(), creation_date=datetime.now(),
-                last_updated_by=emp_id.strip(), last_update_date=datetime.now()
-            )
-            db.add(lop_leave)
-            if cl_days_to_deduct <= 0:
-                new_leave = lop_leave
+
 
         db.commit()
         db.refresh(new_leave)
 
         try:
-            if user and user.assign_manager:
-                manager = db.query(models.EmpDet).filter(
-                    func.lower(func.trim(models.EmpDet.emp_id)) == user.assign_manager.strip().lower()
-                ).first()
-                if manager and manager.p_mail:
-                    day_text = "Day" if float(requested_days) == 1.0 else "Days"
-                    summary_msg = f"{fmt_days(cl_days_to_deduct)} CL / {fmt_days(lop_days_val)} LOP" if lop_days_val > 0 else f"{fmt_days(requested_days)} {day_text}"
-                    subject = f"ITS - {emp_name} - {leave_type} Request | {from_date} ({summary_msg})"
-                    content = f"""
-                    <p><strong>Good Day!</strong></p>
-                    <p>I hope this email finds you well.</p>
-                    <p>I am requesting leave from <strong>{from_date}</strong> to <strong>{to_date}</strong>.</p>
-                    <p><strong>No of Days:</strong> {summary_msg}</p>
-                    <p><strong>Reason:</strong> {reason}</p>
-                    """
-                    body = get_email_template(manager.name, "Leave Request", content, emp_name)
-                    background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
-                    if manager.attribute7:
+            if user:
+                approvers = get_approvers(db, user)
+                day_text = "Day" if float(requested_days) == 1.0 else "Days"
+                summary_msg = f"{fmt_days(cl_days_to_deduct)} CL / {fmt_days(lop_days_val)} LOP" if lop_days_val > 0 else f"{fmt_days(requested_days)} {day_text}"
+                subject = f"ITS - {emp_name} - {leave_type} Request | {from_date} ({summary_msg})"
+                
+                for appr in approvers:
+                    if appr["email"]:
+                        content = f"""
+                        <p><strong>Good Day!</strong></p>
+                        <p>I hope this email finds you well.</p>
+                        <p>I am requesting leave from <strong>{from_date}</strong> to <strong>{to_date}</strong>.</p>
+                        <p><strong>No of Days:</strong> {summary_msg}</p>
+                        <p><strong>Reason:</strong> {reason}</p>
+                        """
+                        body = get_email_template(appr["name"], "Leave Request", content, emp_name)
+                        background_tasks.add_task(send_email_notification, appr["email"], subject, body)
+                    
+                    if appr["token"]:
                         p_title = "New Leave Request"
                         p_msg = f"{emp_name} has requested {leave_type} from {from_date} to {to_date}."
-                        background_tasks.add_task(send_expo_push_notification, [manager.attribute7], p_title, p_msg)
+                        background_tasks.add_task(send_expo_push_notification, [appr["token"]], p_title, p_msg)
         except Exception as mail_err:
             print(f" Non-critical error sending email: {mail_err}")
 
@@ -1545,45 +1588,23 @@ def send_leave_notification(notification: dict, db: Session = Depends(get_db)):
         days = notification.get("days", 0)
         is_half_day = notification.get("is_half_day", False)
         status = notification.get("status", "Pending")
-        
-        print(f"\n--- LEAVE NOTIFICATION: {emp_name} ({emp_id}) ---")
-        print(f" Leave Type: {leave_type}")
-        print(f" Dates: {from_date} to {to_date}")
-        print(f" Days: {days} {'(Half Day)' if is_half_day else ''}")
-        
-        # Get employee details to find assigned manager
+
         try:
             user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == emp_id).first()
             if not user:
-                print(" Employee not found for notification")
                 return {"message": "Employee not found"}
-                
-            # Get assigned manager details
-            assign_manager_id = user.assign_manager
-            if not assign_manager_id:
-                print(" No assigned manager found for employee")
-                return {"message": "No assigned manager found"}
-                
-            manager = db.query(models.EmpDet).filter(models.EmpDet.emp_id == assign_manager_id).first()
-            if not manager:
-                print(f" Manager not found with ID: {assign_manager_id}")
-                return {"message": "Manager not found"}
-                
-            manager_email = manager.p_mail or manager.mail_id
-            if not manager_email:
-                print(" Manager email not found")
-                return {"message": "Manager email not found"}
-                
-            print(f" Sending notification to manager: {manager.name} ({manager_email})")
-            
-            # Create email content
+
+            approvers = get_approvers(db, user)
+            if not approvers:
+                return {"message": "No approvers found for this employee"}
+
+            subject = f"Leave Request: {emp_name} - {leave_type} ({from_date} to {to_date})"
             content = f"""
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
                 <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
                     <h1 style="margin: 0; font-size: 24px;">Leave Request Notification</h1>
                     <p style="margin: 10px 0 0 0; opacity: 0.9;">New leave application received</p>
                 </div>
-                
                 <div style="background: #f8f9fa; padding: 30px; border-radius: 0 0 10px 10px;">
                     <div style="background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
                         <h3 style="margin: 0 0 15px 0; color: #333;">Employee Details</h3>
@@ -1591,7 +1612,6 @@ def send_leave_notification(notification: dict, db: Session = Depends(get_db)):
                         <p style="margin: 5px 0;"><strong>Employee ID:</strong> {emp_id}</p>
                         <p style="margin: 5px 0;"><strong>Department:</strong> {user.dpt_id or 'N/A'}</p>
                     </div>
-                    
                     <div style="background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
                         <h3 style="margin: 0 0 15px 0; color: #333;">Leave Details</h3>
                         <p style="margin: 5px 0;"><strong>Type:</strong> {leave_type}</p>
@@ -1600,35 +1620,27 @@ def send_leave_notification(notification: dict, db: Session = Depends(get_db)):
                         <p style="margin: 5px 0;"><strong>Duration:</strong> {days} {('day' if days == 1 else 'days')} {'(Half Day)' if is_half_day else ''}</p>
                         <p style="margin: 5px 0;"><strong>Status:</strong> <span style="background: #fff3cd; color: #856404; padding: 4px 8px; border-radius: 4px; font-size: 12px;">{status}</span></p>
                     </div>
-                    
                     <div style="text-align: center; margin-top: 25px;">
                         <p style="margin: 0; color: #6c757d; font-size: 14px;">Please review this leave request in the system.</p>
                     </div>
                 </div>
-                
-                <div style="text-align: center; margin-top: 20px; color: #6c757d; font-size: 12px;">
-                    <p>This is an automated notification from Aruvi Leave Management System</p>
-                </div>
             </div>
             """
-            
-            # Send email to manager
-            subject = f"Leave Request: {emp_name} - {leave_type} ({from_date} to {to_date})"
-            body = get_email_template(manager.name or "Manager", subject, content, "Aruvi Leave System")
-            
-            email_sent = send_email_notification(manager_email, subject, body)
-            
-            if email_sent:
-                print(f" Email notification sent successfully to {manager_email}")
-                return {"message": "Notification sent successfully", "manager_email": manager_email}
-            else:
-                print(f" Failed to send email to {manager_email}")
-                return {"message": "Failed to send notification"}
-                
+
+            sent_count = 0
+            for appr in approvers:
+                if appr["email"]:
+                    body = get_email_template(appr["name"] or "Manager", subject, content, "Aruvi Leave System")
+                    email_sent = send_email_notification(appr["email"], subject, body)
+                    if email_sent:
+                        sent_count += 1
+
+            return {"message": f"Notification sent to {sent_count} approver(s)"}
+
         except Exception as e:
             print(f" Error processing notification: {str(e)}")
             return {"message": f"Error processing notification: {str(e)}"}
-            
+
     except Exception as e:
         print(f" General error in send-leave-notification: {str(e)}")
         return {"message": f"General error: {str(e)}"}
@@ -1642,7 +1654,11 @@ def get_pending_leaves(manager_id: Optional[str] = None, db: Session = Depends(g
         ).filter(models.EmpLeave.status == "Pending")
         if manager_id:
             query = query.filter(
-                func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
+                or_(
+                    func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower(),
+                    func.lower(func.trim(models.EmpDet.project_manager)) == manager_id.strip().lower()
+                )
+            )
         pending = query.order_by(models.EmpLeave.creation_date.desc()).all()
     except Exception as e:
         handle_db_error(e)
@@ -1672,7 +1688,11 @@ def get_all_leave_history(manager_id: Optional[str] = None, db: Session = Depend
         )
         if manager_id:
             query = query.filter(
-                func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
+                or_(
+                    func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower(),
+                    func.lower(func.trim(models.EmpDet.project_manager)) == manager_id.strip().lower()
+                )
+            )
         all_leaves = query.order_by(models.EmpLeave.creation_date.desc()).all()
     except Exception as e:
         handle_db_error(e)
@@ -2164,25 +2184,28 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
         db.commit()
         db.refresh(new_ot)
 
-        if user and user.assign_manager:
-            manager = db.query(models.EmpDet).filter(
-                func.trim(models.EmpDet.emp_id) == user.assign_manager.strip()).first()
-            if manager and manager.p_mail:
-                subject = f"ITS - {user.name} - OT Request | {ot_date_clean} | {request.from_time} to {request.to_time}"
-                content = f"""
-                <p><strong>Good Day!</strong></p>
-                <p>An employee has requested overtime. Details below:</p>
-                <p><strong>Overtime Request:</strong> {ot_date_clean}<br>
-                <span>{request.from_time} to {request.to_time} ({request.duration})</span></p>
-                <p><strong>Employee:</strong> {user.name}</p>
-                <p><strong>Reason:</strong> {request.reason}</p>
-                """
-                body = get_email_template(manager.name, "New Overtime Request", content, user.name)
-                background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
-                if manager.attribute7:
+        try:
+            approvers = get_approvers(db, user)
+            subject = f"ITS - {user.name} - OT Request | {ot_date_clean} | {request.from_time} to {request.to_time}"
+            for appr in approvers:
+                if appr["email"]:
+                    content = f"""
+                    <p><strong>Good Day!</strong></p>
+                    <p>An employee has requested overtime. Details below:</p>
+                    <p><strong>Overtime Request:</strong> {ot_date_clean}<br>
+                    <span>{request.from_time} to {request.to_time} ({request.duration})</span></p>
+                    <p><strong>Employee:</strong> {user.name}</p>
+                    <p><strong>Reason:</strong> {request.reason}</p>
+                    """
+                    body = get_email_template(appr["name"], "New Overtime Request", content, user.name)
+                    background_tasks.add_task(send_email_notification, appr["email"], subject, body)
+                if appr["token"]:
                     p_title = "New OT Request"
                     p_msg = f"{user.name} requested OT for {ot_date_clean} ({request.duration})."
-                    background_tasks.add_task(send_expo_push_notification, [manager.attribute7], p_title, p_msg)
+                    background_tasks.add_task(send_expo_push_notification, [appr["token"]], p_title, p_msg)
+        except Exception as mail_err:
+            print(f" Non-critical OT notification error: {mail_err}")
+
         return {"message": "OT request submitted successfully", "ot_id": new_ot.ot_id}
     except HTTPException:
         db.rollback()
@@ -2203,7 +2226,11 @@ def get_pending_permissions(manager_id: Optional[str] = None, db: Session = Depe
         ).filter(func.lower(func.trim(models.EmpPermission.status)) == "pending")
         if manager_id:
             query = query.filter(
-                func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
+                or_(
+                    func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower(),
+                    func.lower(func.trim(models.EmpDet.project_manager)) == manager_id.strip().lower()
+                )
+            )
         pending = query.order_by(models.EmpPermission.creation_date.desc()).all()
     except Exception as e:
         handle_db_error(e)
@@ -2240,7 +2267,11 @@ def get_all_permission_history(manager_id: Optional[str] = None, db: Session = D
         )
         if manager_id:
             query = query.filter(
-                func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
+                or_(
+                    func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower(),
+                    func.lower(func.trim(models.EmpDet.project_manager)) == manager_id.strip().lower()
+                )
+            )
         all_perms = query.order_by(models.EmpPermission.creation_date.desc()).all()
     except Exception as e:
         handle_db_error(e)
@@ -2347,14 +2378,12 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
         db.refresh(new_perm)
 
         try:
-            if user.assign_manager:
-                manager = db.query(models.EmpDet).filter(
-                    func.lower(func.trim(models.EmpDet.emp_id)) == user.assign_manager.strip().lower()
-                ).first()
-                if manager and manager.p_mail:
-                    f_display = f_time_dt.strftime("%I:%M %p").lstrip('0')
-                    t_display = t_time_dt.strftime("%I:%M %p").lstrip('0')
-                    subject = f"ITS - {user.name} - Permission Request | {request.date} | {f_display} to {t_display}"
+            approvers = get_approvers(db, user)
+            f_display = f_time_dt.strftime("%I:%M %p").lstrip('0')
+            t_display = t_time_dt.strftime("%I:%M %p").lstrip('0')
+            subject = f"ITS - {user.name} - Permission Request | {request.date} | {f_display} to {t_display}"
+            for appr in approvers:
+                if appr["email"]:
                     content = f'''
                     <p><strong>Good Day!</strong></p>
                     <p>I hope this email finds you well.</p>
@@ -2364,12 +2393,12 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                     {f'<p><strong>LOP Hours:</strong> {round(lop_hrs, 2)} hr</p>' if lop_hrs > 0 else ''}
                     <p><strong>Reason:</strong> {request.reason}</p>
                     '''
-                    body = get_email_template(manager.name, "Permission Request", content, user.name)
-                    background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
-                    if manager.attribute7:
-                        p_title = "New Permission Request"
-                        p_msg = f"{user.name} requested permission for {request.date} ({f_display} to {t_display})."
-                        background_tasks.add_task(send_expo_push_notification, [manager.attribute7], p_title, p_msg)
+                    body = get_email_template(appr["name"], "Permission Request", content, user.name)
+                    background_tasks.add_task(send_email_notification, appr["email"], subject, body)
+                if appr["token"]:
+                    p_title = "New Permission Request"
+                    p_msg = f"{user.name} requested permission for {request.date} ({f_display} to {t_display})."
+                    background_tasks.add_task(send_expo_push_notification, [appr["token"]], p_title, p_msg)
         except Exception as mail_err:
             print(f"   Non-critical email error: {mail_err}")
 
@@ -2463,7 +2492,11 @@ def get_pending_ot(manager_id: Optional[str] = None, db: Session = Depends(get_d
         ).filter(func.lower(models.OverTimeDet.status) == "pending")
         if manager_id:
             query = query.filter(
-                func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
+                or_(
+                    func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower(),
+                    func.lower(func.trim(models.EmpDet.project_manager)) == manager_id.strip().lower()
+                )
+            )
         pending = query.order_by(models.OverTimeDet.creation_date.desc()).all()
     except Exception as e:
         handle_db_error(e)
@@ -2490,7 +2523,11 @@ def get_all_ot_history(manager_id: Optional[str] = None, db: Session = Depends(g
         )
         if manager_id:
             query = query.filter(
-                func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
+                or_(
+                    func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower(),
+                    func.lower(func.trim(models.EmpDet.project_manager)) == manager_id.strip().lower()
+                )
+            )
         all_ot = query.order_by(models.OverTimeDet.creation_date.desc()).all()
     except Exception as e:
         handle_db_error(e)
@@ -2557,7 +2594,11 @@ def get_pending_wfh(manager_id: Optional[str] = None, db: Session = Depends(get_
         ).filter(models.WFHDet.status == "Pending")
         if manager_id:
             query = query.filter(
-                func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
+                or_(
+                    func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower(),
+                    func.lower(func.trim(models.EmpDet.project_manager)) == manager_id.strip().lower()
+                )
+            )
         pending = query.order_by(models.WFHDet.creation_date.desc()).all()
     except Exception as e:
         handle_db_error(e)
@@ -2581,7 +2622,11 @@ def get_all_wfh_history(manager_id: Optional[str] = None, db: Session = Depends(
         )
         if manager_id:
             query = query.filter(
-                func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower())
+                or_(
+                    func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower(),
+                    func.lower(func.trim(models.EmpDet.project_manager)) == manager_id.strip().lower()
+                )
+            )
         all_wfh = query.order_by(models.WFHDet.creation_date.desc()).all()
         results = []
         for wfh, emp in all_wfh:
@@ -2698,10 +2743,9 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
         db.refresh(new_wfh)
 
         user = submitter
-        if user and user.assign_manager:
-            manager = db.query(models.EmpDet).filter(
-                func.lower(func.trim(models.EmpDet.emp_id)) == user.assign_manager.strip().lower()).first()
-            if manager and manager.p_mail:
+        try:
+            if user:
+                approvers = get_approvers(db, user)
                 try:
                     from_dt = parse_date(from_date)
                     to_dt = parse_date(to_date)
@@ -2713,18 +2757,23 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
                 wfh_days_fmt = fmt_days(days_val)
                 wfh_day_label = "Day" if float(days_val or 0) == 1.0 else "Days"
                 subject = f"ITS - {user.name} - WFH | {from_str} to {to_str} ({wfh_days_fmt} {wfh_day_label})"
-                content = f"""
-                <p>An employee has requested to work from home.</p>
-                <p><strong>Employee:</strong> {user.name}</p>
-                <p><strong>Duration:</strong> {from_str} to {to_str} ({wfh_days_fmt} {wfh_day_label})</p>
-                <p><strong>Reason:</strong> {request.reason}</p>
-                """
-                body = get_email_template(manager.name, "Work From Home Request", content, user.name)
-                background_tasks.add_task(send_email_notification, manager.p_mail, subject, body)
-                if manager.attribute7:
-                    p_title = "New WFH Request"
-                    p_msg = f"{user.name} requested WFH from {from_str} to {to_str}."
-                    background_tasks.add_task(send_expo_push_notification, [manager.attribute7], p_title, p_msg)
+                for appr in approvers:
+                    if appr["email"]:
+                        content = f"""
+                        <p>An employee has requested to work from home.</p>
+                        <p><strong>Employee:</strong> {user.name}</p>
+                        <p><strong>Duration:</strong> {from_str} to {to_str} ({wfh_days_fmt} {wfh_day_label})</p>
+                        <p><strong>Reason:</strong> {request.reason}</p>
+                        """
+                        body = get_email_template(appr["name"], "Work From Home Request", content, user.name)
+                        background_tasks.add_task(send_email_notification, appr["email"], subject, body)
+                    if appr["token"]:
+                        p_title = "New WFH Request"
+                        p_msg = f"{user.name} requested WFH from {from_str} to {to_str}."
+                        background_tasks.add_task(send_expo_push_notification, [appr["token"]], p_title, p_msg)
+        except Exception as mail_err:
+            print(f" Non-critical WFH notification error: {mail_err}")
+
         return {"message": "WFH request submitted successfully", "wfh_id": new_wfh.wfh_id}
     except HTTPException:
         db.rollback()
@@ -3376,8 +3425,8 @@ def get_clients(db: Session = Depends(get_db)):
             sub_gst_p=s.sub_gst_p, sub_short_code=s.sub_short_code, sub_location=s.sub_location,
             ship_to=s.ship_to, currency=s.currency, status=s.status
         ) for s in subs]
-        creation_dt = c.creation_date if not (c.creation_date and "0000-00-00" in str(c.creation_date)) else None
-        last_update_dt = c.last_update_date if not (c.last_update_date and "0000-00-00" in str(c.last_update_date)) else None
+        creation_dt = safe_dt(c.creation_date)
+        last_update_dt = safe_dt(c.last_update_date)
         res.append({
             "client_id": c.cl_id, "client_ref_no": c.client_ref_no, "client_name": c.client_name,
             "mobile_no": c.mobile_no, "country_code": c.country_code, "email_id": c.email,
@@ -3409,8 +3458,8 @@ def get_client(client_id: int, db: Session = Depends(get_db)):
         sub_gst_p=s.sub_gst_p, sub_short_code=s.sub_short_code, sub_location=s.sub_location,
         ship_to=s.ship_to, currency=s.currency, status=s.status
     ) for s in subs]
-    creation_dt = client.creation_date if not (client.creation_date and "0000-00-00" in str(client.creation_date)) else None
-    last_update_dt = client.last_update_date if not (client.last_update_date and "0000-00-00" in str(client.last_update_date)) else None
+    creation_dt = safe_dt(client.creation_date)
+    last_update_dt = safe_dt(client.last_update_date)
     return {
         "client_id": client.cl_id, "client_ref_no": client.client_ref_no, "client_name": client.client_name,
         "company_name": client.company_name, "mobile_no": client.mobile_no, "email_id": client.email,
