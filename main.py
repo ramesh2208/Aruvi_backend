@@ -876,6 +876,8 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         new_status = "P"
         leave_reason = ""
 
+        print(f"DEBUG: Processing logic for {emp_id} with hours: {total_hours_float}")
+
         if total_hours_float < 4:
             days_to_deduct = 1.0
             new_status = "CL"
@@ -889,40 +891,55 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
             days_to_deduct = 0.0
 
         if days_to_deduct > 0:
+            # Check for Casual Leave (CL) balance - support both 'Casual' and 'CL' terms
             cl_balance = db.query(models.LeaveDet).filter(
                 models.LeaveDet.emp_id == emp_id,
-                func.lower(models.LeaveDet.leave_type).contains("casual")
+                or_(
+                    func.lower(models.LeaveDet.leave_type).contains("casual"),
+                    func.lower(models.LeaveDet.leave_type) == "cl"
+                )
             ).first()
 
             if cl_balance and float(cl_balance.available_leave or 0) >= days_to_deduct:
                 # Deduct from CL
                 cl_balance.available_leave = float(cl_balance.available_leave) - days_to_deduct
                 cl_balance.availed_leave   = float(cl_balance.availed_leave or 0) + days_to_deduct
+                cl_balance.last_update_date = now
+                cl_balance.last_updated_by = emp_id
                 db.add(cl_balance)
 
-                # Record in EmpLeave
+                # Record in EmpLeave (History)
                 new_leave = models.EmpLeave(
                     l_det_id     = cl_balance.l_det_id,
                     emp_id       = emp_id,
-                    leave_type   = "Casual Leave",
+                    leave_type   = cl_balance.leave_type or "Casual Leave",
                     from_date    = today_date.strftime("%d-%b-%Y"),
                     to_date      = today_date.strftime("%d-%b-%Y"),
                     days         = str(days_to_deduct),
                     reason       = leave_reason,
                     status       = "Approved",
                     applied_date = now.strftime("%d-%b-%Y"),
+                    # Added matching fields from apply_leave to prevent DB errors
+                    mail_message_id="", hr_action="", hr_approval="", admin_approval="",
+                    lop_days="0", remarks="Auto-generated on check-out", 
+                    approved_by="System", reporting_manager="", approver="", revision="0",
+                    attribute_category="AUTO", attribute1=str(days_to_deduct),
                     created_by        = emp_id,
                     creation_date     = now,
                     last_updated_by   = emp_id,
                     last_update_date  = now
                 )
                 db.add(new_leave)
+                # Success: Set status to CL/0.5CL in check-in table
                 checkin_record.status = new_status
+                print(f"✅ Successfully auto-applied {new_status} for {emp_id}")
             else:
                 # No CL balance -> Mark as LOP
                 checkin_record.status = "LOP" if days_to_deduct == 1.0 else "0.5LOP"
+                print(f"⚠️ Insufficient CL balance for {emp_id}: Marking as {checkin_record.status}")
         else:
             checkin_record.status = "P"
+            print(f"ℹ️ Worked hours sufficient ({total_hours_float}): Marking as P")
 
         db.commit()
         db.refresh(checkin_record)
