@@ -1825,9 +1825,9 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
                         existing_checkin.last_updated_by = request_item.admin_id
                         existing_checkin.last_update_date = datetime.now()
                         if not existing_checkin.in_time or existing_checkin.in_time == "--:--":
-                            existing_checkin.in_time = "--:--"
-                            existing_checkin.out_time = "--:--"
-                            existing_checkin.Total_hours = "Leave"
+                            existing_checkin.in_time = ""
+                            existing_checkin.out_time = ""
+                            existing_checkin.Total_hours = ""
                     else:
                         new_attend = models.CheckIn(
                             emp_id=leave.emp_id,
@@ -1835,9 +1835,9 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
                             t_day=current_date.strftime("%A"),
                             month=current_date.strftime("%B"),
                             status=day_status,
-                            in_time="--:--",
-                            out_time="--:--",
-                            Total_hours="Leave",
+                            in_time="",
+                            out_time="",
+                            Total_hours="",
                             created_by=request_item.admin_id,
                             creation_date=datetime.now(),
                             last_updated_by=request_item.admin_id,
