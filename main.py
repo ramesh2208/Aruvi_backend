@@ -880,12 +880,13 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
             days_to_deduct = 1.0
             new_status = "CL"
             leave_reason = "Auto-deducted: Worked less than 4 hours"
-        elif 4 <= total_hours_float < 6:
+        elif 4 <= total_hours_float <= 6:
             days_to_deduct = 0.5
             new_status = "0.5CL"
             leave_reason = "Auto-deducted: Worked 4-6 hours"
         else:
             new_status = "P"
+            days_to_deduct = 0.0
 
         if days_to_deduct > 0:
             cl_balance = db.query(models.LeaveDet).filter(
