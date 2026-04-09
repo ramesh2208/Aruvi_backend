@@ -1512,7 +1512,7 @@ async def apply_leave(
             from_date=req_from.strftime('%d-%b-%Y'),
             to_date=req_to.strftime('%d-%b-%Y'),
             days=fmt_days(cl_days_to_deduct),
-            reason=reason + (" + LOP: " + fmt_days(lop_days_val) + " days" if lop_days_val > 0 else ""),
+            reason=reason,
             status=status,
             file=primary_attachment_path,
             attribute14=attr14_paths,
@@ -1522,7 +1522,7 @@ async def apply_leave(
             remarks="", approved_by="", 
             reporting_manager=(user.assign_manager.strip() if user.assign_manager else "") if user else "", 
             approver=(user.project_manager.strip() if user.project_manager else "") if user else "", 
-            revision="0",
+        )    revision="0",
             attribute_category="", attribute1=fmt_days(requested_days),
             attribute2="", attribute3="", attribute4="", attribute5="",
             last_update_login="", created_by=emp_id.strip(), creation_date=datetime.now(),
@@ -1531,14 +1531,16 @@ async def apply_leave(
         db.add(new_leave)
 
         if balance_row and cl_days_to_deduct > 0:
-            balance_row.availed_leave = float(balance_row.availed_leave or 0) + cl_days_to_deduct
-            balance_row.available_leave = float(balance_row.available_leave or 0) - cl_days_to_deduct
-            db.add(balance_row)
-
-
-        db.commit()
-        db.refresh(new_leave)
-
+            try:
+                balance_row.availed_leave = float(balance_row.availed_leave or 0) + cl_days_to_deduct
+                balance_row.available_leave = float(balance_row.available_leave or 0) - cl_days_to_deduct
+                db.commit()
+                print(f"✅ Updated balance for {emp_id}: Available={balance_row.available_leave}, Availed={balance_row.availed_leave}")
+            except Exception as balance_err:
+                print(f"❌ Error updating balance: {balance_err}")
+                db.rollback()
+        
+        # Send notifications
         try:
             if user:
                 approvers = get_approvers(db, user)
@@ -1563,16 +1565,25 @@ async def apply_leave(
                         p_msg = f"{emp_name} has requested {leave_type} from {from_date} to {to_date}."
                         background_tasks.add_task(send_expo_push_notification, [appr["token"]], p_title, p_msg)
         except Exception as mail_err:
-            print(f" Non-critical error sending email: {mail_err}")
-
-    except HTTPException:
+            print(f"❌ Error sending notifications: {mail_err}")
+        
+        print(f"✅ Leave request submitted successfully for {emp_id}")
+        print(f"   Leave ID: {new_leave.l_id}")
+        print(f"   Leave Type: {leave_type}")
+        print(f"   Days: {fmt_days(cl_days_to_deduct)}")
+        print(f"   LOP Days: {fmt_days(lop_days_val)}")
+        
+        return {"message": "Leave request submitted successfully", "leave_id": new_leave.l_id}
+    
+    except HTTPException as http_err:
+        print(f"❌ HTTP Error in leave application: {http_err}")
         db.rollback()
-        raise
+        raise http_err
     except Exception as e:
-        db.rollback()
-        print(f" CRITICAL DATABASE ERROR: {str(e)}")
+        print(f"❌ CRITICAL DATABASE ERROR: {str(e)}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Database Insertion Error: {str(e)}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Leave application failed: {str(e)}")
 
     return {"message": "Leave request submitted successfully", "leave_id": new_leave.l_id}
 
