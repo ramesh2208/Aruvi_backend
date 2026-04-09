@@ -878,11 +878,12 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
 
         print(f"DEBUG: Processing logic for {emp_id} with hours: {total_hours_float}")
 
-        if total_hours_float < 4:
+        # Determine deduction requirements based on worked hours
+        if total_hours_float < 4.0:
             days_to_deduct = 1.0
             new_status = "CL"
             leave_reason = "Auto-deducted: Worked less than 4 hours"
-        elif 4 <= total_hours_float <= 6:
+        elif 4.0 <= total_hours_float <= 6.0:
             days_to_deduct = 0.5
             new_status = "0.5CL"
             leave_reason = "Auto-deducted: Worked 4-6 hours"
@@ -901,14 +902,14 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
             ).first()
 
             if cl_balance and float(cl_balance.available_leave or 0) >= days_to_deduct:
-                # Deduct from CL
+                # Deduct from CL balance
                 cl_balance.available_leave = float(cl_balance.available_leave) - days_to_deduct
                 cl_balance.availed_leave   = float(cl_balance.availed_leave or 0) + days_to_deduct
                 cl_balance.last_update_date = now
                 cl_balance.last_updated_by = emp_id
                 db.add(cl_balance)
 
-                # Record in EmpLeave (History)
+                # Record in EmpLeave (Leave History Tracking)
                 new_leave = models.EmpLeave(
                     l_det_id     = cl_balance.l_det_id,
                     emp_id       = emp_id,
@@ -919,27 +920,37 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
                     reason       = leave_reason,
                     status       = "Approved",
                     applied_date = now.strftime("%d-%b-%Y"),
-                    # Added matching fields from apply_leave to prevent DB errors
+                    # Exhaustive field list to prevent DB constraint errors
                     mail_message_id="", hr_action="", hr_approval="", admin_approval="",
                     lop_days="0", remarks="Auto-generated on check-out", 
-                    approved_by="System", reporting_manager="", approver="", revision="0",
-                    attribute_category="AUTO", attribute1=str(days_to_deduct),
+                    approved_by="System", 
+                    reporting_manager="", 
+                    approver="", 
+                    revision="0",
+                    attribute_category="AUTO", 
+                    attribute1=str(days_to_deduct),
+                    attribute2="", attribute3="", attribute4="", attribute5="", 
+                    attribute6="", attribute7="", attribute8="", attribute9="",
+                    attribute10="", attribute11="", attribute12="", attribute13="",
+                    attribute14="",
+                    file="",
                     created_by        = emp_id,
                     creation_date     = now,
                     last_updated_by   = emp_id,
                     last_update_date  = now
                 )
                 db.add(new_leave)
-                # Success: Set status to CL/0.5CL in check-in table
+                # Apply Final Status
                 checkin_record.status = new_status
-                print(f"✅ Successfully auto-applied {new_status} for {emp_id}")
+                print(f"✅ Status updated to {new_status} (Leave applied) for {emp_id}")
             else:
-                # No CL balance -> Mark as LOP
+                # No CL balance -> Mark as LOP/0.5LOP
                 checkin_record.status = "LOP" if days_to_deduct == 1.0 else "0.5LOP"
-                print(f"⚠️ Insufficient CL balance for {emp_id}: Marking as {checkin_record.status}")
+                print(f"⚠️ Status updated to {checkin_record.status} (No CL balance) for {emp_id}")
         else:
+            # Enough hours worked (> 6 hours)
             checkin_record.status = "P"
-            print(f"ℹ️ Worked hours sufficient ({total_hours_float}): Marking as P")
+            print(f"ℹ️ Status remained P (Worked {total_hours_float} hrs) for {emp_id}")
 
         db.commit()
         db.refresh(checkin_record)
