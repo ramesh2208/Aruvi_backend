@@ -1523,7 +1523,7 @@ async def apply_leave(
             reporting_manager=(user.assign_manager.strip() if user.assign_manager else "") if user else "", 
             approver=(user.project_manager.strip() if user.project_manager else "") if user else "", 
             revision="0",
-            attribute_category="", attribute1="", # No longer storing requested_days here as per user request
+            attribute_category=None, attribute1=None, # No longer storing requested_days here as per user request
             attribute2="", attribute3="", attribute4="", attribute5="",
             last_update_login="", created_by=emp_id.strip(), creation_date=datetime.now(),
             last_updated_by=emp_id.strip(), last_update_date=datetime.now()
