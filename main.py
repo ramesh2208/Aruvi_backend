@@ -438,23 +438,10 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         
         # Get user role
         is_global_admin = False
-        role_type = "Employee"
-        if user.dom_id:
-            try:
-                d_id = int(str(user.dom_id).strip())
-                domain_obj = db.query(models.Domain).filter(models.Domain.dom_id == d_id).first()
-                if domain_obj and domain_obj.domain:
-                    if any(x in domain_obj.domain.lower() for x in ["admin", "executive", "management"]):
-                        role_type = "Admin"
-                        is_global_admin = True
-            except:
-                pass
-
-        is_manager = db.query(models.EmpDet).filter(
-            func.lower(func.trim(models.EmpDet.assign_manager)) == user.emp_id.lower().strip()
-        ).first() is not None
-        if is_manager and role_type != "Admin":
-            role_type = "Admin"
+        role_type = "Employee" # Default, will be updated by privileges logic if needed
+        # Domain based admin logic removed as per user request to rely only on privileges logic
+        
+        has_2fa = bool(user.auth_key and user.auth_key.strip())
 
         has_2fa = bool(user.auth_key and user.auth_key.strip())
         print(f" 2FA: {has_2fa}, Role: {role_type}, Global Admin: {is_global_admin}")
@@ -524,6 +511,11 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
                 print(f" Error fetching privileges: {priv_err}")
                 # Don't fail login just because privileges failed to fetch
                 pass
+
+        # Set role_type based on privileges (Modules 11-17 represent Admin/Management functions)
+        admin_module_ids = [11, 12, 13, 14, 15, 16, 17]
+        if any(p.get("mod_id") in admin_module_ids for p in privileges):
+            role_type = "Admin"
 
         return {
             "access_token": access_token,
@@ -665,21 +657,7 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
     print(" 2FA SUCCESS")
     is_global_admin = False
     role_type = "Employee"
-    if user.dom_id:
-        try:
-            d_id = int(str(user.dom_id).strip())
-            domain_obj = db.query(models.Domain).filter(models.Domain.dom_id == d_id).first()
-            if domain_obj and domain_obj.domain:
-                if any(x in domain_obj.domain.lower() for x in ["admin", "executive", "management"]):
-                    role_type = "Admin"
-                    is_global_admin = True
-        except:
-            pass
-    is_manager = db.query(models.EmpDet).filter(
-        func.lower(func.trim(models.EmpDet.assign_manager)) == user.emp_id.lower().strip()
-    ).first() is not None
-    if is_manager and role_type != "Admin":
-        role_type = "Admin"
+    # Domain based admin logic removed as per user request to rely only on privileges logic
 
     # Fetch privileges
     privileges = []
@@ -737,6 +715,11 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
                 })
         except:
             pass
+    # Set role_type based on privileges (Modules 11-17 represent Admin/Management functions)
+    admin_module_ids = [11, 12, 13, 14, 15, 16, 17]
+    if any(p.get("mod_id") in admin_module_ids for p in privileges):
+        role_type = "Admin"
+
     return {
         "access_token": "REAL_TOKEN_HERE",
         "token_type": "bearer",
