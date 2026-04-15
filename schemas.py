@@ -17,6 +17,7 @@ class Token(BaseModel):
     gender: Optional[str] = None
     requires_2fa: Optional[bool] = False
     is_global_admin: Optional[bool] = False
+    privileges: Optional[List[dict]] = []
 
 class CheckInRequest(BaseModel):
     emp_id: str
@@ -342,3 +343,29 @@ class ProjectAllocationResponse(BaseModel):
 class PushTokenRegisterRequest(BaseModel):
     user_id: str
     push_token: str
+
+class RolePrivilegeResponse(BaseModel):
+    model_config = {"from_attributes": True}
+
+    rpd_id: int
+    mod_id: Optional[str] = None
+    role_prv_ref_no: Optional[str] = None
+    role_prv_name: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+    admin_prv: Optional[str] = None
+    hr_prv: Optional[str] = None
+    last_update_login: Optional[str] = None
+    view_global: Optional[str] = None
+    mod_array: Optional[str] = None
+    create_prv: Optional[str] = None
+    read_prv: Optional[str] = None
+    view_prv: Optional[str] = None
+    update_prv: Optional[str] = None
+    delete_prv: Optional[str] = None
+    permissions: Optional[str] = None
+    created_by: Optional[str] = None
+    creation_date: Optional[Any] = None
+    last_updated_by: Optional[str] = None
+    last_update_date: Optional[Any] = None
+    last_update_login: Optional[str] = None
