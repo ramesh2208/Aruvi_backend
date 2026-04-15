@@ -460,6 +460,35 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         print(f" 2FA: {has_2fa}, Role: {role_type}, Global Admin: {is_global_admin}")
         print("=" * 60)
 
+        # Fetch privileges
+        privileges = []
+        if user.rpd_id:
+            try:
+                print(f" Fetching privileges for rpd_id: {user.rpd_id}")
+                # Fetch all privileges associated with this user's privilege group
+                priv_rows = db.query(models.RolePrivilege).filter(
+                    models.RolePrivilege.role_prv_ref_no == str(user.rpd_id)
+                ).all()
+                
+                for p in priv_rows:
+                    privileges.append({
+                        "mod_id": p.mod_id,
+                        "create_prv": p.create_prv,
+                        "read_prv": p.read_prv,
+                        "view_prv": p.view_prv,
+                        "update_prv": p.update_prv,
+                        "delete_prv": p.delete_prv,
+                        "admin_prv": p.admin_prv,
+                        "hr_prv": p.hr_prv,
+                        "view_global": p.view_global,
+                        "permissions": p.permissions
+                    })
+                print(f" Found {len(privileges)} privilege records")
+            except Exception as priv_err:
+                print(f" Error fetching privileges: {priv_err}")
+                # Don't fail login just because privileges failed to fetch
+                pass
+
         return {
             "access_token": access_token,
             "token_type": "bearer",
@@ -468,7 +497,8 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
             "is_global_admin": is_global_admin,
             "user_id": user.emp_id or "",
             "name": user.name or "User",
-            "requires_2fa": has_2fa
+            "requires_2fa": has_2fa,
+            "privileges": privileges
         }
     
     except HTTPException:
@@ -614,6 +644,29 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
     ).first() is not None
     if is_manager and role_type != "Admin":
         role_type = "Admin"
+
+    # Fetch privileges
+    privileges = []
+    if user.rpd_id:
+        try:
+            priv_rows = db.query(models.RolePrivilege).filter(
+                models.RolePrivilege.role_prv_ref_no == str(user.rpd_id)
+            ).all()
+            for p in priv_rows:
+                privileges.append({
+                    "mod_id": p.mod_id,
+                    "create_prv": p.create_prv,
+                    "read_prv": p.read_prv,
+                    "view_prv": p.view_prv,
+                    "update_prv": p.update_prv,
+                    "delete_prv": p.delete_prv,
+                    "admin_prv": p.admin_prv,
+                    "hr_prv": p.hr_prv,
+                    "view_global": p.view_global,
+                    "permissions": p.permissions
+                })
+        except:
+            pass
     return {
         "access_token": "REAL_TOKEN_HERE",
         "token_type": "bearer",
@@ -622,7 +675,8 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
         "is_global_admin": is_global_admin,
         "user_id": user.emp_id or "",
         "name": user.name or "User",
-        "requires_2fa": False
+        "requires_2fa": False,
+        "privileges": privileges
     }
 
 
