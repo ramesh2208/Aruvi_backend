@@ -462,7 +462,43 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
 
         # Fetch privileges
         privileges = []
-        if user.rpd_id:
+        emp_role_type = user.role_type and str(user.role_type).strip().lower()
+
+        if emp_role_type == "module based" or emp_role_type == "module_based":
+            print(f" Fetching module-based privileges for user: {user.emp_id}")
+            try:
+                mod_ids = user.mod_id.split(',') if user.mod_id else []
+                create_prvs = user.create_prv.split(',') if user.create_prv else []
+                read_prvs = user.read_prv.split(',') if user.read_prv else []
+                view_prvs = user.view_prv.split(',') if getattr(user, 'view_prv', None) else []
+                update_prvs = user.update_prv.split(',') if user.update_prv else []
+                delete_prvs = user.delete_prv.split(',') if user.delete_prv else []
+                admin_prvs = user.admin_prv.split(',') if user.admin_prv else []
+                hr_prvs = user.hr_prv.split(',') if user.hr_prv else []
+                
+                for i, mod in enumerate(mod_ids):
+                    if mod.strip():
+                        def safe_int(arr, idx):
+                            if idx < len(arr) and arr[idx].strip().isdigit():
+                                return int(arr[idx].strip())
+                            return 0
+                        privileges.append({
+                            "mod_id": safe_int(mod_ids, i) if mod_ids[i].strip().isdigit() else mod.strip(),
+                            "create_prv": safe_int(create_prvs, i),
+                            "read_prv": safe_int(read_prvs, i),
+                            "view_prv": safe_int(view_prvs, i),
+                            "update_prv": safe_int(update_prvs, i),
+                            "delete_prv": safe_int(delete_prvs, i),
+                            "admin_prv": safe_int(admin_prvs, i),
+                            "hr_prv": safe_int(hr_prvs, i),
+                            "view_global": 0,
+                            "permissions": None
+                        })
+                print(f" Found {len(privileges)} module-based privilege records for module_based role")
+            except Exception as priv_err:
+                print(f" Error parsing module based config: {priv_err}")
+                
+        elif user.rpd_id:
             try:
                 print(f" Fetching privileges for rpd_id: {user.rpd_id}")
                 # Fetch all privileges associated with this user's privilege group
@@ -483,7 +519,7 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
                         "view_global": p.view_global,
                         "permissions": p.permissions
                     })
-                print(f" Found {len(privileges)} privilege records")
+                print(f" Found {len(privileges)} role-based privilege records")
             except Exception as priv_err:
                 print(f" Error fetching privileges: {priv_err}")
                 # Don't fail login just because privileges failed to fetch
@@ -647,7 +683,41 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
 
     # Fetch privileges
     privileges = []
-    if user.rpd_id:
+    emp_role_type = user.role_type and str(user.role_type).strip().lower()
+
+    if emp_role_type == "module based" or emp_role_type == "module_based":
+        try:
+            mod_ids = user.mod_id.split(',') if user.mod_id else []
+            create_prvs = user.create_prv.split(',') if user.create_prv else []
+            read_prvs = user.read_prv.split(',') if user.read_prv else []
+            view_prvs = user.view_prv.split(',') if getattr(user, 'view_prv', None) else []
+            update_prvs = user.update_prv.split(',') if user.update_prv else []
+            delete_prvs = user.delete_prv.split(',') if user.delete_prv else []
+            admin_prvs = user.admin_prv.split(',') if user.admin_prv else []
+            hr_prvs = user.hr_prv.split(',') if user.hr_prv else []
+            
+            for i, mod in enumerate(mod_ids):
+                if mod.strip():
+                    def safe_int(arr, idx):
+                        if idx < len(arr) and arr[idx].strip().isdigit():
+                            return int(arr[idx].strip())
+                        return 0
+                    privileges.append({
+                        "mod_id": safe_int(mod_ids, i) if mod_ids[i].strip().isdigit() else mod.strip(),
+                        "create_prv": safe_int(create_prvs, i),
+                        "read_prv": safe_int(read_prvs, i),
+                        "view_prv": safe_int(view_prvs, i),
+                        "update_prv": safe_int(update_prvs, i),
+                        "delete_prv": safe_int(delete_prvs, i),
+                        "admin_prv": safe_int(admin_prvs, i),
+                        "hr_prv": safe_int(hr_prvs, i),
+                        "view_global": 0,
+                        "permissions": None
+                    })
+        except:
+            pass
+            
+    elif user.rpd_id:
         try:
             priv_rows = db.query(models.RolePrivilege).filter(
                 models.RolePrivilege.role_prv_ref_no == str(user.rpd_id)
