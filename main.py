@@ -36,6 +36,10 @@ import models, schemas, database
 from database import engine, SessionLocal
 
 # Handle MySQL zero dates "0000-00-00" which cause Pydantic validation errors
+def safe_dt(d):
+    if not d: return None
+    s = str(d).strip()
+    if "0000-00-00" in s: return None
     return d
 
 def parse_privilege_array(s: Optional[str]) -> List[str]:
