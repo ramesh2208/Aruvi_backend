@@ -3926,13 +3926,27 @@ def get_employee_allocations(emp_id: str, db: Session = Depends(get_db)):
         role = db.query(models.Role.role).filter(models.Role.role_id == a.role_id).first()
         dept = db.query(models.Department.department).filter(models.Department.dpt_id == a.dpt_id).first()
         dom = db.query(models.Domain.domain).filter(models.Domain.dom_id == a.dom_id).first()
-        proj = db.query(models.Project.project_name).filter(models.Project.pro_id == a.pro_id).first()
+        proj = db.query(models.Project).filter(models.Project.pro_id == a.pro_id).first()
+        lead = db.query(models.EmpDet.name).filter(models.EmpDet.emp_id == a.lead_id).first()
+        
+        client_name = "Unknown"
+        if proj and proj.client_ref_no:
+            client = db.query(models.CompanyClient.client_name).filter(models.CompanyClient.client_ref_no == proj.client_ref_no).first()
+            if client:
+                client_name = client[0]
+
         res.append(schemas.ProjectAllocationResponse(
             assign_id=a.assign_id, emp_id=a.emp_id, role_id=a.role_id, dom_id=a.dom_id, dpt_id=a.dpt_id,
             lead_id=a.lead_id, from_date=a.from_date, to_date=a.to_date, task_description=a.task_description,
             allocation_pct=a.allocation_pct, emp_name=emp[0] if emp else "Unknown",
             role_name=role[0] if role else "Unknown", dept_name=dept[0] if dept else "Unknown",
-            dom_name=dom[0] if dom else "Unknown", project_name=proj[0] if proj else "Unknown"
+            dom_name=dom[0] if dom else "Unknown", 
+            project_name=proj.project_name if proj else "Unknown",
+            lead_name=lead[0] if lead else a.lead_id,
+            client_name=client_name,
+            project_type=proj.project_type if proj else None,
+            project_status=proj.status if proj else None,
+            project_priority=proj.project_priority if proj else None
         ))
     return res
 
