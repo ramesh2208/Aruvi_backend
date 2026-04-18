@@ -29,6 +29,7 @@ from sqlalchemy import extract
 import sqlalchemy
 import sys
 import os
+import json
 # Add current directory to sys.path to fix ModuleNotFoundError for local imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -550,7 +551,7 @@ def auto_calculate_hours_endpoint(request: schemas.AutoCalculateHoursRequest, db
 
 # ─── LOGIN ────────────────────────────────────────────────────────────────────────────
 
-@router.post("/login")
+@app.post("/login")
 def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
 
     username_input = request.username.strip().lower()
@@ -673,24 +674,51 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
     # CASE 2: ROLE-BASED PRIVILEGE
     # -------------------------------
     else:
-
         print(f"Using ROLE privileges: {user.rpd_id}")
 
-        role_rows = db.query(models.RolePrivilege).filter(
+        role_row = db.query(models.RolePrivilege).filter(
             models.RolePrivilege.role_prv_ref_no == str(user.rpd_id)
-        ).all()
+        ).first()
 
-        for p in role_rows:
-            privileges.append({
-                "mod_id": p.mod_id,
-                "create_prv": p.create_prv,
-                "read_prv": p.read_prv,
-                "update_prv": p.update_prv,
-                "delete_prv": p.delete_prv,
-                "admin_prv": p.admin_prv,
-                "hr_prv": p.hr_prv,
-                "view_global": p.view_global
-            })
+        if role_row:
+            # Parse the JSON array strings
+            def parse_arr(val):
+                if not val:
+                    return []
+                if isinstance(val, list):
+                    return val
+                try:
+                    return json.loads(val)
+                except:
+                    return []
+
+            mod_array   = parse_arr(role_row.mod_array)
+            create_prvs = parse_arr(role_row.create_prv)
+            read_prvs   = parse_arr(role_row.read_prv)
+            view_prvs   = parse_arr(role_row.view_prv)
+            update_prvs = parse_arr(role_row.update_prv)
+            delete_prvs = parse_arr(role_row.delete_prv)
+            admin_prvs  = parse_arr(role_row.admin_prv)
+            hr_prvs     = parse_arr(role_row.hr_prv)
+
+            # Build one privilege object per index position
+            for i, mod_id in enumerate(mod_array):
+                def safe_get(arr, idx):
+                    try:
+                        return int(arr[idx]) if idx < len(arr) else 0
+                    except:
+                        return 0
+
+                privileges.append({
+                    "mod_id":     mod_id,
+                    "create_prv": safe_get(create_prvs, i),
+                    "read_prv":   safe_get(read_prvs, i),
+                    "view_global": safe_get(view_prvs, i),   # frontend uses view_global
+                    "update_prv": safe_get(update_prvs, i),
+                    "delete_prv": safe_get(delete_prvs, i),
+                    "admin_prv":  safe_get(admin_prvs, i),
+                    "hr_prv":     safe_get(hr_prvs, i),
+                })
 
     if not privileges:
         raise HTTPException(
@@ -710,6 +738,7 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         "username": user.p_mail,
         "privileges": privileges
     }
+
 
 
 @app.post("/forgot-password")
