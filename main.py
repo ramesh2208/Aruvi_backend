@@ -627,18 +627,18 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
 
         print(" PASSWORD VERIFIED")
 
-        # Device locking check
-        if getattr(request, "device_id", None):
-            req_device_id = request.device_id.strip()
-            if req_device_id:
-                if user.attribute1 and user.attribute1.strip():
-                    if user.attribute1.strip() != req_device_id:
-                        print(f" DEVICE MISMATCH: DB={user.attribute1.strip()}, REQ={req_device_id}")
-                        raise HTTPException(status_code=403, detail="Already logged in another device")
-                else:
-                    print(f" SAVING FIRST DEVICE: {req_device_id}")
-                    user.attribute1 = req_device_id
-                    db.commit()
+        # Device locking check (Commented out as per request)
+        # if getattr(request, "device_id", None):
+        #     req_device_id = request.device_id.strip()
+        #     if req_device_id:
+        #         if user.attribute1 and user.attribute1.strip():
+        #             if user.attribute1.strip() != req_device_id:
+        #                 print(f" DEVICE MISMATCH: DB={user.attribute1.strip()}, REQ={req_device_id}")
+        #                 raise HTTPException(status_code=403, detail="Already logged in another device")
+        #         else:
+        #             print(f" SAVING FIRST DEVICE: {req_device_id}")
+        #             user.attribute1 = req_device_id
+        #             db.commit()
 
         # Generate JWT token
         try:
@@ -966,22 +966,22 @@ def get_employees(manager_id: Optional[str] = None, db: Session = Depends(get_db
     return results
 
 
-@app.post("/admin/employees/{emp_id}/reset-device")
-def reset_employee_device(emp_id: str, db: Session = Depends(get_db)):
-    try:
-        user = db.query(models.EmpDet).filter(
-            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.strip().lower()
-        ).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="Employee not found")
-        user.attribute1 = ""
-        db.commit()
-        return {"success": True, "message": "Device ID reset successfully"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+# @app.post("/admin/employees/{emp_id}/reset-device")
+# def reset_employee_device(emp_id: str, db: Session = Depends(get_db)):
+#     try:
+#         user = db.query(models.EmpDet).filter(
+#             func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.strip().lower()
+#         ).first()
+#         if not user:
+#             raise HTTPException(status_code=404, detail="Employee not found")
+#         user.attribute1 = ""
+#         db.commit()
+#         return {"success": True, "message": "Device ID reset successfully"}
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         db.rollback()
+#         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/sync-privileges/{emp_id}")
 def sync_privileges(emp_id: str, db: Session = Depends(get_db)):
