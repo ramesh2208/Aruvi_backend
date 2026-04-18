@@ -195,6 +195,7 @@ class ClientApplyRequest(BaseModel):
     short_code: Optional[str] = None
     currency: Optional[str] = None
     tds: Optional[str] = None
+    gst_p: Optional[str] = None
     address: Optional[str] = None
     status: Optional[str] = "Active"
     sites: Optional[List[SubClientSchema]] = []
@@ -218,6 +219,7 @@ class ClientResponse(BaseModel):
     short_code: Optional[str] = None
     currency: Optional[str] = None
     tds: Optional[str] = None
+    gst_p: Optional[str] = None
     sites: Optional[List[SubClientSchema]] = []
     creation_date: Optional[Any] = None
     last_update_date: Optional[Any] = None
@@ -349,6 +351,11 @@ class ProjectAllocationResponse(BaseModel):
     dept_name: Optional[str] = None
     dom_name: Optional[str] = None
     project_name: Optional[str] = None
+    lead_name: Optional[str] = None
+    client_name: Optional[str] = None
+    project_type: Optional[str] = None
+    project_status: Optional[str] = None
+    project_priority: Optional[str] = None
 
 class PushTokenRegisterRequest(BaseModel):
     user_id: str
