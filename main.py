@@ -4013,7 +4013,7 @@ def get_client(client_id: int, db: Session = Depends(get_db)):
         "gst_available": client.gst, "gst": client.gst_no, "msme_available": client.msme,
         "msme": client.msme_no, "pan_no": client.pan, "status": client.status or "Active",
         "website": client.website, "short_code": client.short_code, "currency": client.currency, "tds": client.attribute1,
-        "address": client.address, "sites": sites_list, "creation_date": creation_dt, "last_update_date": last_update_dt
+        "gst_p": client.gst_value, "address": client.address, "sites": sites_list, "creation_date": creation_dt, "last_update_date": last_update_dt
     }
 
 
@@ -4037,6 +4037,7 @@ def update_client(client_id: int, client_req: schemas.ClientApplyRequest, db: Se
     client.short_code = client_req.short_code
     client.currency = client_req.currency
     client.attribute1 = client_req.tds
+    client.gst_value = client_req.gst_p
     client.address = client_req.address
     client.status = client_req.status
     client.last_update_date = now
@@ -4075,7 +4076,7 @@ def create_client(client_req: schemas.ClientApplyRequest, db: Session = Depends(
             client_ref_no=client_req.client_ref_no, client_name=client_req.client_name,
             company_name=client_req.company_name, country_code=client_req.country_code or "+91",
             mobile_no=client_req.mobile_no or "", gst=client_req.gst_available or "No",
-            gst_value="", gst_no=client_req.gst or "", website=client_req.website or "",
+            gst_value=client_req.gst_p or "", gst_no=client_req.gst or "", website=client_req.website or "",
             email=client_req.email_id or "", msme=client_req.msme_available or "No",
             msme_no=client_req.msme or "", pan=client_req.pan_no or "",
             short_code=client_req.short_code or "", currency=client_req.currency or "INR",
