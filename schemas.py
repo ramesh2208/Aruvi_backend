@@ -6,7 +6,6 @@ from datetime import date, datetime
 class LoginRequest(BaseModel):
     username: str
     password: str
-    device_id: Optional[str] = None
 
 class Token(BaseModel):
     access_token: str
@@ -122,7 +121,6 @@ class EmployeeProfileResponse(BaseModel):
     aadhaar_no: Optional[str] = None
     pan_no: Optional[str] = None
     passport_no: Optional[str] = None
-    device_id: Optional[str] = None
 
 class TimesheetResponse(BaseModel):
     t_id: int
@@ -184,7 +182,6 @@ class ClientApplyRequest(BaseModel):
     client_name: str
     company_name: str
     mobile_no: Optional[str] = None
-    country_code: Optional[str] = "+91"
     gst_available: Optional[str] = "No"
     gst: Optional[str] = None
     website: Optional[str] = None
@@ -194,7 +191,6 @@ class ClientApplyRequest(BaseModel):
     pan_no: Optional[str] = None
     short_code: Optional[str] = None
     currency: Optional[str] = None
-    tds: Optional[str] = None
     address: Optional[str] = None
     status: Optional[str] = "Active"
     sites: Optional[List[SubClientSchema]] = []
@@ -204,7 +200,6 @@ class ClientResponse(BaseModel):
     client_ref_no: str
     client_name: str
     company_name: str
-    country_code: Optional[str] = "+91"
     mobile_no: Optional[str] = None
     email_id: Optional[str] = None
     gst_available: Optional[str] = None
@@ -214,13 +209,8 @@ class ClientResponse(BaseModel):
     pan_no: Optional[str] = None
     address: Optional[str] = None
     status: Optional[str] = "Active"
-    website: Optional[str] = None
-    short_code: Optional[str] = None
-    currency: Optional[str] = None
-    tds: Optional[str] = None
     sites: Optional[List[SubClientSchema]] = []
     creation_date: Optional[Any] = None
-    last_update_date: Optional[Any] = None
 
 class ProjectCreateRequest(BaseModel):
     project_ref_no: str
@@ -374,37 +364,6 @@ class RolePrivilegeResponse(BaseModel):
     update_prv: Optional[str] = None
     delete_prv: Optional[str] = None
     permissions: Optional[str] = None
-    created_by: Optional[str] = None
-    creation_date: Optional[Any] = None
-    last_updated_by: Optional[str] = None
-    last_update_date: Optional[Any] = None
-    last_update_login: Optional[str] = None
-
-class ModuleResponse(BaseModel):
-    model_config = {"from_attributes": True}
-
-    mod_id: int
-    module_ref_no: Optional[str] = None
-    module: Optional[str] = None
-    description: Optional[str] = None
-    crud: Optional[str] = None
-    status: Optional[str] = None
-    attribute: Optional[str] = None
-    attribute1: Optional[str] = None
-    attribute2: Optional[str] = None
-    attribute3: Optional[str] = None
-    attribute4: Optional[str] = None
-    attribute5: Optional[str] = None
-    attribute6: Optional[str] = None
-    attribute7: Optional[str] = None
-    attribute8: Optional[str] = None
-    attribute9: Optional[str] = None
-    attribute10: Optional[str] = None
-    attribute11: Optional[str] = None
-    attribute12: Optional[str] = None
-    attribute13: Optional[str] = None
-    attribute14: Optional[str] = None
-    attribute15: Optional[str] = None
     created_by: Optional[str] = None
     creation_date: Optional[Any] = None
     last_updated_by: Optional[str] = None
