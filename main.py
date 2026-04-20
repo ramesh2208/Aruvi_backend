@@ -50,196 +50,6 @@ def parse_privilege_array(s: Optional[str]) -> List[str]:
         s = s[1:-1]
     return [x.strip() for x in s.split(',')]
 
-def get_module_privileges(user, db: Session) -> List[dict]:
-    """
-    Get module-based privileges for a user.
-    Returns a list of dictionaries containing module privileges.
-    """
-    privileges = []
-    emp_role_type = user.role_type and str(user.role_type).strip().lower()
-    
-    if emp_role_type not in ["module based", "module_based"]:
-        return privileges
-    
-    try:
-        print(f"Fetching module-based privileges for user: {user.emp_id}")
-        
-        # Parse module IDs and privilege arrays
-        mod_ids = parse_privilege_array(user.mod_id)
-        create_prvs = parse_privilege_array(user.create_prv)
-        read_prvs = parse_privilege_array(user.read_prv)
-        view_prvs = parse_privilege_array(user.view_prv)
-        update_prvs = parse_privilege_array(user.update_prv)
-        delete_prvs = parse_privilege_array(user.delete_prv)
-        admin_prvs = parse_privilege_array(user.admin_prv)
-        hr_prvs = parse_privilege_array(user.hr_prv)
-        
-        # Get module details from database
-        module_details = {}
-        if mod_ids:
-            modules = db.query(models.Module).filter(
-                models.Module.mod_id.in_([int(mod) for mod in mod_ids if mod.isdigit()])
-            ).all()
-            module_details = {mod.mod_id: mod for mod in modules}
-        
-        # Build privilege list
-        for i, mod_id_str in enumerate(mod_ids):
-            if mod_id_str and mod_id_str.isdigit():
-                mod_id = int(mod_id_str)
-                module_info = module_details.get(mod_id)
-                
-                def safe_int_val(arr, idx):
-                    if idx < len(arr) and arr[idx]:
-                        try: 
-                            return int(arr[idx])
-                        except: 
-                            return 0
-                    return 0
-                
-                privilege_data = {
-                    "mod_id": mod_id,
-                    "module_name": module_info.module if module_info else f"Module {mod_id}",
-                    "module_description": module_info.description if module_info else "",
-                    "create_prv": safe_int_val(create_prvs, i),
-                    "read_prv": safe_int_val(read_prvs, i),
-                    "view_prv": safe_int_val(view_prvs, i),
-                    "update_prv": safe_int_val(update_prvs, i),
-                    "delete_prv": safe_int_val(delete_prvs, i),
-                    "admin_prv": safe_int_val(admin_prvs, i),
-                    "hr_prv": safe_int_val(hr_prvs, i),
-                    "view_global": safe_int_val(view_prvs, i),
-                    "permissions": None,
-                    "has_access": any([
-                        safe_int_val(create_prvs, i),
-                        safe_int_val(read_prvs, i),
-                        safe_int_val(view_prvs, i),
-                        safe_int_val(update_prvs, i),
-                        safe_int_val(delete_prvs, i),
-                        safe_int_val(admin_prvs, i),
-                        safe_int_val(hr_prvs, i)
-                    ])
-                }
-                privileges.append(privilege_data)
-        
-        print(f"Found {len(privileges)} module-based privilege records")
-        return privileges
-        
-    except Exception as priv_err:
-        print(f"Error parsing module based config: {priv_err}")
-        return []
-
-def check_module_access(user_privileges: List[dict], module_id: int, required_privilege: str = "view") -> bool:
-    """
-    Check if user has access to a specific module with the required privilege.
-    
-    Args:
-        user_privileges: List of user privileges from get_module_privileges()
-        module_id: Module ID to check
-        required_privilege: Type of privilege required ('create', 'read', 'view', 'update', 'delete', 'admin', 'hr')
-    
-    Returns:
-        bool: True if user has access, False otherwise
-    """
-    for privilege in user_privileges:
-        if privilege.get("mod_id") == module_id:
-            priv_value = privilege.get(f"{required_privilege}_prv", 0)
-            return priv_value > 0
-    return False
-
-def get_accessible_modules(user_privileges: List[dict]) -> List[dict]:
-    """
-    Get list of modules the user has access to.
-    Returns modules sorted by module ID.
-    """
-    accessible_modules = []
-    for privilege in user_privileges:
-        if privilege.get("has_access", False):
-            module_data = {
-                "mod_id": privilege.get("mod_id"),
-                "module_name": privilege.get("module_name"),
-                "module_description": privilege.get("module_description"),
-                "privileges": {
-                    "create": privilege.get("create_prv", 0) > 0,
-                    "read": privilege.get("read_prv", 0) > 0,
-                    "view": privilege.get("view_prv", 0) > 0,
-                    "update": privilege.get("update_prv", 0) > 0,
-                    "delete": privilege.get("delete_prv", 0) > 0,
-                    "admin": privilege.get("admin_prv", 0) > 0,
-                    "hr": privilege.get("hr_prv", 0) > 0
-                }
-            }
-            accessible_modules.append(module_data)
-    
-    return sorted(accessible_modules, key=lambda x: x.get("mod_id", 0))
-
-from functools import wraps
-from fastapi import HTTPException, status
-
-def require_module_privilege(module_id: int, required_privilege: str = "view"):
-    """
-    Decorator to check if user has required privilege for a specific module.
-    
-    Args:
-        module_id: Module ID to check access for
-        required_privilege: Type of privilege required ('create', 'read', 'view', 'update', 'delete', 'admin', 'hr')
-    """
-    def decorator(func):
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            # Extract user from kwargs or request
-            user = kwargs.get('user') or kwargs.get('current_user')
-            if not user:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Authentication required"
-                )
-            
-            # Get user privileges
-            db = next(get_db())
-            try:
-                privileges = get_module_privileges(user, db)
-                
-                # Check if user has required privilege
-                if not check_module_access(privileges, module_id, required_privilege):
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail=f"Access denied. Requires {required_privilege} privilege for module {module_id}"
-                    )
-                
-                # Add privileges to kwargs for downstream use
-                kwargs['user_privileges'] = privileges
-                
-                return await func(*args, **kwargs)
-            finally:
-                db.close()
-        
-        return wrapper
-    return decorator
-
-def get_user_privileges_from_token(token: str, db: Session) -> List[dict]:
-    """
-    Extract user privileges from JWT token.
-    """
-    try:
-        # Decode token to get user ID
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = payload.get("sub")
-        
-        if not user_id:
-            return []
-        
-        # Get user from database
-        user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == user_id).first()
-        if not user:
-            return []
-        
-        # Get privileges
-        return get_module_privileges(user, db)
-        
-    except Exception as e:
-        print(f"Error getting user privileges from token: {e}")
-        return []
-
 # JWT Configuration
 SECRET_KEY = "your-secret-key-here-change-in-production"
 ALGORITHM = "HS256"
@@ -627,19 +437,6 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
 
         print(" PASSWORD VERIFIED")
 
-        # Device locking check
-        if getattr(request, "device_id", None):
-            req_device_id = request.device_id.strip()
-            if req_device_id:
-                if user.attribute1 and user.attribute1.strip():
-                    if user.attribute1.strip() != req_device_id:
-                        print(f" DEVICE MISMATCH: DB={user.attribute1.strip()}, REQ={req_device_id}")
-                        raise HTTPException(status_code=403, detail="Already logged in another device")
-                else:
-                    print(f" SAVING FIRST DEVICE: {req_device_id}")
-                    user.attribute1 = req_device_id
-                    db.commit()
-
         # Generate JWT token
         try:
             access_token = create_access_token(data={"sub": user.emp_id})
@@ -671,13 +468,49 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         print(f" 2FA: {has_2fa}, Role: {role_type}, Global Admin: {is_global_admin}")
         print("=" * 60)
 
-        # Fetch privileges using enhanced module-based authentication
-        privileges = get_module_privileges(user, db)
-        
-        # If not module-based, fall back to role-based privileges
-        if not privileges and user.rpd_id:
+        # Fetch privileges
+        privileges = []
+        emp_role_type = user.role_type and str(user.role_type).strip().lower()
+
+        if emp_role_type == "module based" or emp_role_type == "module_based":
+            print(f" Fetching module-based privileges for user: {user.emp_id}")
             try:
-                print(f" Fetching role-based privileges for rpd_id: {user.rpd_id}")
+                mod_ids = parse_privilege_array(user.mod_id)
+                create_prvs = parse_privilege_array(user.create_prv)
+                read_prvs = parse_privilege_array(user.read_prv)
+                view_prvs = parse_privilege_array(user.view_prv)
+                update_prvs = parse_privilege_array(user.update_prv)
+                delete_prvs = parse_privilege_array(user.delete_prv)
+                admin_prvs = parse_privilege_array(user.admin_prv)
+                hr_prvs = parse_privilege_array(user.hr_prv)
+                
+                for i in range(len(mod_ids)):
+                    mod = mod_ids[i]
+                    if mod:
+                        def safe_int_val(arr, idx):
+                            if idx < len(arr) and arr[idx]:
+                                try: return int(arr[idx])
+                                except: return 0
+                            return 0
+                        privileges.append({
+                            "mod_id": int(mod) if mod.isdigit() else mod,
+                            "create_prv": safe_int_val(create_prvs, i),
+                            "read_prv": safe_int_val(read_prvs, i),
+                            "view_prv": safe_int_val(view_prvs, i),
+                            "update_prv": safe_int_val(update_prvs, i),
+                            "delete_prv": safe_int_val(delete_prvs, i),
+                            "admin_prv": safe_int_val(admin_prvs, i),
+                            "hr_prv": safe_int_val(hr_prvs, i),
+                            "view_global": safe_int_val(view_prvs, i),
+                            "permissions": None
+                        })
+                print(f" Found {len(privileges)} module-based privilege records for module_based role")
+            except Exception as priv_err:
+                print(f" Error parsing module based config: {priv_err}")
+                
+        elif user.rpd_id:
+            try:
+                print(f" Fetching privileges for rpd_id: {user.rpd_id}")
                 # Fetch all privileges associated with this user's privilege group
                 priv_rows = db.query(models.RolePrivilege).filter(
                     models.RolePrivilege.role_prv_ref_no == str(user.rpd_id)
@@ -698,7 +531,7 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
                     })
                 print(f" Found {len(privileges)} role-based privilege records")
             except Exception as priv_err:
-                print(f" Error fetching role-based privileges: {priv_err}")
+                print(f" Error fetching privileges: {priv_err}")
                 # Don't fail login just because privileges failed to fetch
                 pass
 
@@ -858,11 +691,45 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
     if is_manager and role_type != "Admin":
         role_type = "Admin"
 
-    # Fetch privileges using enhanced module-based authentication
-    privileges = get_module_privileges(user, db)
-    
-    # If not module-based, fall back to role-based privileges
-    if not privileges and user.rpd_id:
+    # Fetch privileges
+    privileges = []
+    emp_role_type = user.role_type and str(user.role_type).strip().lower()
+
+    if emp_role_type == "module based" or emp_role_type == "module_based":
+        try:
+            mod_ids = parse_privilege_array(user.mod_id)
+            create_prvs = parse_privilege_array(user.create_prv)
+            read_prvs = parse_privilege_array(user.read_prv)
+            view_prvs = parse_privilege_array(user.view_prv)
+            update_prvs = parse_privilege_array(user.update_prv)
+            delete_prvs = parse_privilege_array(user.delete_prv)
+            admin_prvs = parse_privilege_array(user.admin_prv)
+            hr_prvs = parse_privilege_array(user.hr_prv)
+            
+            for i in range(len(mod_ids)):
+                mod = mod_ids[i]
+                if mod:
+                    def safe_int_val(arr, idx):
+                        if idx < len(arr) and arr[idx]:
+                            try: return int(arr[idx])
+                            except: return 0
+                        return 0
+                    privileges.append({
+                        "mod_id": int(mod) if mod.isdigit() else mod,
+                        "create_prv": safe_int_val(create_prvs, i),
+                        "read_prv": safe_int_val(read_prvs, i),
+                        "view_prv": safe_int_val(view_prvs, i),
+                        "update_prv": safe_int_val(update_prvs, i),
+                        "delete_prv": safe_int_val(delete_prvs, i),
+                        "admin_prv": safe_int_val(admin_prvs, i),
+                        "hr_prv": safe_int_val(hr_prvs, i),
+                        "view_global": safe_int_val(view_prvs, i),
+                        "permissions": None
+                    })
+        except:
+            pass
+            
+    elif user.rpd_id:
         try:
             priv_rows = db.query(models.RolePrivilege).filter(
                 models.RolePrivilege.role_prv_ref_no == str(user.rpd_id)
@@ -958,30 +825,12 @@ def get_employees(manager_id: Optional[str] = None, db: Session = Depends(get_db
             "designation": emp.role_type or "Employee",
             "doj": emp.date_of_joining or "",
             "manager": emp.assign_manager or "N/A",
-            "location": "Chennai",
-            "device_id": emp.attribute1 or "",
+            "location": emp.attribute1 or "Chennai",
             "shift": "General (9:30 AM - 6:30 PM)",
             "address": emp.address or ""
         })
     return results
 
-
-@app.post("/admin/employees/{emp_id}/reset-device")
-def reset_employee_device(emp_id: str, db: Session = Depends(get_db)):
-    try:
-        user = db.query(models.EmpDet).filter(
-            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.strip().lower()
-        ).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="Employee not found")
-        user.attribute1 = ""
-        db.commit()
-        return {"success": True, "message": "Device ID reset successfully"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/sync-privileges/{emp_id}")
 def sync_privileges(emp_id: str, db: Session = Depends(get_db)):
@@ -1094,8 +943,7 @@ def get_employee_profile(emp_id: str, db: Session = Depends(get_db)):
         "password": user.password,
         "aadhaar_no": user.aadhar_no,
         "pan_no": user.pan_no,
-        "passport_no": user.passport_no,
-        "device_id": user.attribute1
+        "passport_no": user.passport_no
     }
 
 
@@ -3437,109 +3285,13 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         print(f"Error fetching employee notifications: {e}")
 
-    # Get user's module privileges
-    user_privileges = get_module_privileges(user, db)
-    accessible_modules = get_accessible_modules(user_privileges)
-    
     return {
         "emp_name": user.name or "User",
         "domain_name": domain_name,
         "upcoming_events": upcoming_events,
-        "notifications": notifications,
-        "modules": accessible_modules,
-        "role_type": user.role_type or "role_based",
-        "total_accessible_modules": len(accessible_modules)
+        "notifications": notifications
     }
 
-
-@app.get("/user/modules/{emp_id}")
-def get_user_modules(emp_id: str, db: Session = Depends(get_db)):
-    """Get all modules accessible to a specific user with their privileges"""
-    try:
-        user = db.query(models.EmpDet).filter(
-            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()
-        ).first()
-        
-        if not user:
-            raise HTTPException(status_code=404, detail=f"User {emp_id} not found")
-        
-        # Get user privileges
-        privileges = get_module_privileges(user, db)
-        accessible_modules = get_accessible_modules(privileges)
-        
-        return {
-            "user_id": emp_id,
-            "role_type": user.role_type or "role_based",
-            "total_modules": len(accessible_modules),
-            "modules": accessible_modules,
-            "privileges": privileges
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error getting user modules: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-@app.get("/modules")
-def get_all_modules(db: Session = Depends(get_db)):
-    """Get all available modules in the system"""
-    try:
-        modules = db.query(models.Module).filter(models.Module.status == "Active").all()
-        
-        module_list = []
-        for module in modules:
-            module_list.append({
-                "mod_id": module.mod_id,
-                "module_name": module.module,
-                "description": module.description,
-                "status": module.status
-            })
-        
-        return {
-            "total_modules": len(module_list),
-            "modules": sorted(module_list, key=lambda x: x.get("mod_id", 0))
-        }
-        
-    except Exception as e:
-        print(f"Error getting modules: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-@app.get("/modules/{module_id}/check-access/{emp_id}")
-def check_module_access_endpoint(module_id: int, emp_id: str, privilege: str = "view", db: Session = Depends(get_db)):
-    """Check if a user has specific privilege access to a module"""
-    try:
-        if privilege not in ["create", "read", "view", "update", "delete", "admin", "hr"]:
-            raise HTTPException(status_code=400, detail="Invalid privilege type")
-        
-        user = db.query(models.EmpDet).filter(
-            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()
-        ).first()
-        
-        if not user:
-            raise HTTPException(status_code=404, detail=f"User {emp_id} not found")
-        
-        # Get user privileges
-        privileges = get_module_privileges(user, db)
-        has_access = check_module_access(privileges, module_id, privilege)
-        
-        # Get module details
-        module = db.query(models.Module).filter(models.Module.mod_id == module_id).first()
-        
-        return {
-            "user_id": emp_id,
-            "module_id": module_id,
-            "module_name": module.module if module else f"Module {module_id}",
-            "privilege": privilege,
-            "has_access": has_access,
-            "role_type": user.role_type or "role_based"
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error checking module access: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.get("/birthdays-this-month")
 def get_birthdays_this_month(db: Session = Depends(get_db)):
@@ -3942,7 +3694,7 @@ def get_next_client_ref(db: Session = Depends(get_db)):
     clients = db.query(models.CompanyClient).filter(
         models.CompanyClient.client_ref_no.like('ITS-CLI-%')
     ).all()
-    max_num = 0
+    max_num = 25
     for c in clients:
         if c.client_ref_no:
             match = re.search(r'ITS-CLI-(\d+)$', c.client_ref_no)
@@ -3976,7 +3728,7 @@ def get_clients(db: Session = Depends(get_db)):
             "gst_available": c.gst, "gst": c.gst_no, "msme_available": c.msme, "msme": c.msme_no,
             "pan_no": c.pan, "address": c.address, "status": c.status or "Active",
             "company_name": c.company_name, "website": c.website, "short_code": c.short_code,
-            "currency": c.currency, "tds": c.attribute1, "gst_value": c.gst_value, "attribute_category": c.attribute_category,
+            "currency": c.currency, "gst_value": c.gst_value, "attribute_category": c.attribute_category,
             "creation_date": creation_dt, "last_update_date": last_update_dt,
             "created_by": c.created_by, "last_updated_by": c.last_updated_by,
             "last_update_login": c.last_update_login,
@@ -4005,10 +3757,10 @@ def get_client(client_id: int, db: Session = Depends(get_db)):
     last_update_dt = safe_dt(client.last_update_date)
     return {
         "client_id": client.cl_id, "client_ref_no": client.client_ref_no, "client_name": client.client_name,
-        "company_name": client.company_name, "country_code": client.country_code, "mobile_no": client.mobile_no, "email_id": client.email,
+        "company_name": client.company_name, "mobile_no": client.mobile_no, "email_id": client.email,
         "gst_available": client.gst, "gst": client.gst_no, "msme_available": client.msme,
         "msme": client.msme_no, "pan_no": client.pan, "status": client.status or "Active",
-        "website": client.website, "short_code": client.short_code, "currency": client.currency, "tds": client.attribute1,
+        "website": client.website, "short_code": client.short_code, "currency": client.currency,
         "address": client.address, "sites": sites_list, "creation_date": creation_dt, "last_update_date": last_update_dt
     }
 
@@ -4021,7 +3773,6 @@ def update_client(client_id: int, client_req: schemas.ClientApplyRequest, db: Se
     now = datetime.now()
     client.client_name = client_req.client_name
     client.company_name = client_req.company_name
-    client.country_code = client_req.country_code
     client.mobile_no = client_req.mobile_no
     client.email = client_req.email_id
     client.gst = client_req.gst_available
@@ -4032,7 +3783,6 @@ def update_client(client_id: int, client_req: schemas.ClientApplyRequest, db: Se
     client.website = client_req.website
     client.short_code = client_req.short_code
     client.currency = client_req.currency
-    client.attribute1 = client_req.tds
     client.address = client_req.address
     client.status = client_req.status
     client.last_update_date = now
@@ -4079,7 +3829,7 @@ def create_client(client_req: schemas.ClientApplyRequest, db: Session = Depends(
     try:
         new_client = models.CompanyClient(
             client_ref_no=client_req.client_ref_no, client_name=client_req.client_name,
-            company_name=client_req.company_name, country_code=client_req.country_code or "+91",
+            company_name=client_req.company_name, country_code="",
             mobile_no=client_req.mobile_no or "", gst=client_req.gst_available or "No",
             gst_value="", gst_no=client_req.gst or "", website=client_req.website or "",
             email=client_req.email_id or "", msme=client_req.msme_available or "No",
@@ -4087,7 +3837,7 @@ def create_client(client_req: schemas.ClientApplyRequest, db: Session = Depends(
             short_code=client_req.short_code or "", currency=client_req.currency or "INR",
             address=client_req.address or "", status=client_req.status or "Active",
             attribute_category="",
-            attribute1=client_req.tds or "", attribute2="", attribute3="", attribute4="", attribute5="",
+            attribute1="", attribute2="", attribute3="", attribute4="", attribute5="",
             attribute6="", attribute7="", attribute8="", attribute9="", attribute10="",
             attribute11="", attribute12="", attribute13="", attribute14="",
             creation_date=now, last_update_date=now,
