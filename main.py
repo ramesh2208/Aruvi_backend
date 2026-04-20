@@ -29,7 +29,6 @@ from sqlalchemy import extract
 import sqlalchemy
 import sys
 import os
-import json
 # Add current directory to sys.path to fix ModuleNotFoundError for local imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -294,7 +293,6 @@ def handle_db_error(e: Exception):
 
 
 app = FastAPI()
-router = APIRouter()
 
 # ─── DB connection with retry (fixes Render cold start + GoDaddy MySQL) ───────
 def run_migrations_with_retry(max_retries: int = 3, delay: int = 5):
@@ -550,281 +548,177 @@ def auto_calculate_hours_endpoint(request: schemas.AutoCalculateHoursRequest, db
     result = auto_calculate_total_hours(emp_id, db)
     return result
 
-def generate_otp():
-    import random
-    return "".join([str(random.randint(0, 9)) for _ in range(6)])
+# ─── LOGIN ────────────────────────────────────────────────────────────────────────────
 
-@router.post("/login")
+@app.post("/login", response_model=schemas.Token)
 def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
+    try:
+        print("\n" + "=" * 60)
+        print(" LOGIN ATTEMPT")
+        print("=" * 60)
+        username_input = request.username.strip().lower()
+        input_pwd = request.password.strip()
+        print(f" Username input: {username_input}")
 
-    username_input = request.username.strip().lower()
-    input_pwd = request.password.strip()
-    input_otp = request.authOtp
+        # Check if database is available
+        if not db:
+            print(" Database connection failed")
+            raise HTTPException(status_code=500, detail="Database connection failed")
 
-    print("\n=== LOGIN ATTEMPT ===")
-
-    # -------------------------------
-    # FETCH USER
-    # -------------------------------
-    user = db.query(models.EmpDet).filter(
-        or_(
-            func.lower(func.trim(models.EmpDet.p_mail)) == username_input,
-            func.lower(func.trim(models.EmpDet.emp_id)) == username_input
-        )
-    ).first()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="Invalid Username")
-
-    print(f"User found: {user.emp_id}")
-
-    # -------------------------------
-    # PASSWORD VALIDATION
-    # -------------------------------
-    input_md5 = hashlib.md5(input_pwd.encode()).hexdigest()
-    password_valid = False
-
-    if user.attribute15 and user.attribute15.lower() == input_md5.lower():
-        password_valid = True
-
-    elif user.password and user.password.lower() == input_md5.lower():
-        password_valid = True
-
-    elif user.password == input_pwd:
-        password_valid = True
-
-    # AES Decryption
-    elif user.password and user.attribute15:
+        # Find user
         try:
-            AES_KEY = b"1234567890abcdef"
-            encrypted_bytes = base64.b64decode(user.password)
-            iv_bytes = base64.b64decode(user.attribute15)
+            user = db.query(models.EmpDet).filter(
+                or_(
+                    func.lower(func.trim(models.EmpDet.p_mail)) == username_input,
+                    func.lower(func.trim(models.EmpDet.emp_id)) == username_input,
+                    func.lower(func.replace(func.trim(models.EmpDet.emp_id), " ", "")) == username_input.replace(" ", "")
+                )
+            ).first()
+        except Exception as db_err:
+            print(f" Database query error: {db_err}")
+            handle_db_error(db_err)
 
-            cipher = AES.new(AES_KEY, AES.MODE_CBC, iv_bytes)
-            decrypted = unpad(cipher.decrypt(encrypted_bytes), 16).decode()
+        if not user:
+            print(f" User not found for input: {username_input}")
+            raise HTTPException(status_code=404, detail="Invalid Username")
 
-            if decrypted == input_pwd:
+        print(f" User FOUND: {user.emp_id} ({user.p_mail})")
+
+        # Password validation
+        input_md5 = hashlib.md5(input_pwd.encode()).hexdigest()
+        print(f" Input MD5: {input_md5}")
+        print(f" User password: {user.password}")
+        print(f" User attribute15: {user.attribute15}")
+
+        password_valid = False
+        
+        # Check password validation
+        if user.attribute15 and user.attribute15.strip():
+            if user.attribute15.lower() == input_md5.lower():
                 password_valid = True
-        except:
-            pass
+                print(" Password matched via attribute15 (MD5)")
+        
+        if not password_valid and user.password and user.password.strip():
+            if user.password.lower() == input_md5.lower():
+                password_valid = True
+                print(" Password matched via password field (MD5)")
+        
+        if not password_valid and user.password == input_pwd:
+            password_valid = True
+            print(" Password matched via direct comparison")
+        
+        if not password_valid and user.password and user.attribute15:
+            try:
+                AES_KEY = b"1234567890abcdef"
+                encrypted_bytes = base64.b64decode(user.password)
+                iv_bytes = base64.b64decode(user.attribute15)
+                if len(iv_bytes) == 16:
+                    cipher = AES.new(AES_KEY, AES.MODE_CBC, iv_bytes)
+                    decrypted = unpad(cipher.decrypt(encrypted_bytes), 16).decode()
+                    if decrypted == input_pwd:
+                        password_valid = True
+                        print(" Password matched via AES decryption")
+            except Exception as e:
+                print(f" AES decrypt failed: {str(e)}")
 
-    if not password_valid:
-        raise HTTPException(status_code=401, detail="Invalid Password")
+        if not password_valid:
+            print(" PASSWORD FAILED - No validation method worked")
+            raise HTTPException(status_code=401, detail="Invalid Password")
 
-    print("Password verified")
+        print(" PASSWORD VERIFIED")
 
-    # ======================================================
-    # STEP 1 → OTP GENERATION
-    # ======================================================
-    if not input_otp:
-        otp = generate_otp()
-        # Use lowercase stripped emp_id as store key for consistency
-        key = str(user.emp_id).strip().lower()
-        otp_store[key] = {
-            "otp": otp,
-            "expires": time.time() + 120  # 2 mins
-        }
+        # Device locking check
+        if getattr(request, "device_id", None):
+            req_device_id = request.device_id.strip()
+            if req_device_id:
+                if user.attribute1 and user.attribute1.strip():
+                    if user.attribute1.strip() != req_device_id:
+                        print(f" DEVICE MISMATCH: DB={user.attribute1.strip()}, REQ={req_device_id}")
+                        raise HTTPException(status_code=403, detail="Already logged in another device")
+                else:
+                    print(f" SAVING FIRST DEVICE: {req_device_id}")
+                    user.attribute1 = req_device_id
+                    db.commit()
 
-        print(f"OTP Generated: {otp}")
+        # Generate JWT token
+        try:
+            access_token = create_access_token(data={"sub": user.emp_id})
+        except Exception as token_err:
+            print(f" Token generation error: {token_err}")
+            raise HTTPException(status_code=500, detail="Token generation failed")
+        
+        # Get user role
+        is_global_admin = False
+        role_type = "Employee"
+        if user.dom_id:
+            try:
+                d_id = int(str(user.dom_id).strip())
+                domain_obj = db.query(models.Domain).filter(models.Domain.dom_id == d_id).first()
+                if domain_obj and domain_obj.domain:
+                    if any(x in domain_obj.domain.lower() for x in ["admin", "executive", "management"]):
+                        role_type = "Admin"
+                        is_global_admin = True
+            except:
+                pass
+
+        is_manager = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.assign_manager)) == user.emp_id.lower().strip()
+        ).first() is not None
+        if is_manager and role_type != "Admin":
+            role_type = "Admin"
+
+        has_2fa = bool(user.auth_key and user.auth_key.strip())
+        print(f" 2FA: {has_2fa}, Role: {role_type}, Global Admin: {is_global_admin}")
+        print("=" * 60)
+
+        # Fetch privileges using enhanced module-based authentication
+        privileges = get_module_privileges(user, db)
+        
+        # If not module-based, fall back to role-based privileges
+        if not privileges and user.rpd_id:
+            try:
+                print(f" Fetching role-based privileges for rpd_id: {user.rpd_id}")
+                # Fetch all privileges associated with this user's privilege group
+                priv_rows = db.query(models.RolePrivilege).filter(
+                    models.RolePrivilege.role_prv_ref_no == str(user.rpd_id)
+                ).all()
+                
+                for p in priv_rows:
+                    privileges.append({
+                        "mod_id": p.mod_id,
+                        "create_prv": p.create_prv,
+                        "read_prv": p.read_prv,
+                        "view_prv": p.view_prv,
+                        "update_prv": p.update_prv,
+                        "delete_prv": p.delete_prv,
+                        "admin_prv": p.admin_prv,
+                        "hr_prv": p.hr_prv,
+                        "view_global": p.view_global,
+                        "permissions": p.permissions
+                    })
+                print(f" Found {len(privileges)} role-based privilege records")
+            except Exception as priv_err:
+                print(f" Error fetching role-based privileges: {priv_err}")
+                # Don't fail login just because privileges failed to fetch
+                pass
 
         return {
-            "status": "success",
-            "message": "OTP sent",
-            "user_id": user.emp_id,
-            "otp": otp,  # ⚠️ remove in production
-            "requires_2fa": True,
-            "time_left": 120
+            "access_token": access_token,
+            "token_type": "bearer",
+            "username": user.p_mail or "",
+            "role_type": role_type,
+            "is_global_admin": is_global_admin,
+            "user_id": user.emp_id or "",
+            "name": user.name or "User",
+            "requires_2fa": has_2fa,
+            "privileges": privileges
         }
-
-    # ======================================================
-    # STEP 2 → OTP VALIDATION
-    # ======================================================
-    stored = otp_store.get(user.emp_id)
-
-    if not stored:
-        raise HTTPException(status_code=400, detail="OTP expired")
-
-    if time.time() > stored["expires"]:
-        raise HTTPException(status_code=400, detail="OTP expired")
-
-    if input_otp != stored["otp"]:
-        raise HTTPException(status_code=401, detail="Invalid OTP")
-
-    print("OTP verified")
-
-    # ======================================================
-    # PRIVILEGE LOGIC
-    # ======================================================
-    privileges = []
-
-    def parse_arr(val):
-        if not val:
-            return []
-        if isinstance(val, list):
-            return val
-        try:
-            return json.loads(val)
-        except:
-            try:
-                # fallback: strip brackets and split by comma
-                s = str(val).strip()
-                if s.startswith('[') and s.endswith(']'):
-                    s = s[1:-1]
-                return [x.strip() for x in s.split(',') if x.strip()]
-            except:
-                return []
-
-    def safe_get(arr, idx):
-        try:
-            return int(arr[idx]) if idx < len(arr) else 0
-        except:
-            return 0
-
-    role_type = str(user.role_type or '').strip().lower()
-    print(f"role_type = '{role_type}'")
-
-    # -------------------------------
-    # CASE 1: ROLE BASED
-    # -------------------------------
-    if role_type == "role based":
-        print(f"Role Based user. rpd_id = {user.rpd_id}")
-
-        if not user.rpd_id:
-            raise HTTPException(
-                status_code=403,
-                detail="Role Based user has no rpd_id assigned"
-            )
-
-        # ✅ Match by rpd_id column (integer primary key), NOT role_prv_ref_no
-        role_row = db.query(models.RolePrivilege).filter(
-            models.RolePrivilege.rpd_id == int(user.rpd_id)
-        ).first()
-
-        if not role_row:
-            raise HTTPException(
-                status_code=403,
-                detail=f"No role privilege row found for rpd_id={user.rpd_id}"
-            )
-
-        print(f"Found role: {role_row.role_prv_name} ({role_row.role_prv_ref_no})")
-
-        mod_array   = parse_arr(role_row.mod_array)
-        create_prvs = parse_arr(role_row.create_prv)
-        read_prvs   = parse_arr(role_row.read_prv)
-        view_prvs   = parse_arr(role_row.view_prv)
-        update_prvs = parse_arr(role_row.update_prv)
-        delete_prvs = parse_arr(role_row.delete_prv)
-        admin_prvs  = parse_arr(role_row.admin_prv)
-        hr_prvs     = parse_arr(role_row.hr_prv)
-
-        print(f"mod_array has {len(mod_array)} entries")
-
-        # Build one privilege object per array position
-        # Frontend reads privileges[idx] by position — order must match mod_array
-        for i, mod_id in enumerate(mod_array):
-            privileges.append({
-                "mod_id":      mod_id,
-                "create_prv":  safe_get(create_prvs, i),
-                "read_prv":    safe_get(read_prvs, i),
-                "view_global": safe_get(view_prvs, i),   # frontend uses view_global key
-                "update_prv":  safe_get(update_prvs, i),
-                "delete_prv":  safe_get(delete_prvs, i),
-                "admin_prv":   safe_get(admin_prvs, i),
-                "hr_prv":      safe_get(hr_prvs, i),
-            })
-
-        print(f"✅ Built {len(privileges)} privilege entries from role table")
-
-    # -------------------------------
-    # CASE 2: MODULE BASED
-    # -------------------------------
-    elif role_type in ["module based", "module_based"]:
-        print(f"Module Based user. Reading mod_id/privileges from emp table.")
-
-        mod_array   = parse_arr(user.mod_id)
-        create_prvs = parse_arr(user.create_prv)
-        read_prvs   = parse_arr(user.read_prv)
-        view_prvs   = parse_arr(user.view_prv)
-        update_prvs = parse_arr(user.update_prv)
-        delete_prvs = parse_arr(user.delete_prv)
-
-        # admin_prv and hr_prv are single values on emp table
-        try:
-            admin_val = int(user.admin_prv or 0)
-        except:
-            admin_val = 0
-        try:
-            hr_val = int(user.hr_prv or 0)
-        except:
-            hr_val = 0
-
-        print(f"mod_array has {len(mod_array)} entries")
-
-        for i, mod_id in enumerate(mod_array):
-            privileges.append({
-                "mod_id":      mod_id,
-                "create_prv":  safe_get(create_prvs, i),
-                "read_prv":    safe_get(read_prvs, i),
-                "view_global": safe_get(view_prvs, i),
-                "update_prv":  safe_get(update_prvs, i),
-                "delete_prv":  safe_get(delete_prvs, i),
-                "admin_prv":   admin_val,
-                "hr_prv":      hr_val,
-            })
-
-        print(f"✅ Built {len(privileges)} privilege entries from emp table")
-
-    # -------------------------------
-    # CASE 3: FALLBACK
-    # (no role_type set — use direct emp columns)
-    # -------------------------------
-    else:
-        print(f"No recognized role_type ('{role_type}'), using direct emp privilege columns")
-
-        try:
-            privileges.append({
-                "mod_id":      user.mod_id,
-                "create_prv":  int(user.create_prv or 0),
-                "read_prv":    int(user.read_prv or 0),
-                "view_global": int(user.view_prv or 0),
-                "update_prv":  int(user.update_prv or 0),
-                "delete_prv":  int(user.delete_prv or 0),
-                "admin_prv":   int(user.admin_prv or 0),
-                "hr_prv":      int(user.hr_prv or 0),
-            })
-        except Exception as fallback_err:
-            print(f"Fallback privilege error: {fallback_err}")
-
-        print(f" Built fallback privilege entry")
-
-    # ======================================================
-    # GUARD: must have at least one privilege entry
-    # ======================================================
-    if not privileges:
-        raise HTTPException(
-            status_code=403,
-            detail="OTP verified but no privileges assigned to this user"
-        )
-
-    # Debug log — verify key indices before sending
-    print(f"📋 Total privileges being sent: {len(privileges)}")
-    print(f"   priv[0]  = {privileges[0] if len(privileges) > 0 else 'MISSING'}")
-    print(f"   priv[1]  = {privileges[1] if len(privileges) > 1 else 'MISSING'}")
-    print(f"   priv[12] = {privileges[12] if len(privileges) > 12 else 'MISSING'}")
-    print(f"   priv[49] = {privileges[49] if len(privileges) > 49 else 'MISSING'}")
-
-    # ======================================================
-    # FINAL SUCCESS → TOKEN + RESPONSE
-    # ======================================================
-    access_token = create_access_token(data={"sub": user.emp_id})
-
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user_id": user.emp_id,
-        "username": user.p_mail,
-        "privileges": privileges
-    }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f" LOGIN ERROR: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error during login")
 
 
 @app.post("/forgot-password")
@@ -940,26 +834,11 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
         handle_db_error(e)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    # ── Try simple OTP first (from login step 1) ──────────────────────────
-    # Check lowercase key for consistency
-    key = str(user.emp_id).strip().lower()
-    stored = otp_store.get(key)
-    if stored and otp_input == stored.get("otp"):
-        if time.time() < stored.get("expires", 0):
-            print(" 2FA SUCCESS (Simple OTP)")
-            otp_store.pop(key, None) # Clear after use
-        else:
-            raise HTTPException(status_code=400, detail="OTP expired")
-    
-    # ── Fallback to Authenticator App (TOTP) ──────────────────────────────
-    elif user.auth_key:
-        ok = verify_authenticator_otp_for_user(user, otp_input)
-        if not ok:
-            raise HTTPException(status_code=401, detail="Invalid Authenticator code")
-        print(" 2FA SUCCESS (TOTP)")
-    
-    else:
-        raise HTTPException(status_code=400, detail="Invalid code or 2FA not configured")
+    if not user.auth_key:
+        raise HTTPException(status_code=400, detail="2FA not configured")
+    ok = verify_authenticator_otp_for_user(user, otp_input)
+    if not ok:
+        raise HTTPException(status_code=401, detail="Invalid Authenticator code")
     print(" 2FA SUCCESS")
     is_global_admin = False
     role_type = "Employee"
@@ -1087,22 +966,22 @@ def get_employees(manager_id: Optional[str] = None, db: Session = Depends(get_db
     return results
 
 
-# @app.post("/admin/employees/{emp_id}/reset-device")
-# def reset_employee_device(emp_id: str, db: Session = Depends(get_db)):
-#     try:
-#         user = db.query(models.EmpDet).filter(
-#             func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.strip().lower()
-#         ).first()
-#         if not user:
-#             raise HTTPException(status_code=404, detail="Employee not found")
-#         user.attribute1 = ""
-#         db.commit()
-#         return {"success": True, "message": "Device ID reset successfully"}
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         db.rollback()
-#         raise HTTPException(status_code=500, detail=str(e))
+@app.post("/admin/employees/{emp_id}/reset-device")
+def reset_employee_device(emp_id: str, db: Session = Depends(get_db)):
+    try:
+        user = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.strip().lower()
+        ).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        user.attribute1 = ""
+        db.commit()
+        return {"success": True, "message": "Device ID reset successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/sync-privileges/{emp_id}")
 def sync_privileges(emp_id: str, db: Session = Depends(get_db)):
@@ -2366,6 +2245,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 import traceback
 
+router = APIRouter()
 
 
 def _status_type(s: str) -> str:
@@ -4046,27 +3926,13 @@ def get_employee_allocations(emp_id: str, db: Session = Depends(get_db)):
         role = db.query(models.Role.role).filter(models.Role.role_id == a.role_id).first()
         dept = db.query(models.Department.department).filter(models.Department.dpt_id == a.dpt_id).first()
         dom = db.query(models.Domain.domain).filter(models.Domain.dom_id == a.dom_id).first()
-        proj = db.query(models.Project).filter(models.Project.pro_id == a.pro_id).first()
-        lead = db.query(models.EmpDet.name).filter(models.EmpDet.emp_id == a.lead_id).first()
-        
-        client_name = "Unknown"
-        if proj and proj.client_ref_no:
-            client = db.query(models.CompanyClient.client_name).filter(models.CompanyClient.client_ref_no == proj.client_ref_no).first()
-            if client:
-                client_name = client[0]
-
+        proj = db.query(models.Project.project_name).filter(models.Project.pro_id == a.pro_id).first()
         res.append(schemas.ProjectAllocationResponse(
             assign_id=a.assign_id, emp_id=a.emp_id, role_id=a.role_id, dom_id=a.dom_id, dpt_id=a.dpt_id,
             lead_id=a.lead_id, from_date=a.from_date, to_date=a.to_date, task_description=a.task_description,
             allocation_pct=a.allocation_pct, emp_name=emp[0] if emp else "Unknown",
             role_name=role[0] if role else "Unknown", dept_name=dept[0] if dept else "Unknown",
-            dom_name=dom[0] if dom else "Unknown", 
-            project_name=proj.project_name if proj else "Unknown",
-            lead_name=lead[0] if lead else a.lead_id,
-            client_name=client_name,
-            project_type=proj.project_type if proj else None,
-            project_status=proj.status if proj else None,
-            project_priority=proj.project_priority if proj else None
+            dom_name=dom[0] if dom else "Unknown", project_name=proj[0] if proj else "Unknown"
         ))
     return res
 
@@ -4147,7 +4013,7 @@ def get_client(client_id: int, db: Session = Depends(get_db)):
         "gst_available": client.gst, "gst": client.gst_no, "msme_available": client.msme,
         "msme": client.msme_no, "pan_no": client.pan, "status": client.status or "Active",
         "website": client.website, "short_code": client.short_code, "currency": client.currency, "tds": client.attribute1,
-        "gst_p": client.gst_value, "address": client.address, "sites": sites_list, "creation_date": creation_dt, "last_update_date": last_update_dt
+        "address": client.address, "sites": sites_list, "creation_date": creation_dt, "last_update_date": last_update_dt
     }
 
 
@@ -4171,7 +4037,6 @@ def update_client(client_id: int, client_req: schemas.ClientApplyRequest, db: Se
     client.short_code = client_req.short_code
     client.currency = client_req.currency
     client.attribute1 = client_req.tds
-    client.gst_value = client_req.gst_p
     client.address = client_req.address
     client.status = client_req.status
     client.last_update_date = now
@@ -4210,7 +4075,7 @@ def create_client(client_req: schemas.ClientApplyRequest, db: Session = Depends(
             client_ref_no=client_req.client_ref_no, client_name=client_req.client_name,
             company_name=client_req.company_name, country_code=client_req.country_code or "+91",
             mobile_no=client_req.mobile_no or "", gst=client_req.gst_available or "No",
-            gst_value=client_req.gst_p or "", gst_no=client_req.gst or "", website=client_req.website or "",
+            gst_value="", gst_no=client_req.gst or "", website=client_req.website or "",
             email=client_req.email_id or "", msme=client_req.msme_available or "No",
             msme_no=client_req.msme or "", pan=client_req.pan_no or "",
             short_code=client_req.short_code or "", currency=client_req.currency or "INR",
