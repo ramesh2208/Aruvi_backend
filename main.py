@@ -3939,22 +3939,18 @@ def get_employee_allocations(emp_id: str, db: Session = Depends(get_db)):
 
 @app.get("/admin/clients/next-ref")
 def get_next_client_ref(db: Session = Depends(get_db)):
-    # Find all client ref nos to get the max number
-    all_clients = db.query(models.CompanyClient.client_ref_no).all()
+    clients = db.query(models.CompanyClient).filter(
+        models.CompanyClient.client_ref_no.like('ITS-CLI-%')
+    ).all()
     max_num = 0
-    for (ref,) in all_clients:
-        if ref:
-            # Look for ANY digits at the end of the ref no
-            match = re.findall(r'(\d+)', ref)
+    for c in clients:
+        if c.client_ref_no:
+            match = re.search(r'ITS-CLI-(\d+)$', c.client_ref_no)
             if match:
-                # Take the last group of digits found
-                num = int(match[-1])
+                num = int(match.group(1))
                 if num > max_num:
                     max_num = num
-    
-    # If no clients or numbers found, start at 1
-    next_num = max_num + 1
-    return {"next_ref": f"ITS-CLI-{next_num:04d}"}
+    return {"next_ref": f"ITS-CLI-{max_num + 1:04d}"}
 
 
 @app.get("/admin/clients", response_model=List[schemas.ClientResponse])
@@ -4068,8 +4064,18 @@ def get_holiday_dates(db: Session = Depends(get_db)):
 def create_client(client_req: schemas.ClientApplyRequest, db: Session = Depends(get_db)):
     now = datetime.now()
     if not client_req.client_ref_no or client_req.client_ref_no.strip() == "":
-        res = get_next_client_ref(db)
-        client_req.client_ref_no = res["next_ref"]
+        last_client = db.query(models.CompanyClient).order_by(models.CompanyClient.cl_id.desc()).first()
+        if not last_client or not last_client.client_ref_no:
+            client_req.client_ref_no = "CLI-001"
+        else:
+            ref_no = last_client.client_ref_no
+            match = re.search(r'(\d+)$', ref_no)
+            if match:
+                num = int(match.group(1)) + 1
+                prefix = ref_no[:match.start()]
+                client_req.client_ref_no = f"{prefix}{num:03d}"
+            else:
+                client_req.client_ref_no = f"{ref_no}-1"
     try:
         new_client = models.CompanyClient(
             client_ref_no=client_req.client_ref_no, client_name=client_req.client_name,
