@@ -29,6 +29,7 @@ from sqlalchemy import extract
 import sqlalchemy
 import sys
 import os
+import json
 # Add current directory to sys.path to fix ModuleNotFoundError for local imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -293,6 +294,7 @@ def handle_db_error(e: Exception):
 
 
 app = FastAPI()
+router = APIRouter()
 
 # ─── DB connection with retry (fixes Render cold start + GoDaddy MySQL) ───────
 def run_migrations_with_retry(max_retries: int = 3, delay: int = 5):
@@ -548,14 +550,16 @@ def auto_calculate_hours_endpoint(request: schemas.AutoCalculateHoursRequest, db
     result = auto_calculate_total_hours(emp_id, db)
     return result
 
-# ─── LOGIN ────────────────────────────────────────────────────────────────────────────
+def generate_otp():
+    import random
+    return "".join([str(random.randint(0, 9)) for _ in range(6)])
 
 @router.post("/login")
 def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
 
     username_input = request.username.strip().lower()
     input_pwd = request.password.strip()
-    input_otp = request.authOtp  # NEW
+    input_otp = request.authOtp
 
     print("\n=== LOGIN ATTEMPT ===")
 
@@ -610,12 +614,13 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
     print("Password verified")
 
     # ======================================================
-    # STEP 1 → OTP GENERATION (Same as PHP first step)
+    # STEP 1 → OTP GENERATION
     # ======================================================
     if not input_otp:
-
         otp = generate_otp()
-        otp_store[user.emp_id] = {
+        # Use lowercase stripped emp_id as store key for consistency
+        key = str(user.emp_id).strip().lower()
+        otp_store[key] = {
             "otp": otp,
             "expires": time.time() + 120  # 2 mins
         }
@@ -627,6 +632,7 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
             "message": "OTP sent",
             "user_id": user.emp_id,
             "otp": otp,  # ⚠️ remove in production
+            "requires_2fa": True,
             "time_left": 120
         }
 
@@ -647,59 +653,168 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
     print("OTP verified")
 
     # ======================================================
-    # PRIVILEGE LOGIC (MATCHES PHP rpd_id FLOW)
+    # PRIVILEGE LOGIC
     # ======================================================
     privileges = []
 
+    def parse_arr(val):
+        if not val:
+            return []
+        if isinstance(val, list):
+            return val
+        try:
+            return json.loads(val)
+        except:
+            try:
+                # fallback: strip brackets and split by comma
+                s = str(val).strip()
+                if s.startswith('[') and s.endswith(']'):
+                    s = s[1:-1]
+                return [x.strip() for x in s.split(',') if x.strip()]
+            except:
+                return []
+
+    def safe_get(arr, idx):
+        try:
+            return int(arr[idx]) if idx < len(arr) else 0
+        except:
+            return 0
+
+    role_type = str(user.role_type or '').strip().lower()
+    print(f"role_type = '{role_type}'")
+
     # -------------------------------
-    # CASE 1: DIRECT EMPLOYEE PRIVILEGE
+    # CASE 1: ROLE BASED
     # -------------------------------
-    if not user.rpd_id:
+    if role_type == "role based":
+        print(f"Role Based user. rpd_id = {user.rpd_id}")
 
-        print("Using DIRECT employee privileges")
+        if not user.rpd_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Role Based user has no rpd_id assigned"
+            )
 
-        privileges.append({
-            "mod_id": user.mod_id,
-            "create_prv": user.create_prv,
-            "read_prv": user.read_prv,
-            "update_prv": user.update_prv,
-            "delete_prv": user.delete_prv,
-            "admin_prv": user.admin_prv,
-            "hr_prv": user.hr_prv,
-            "view_global": user.view_prv
-        })
+        # ✅ Match by rpd_id column (integer primary key), NOT role_prv_ref_no
+        role_row = db.query(models.RolePrivilege).filter(
+            models.RolePrivilege.rpd_id == int(user.rpd_id)
+        ).first()
 
-    # -------------------------------
-    # CASE 2: ROLE-BASED PRIVILEGE
-    # -------------------------------
-    else:
+        if not role_row:
+            raise HTTPException(
+                status_code=403,
+                detail=f"No role privilege row found for rpd_id={user.rpd_id}"
+            )
 
-        print(f"Using ROLE privileges: {user.rpd_id}")
+        print(f"Found role: {role_row.role_prv_name} ({role_row.role_prv_ref_no})")
 
-        role_rows = db.query(models.RolePrivilege).filter(
-            models.RolePrivilege.role_prv_ref_no == str(user.rpd_id)
-        ).all()
+        mod_array   = parse_arr(role_row.mod_array)
+        create_prvs = parse_arr(role_row.create_prv)
+        read_prvs   = parse_arr(role_row.read_prv)
+        view_prvs   = parse_arr(role_row.view_prv)
+        update_prvs = parse_arr(role_row.update_prv)
+        delete_prvs = parse_arr(role_row.delete_prv)
+        admin_prvs  = parse_arr(role_row.admin_prv)
+        hr_prvs     = parse_arr(role_row.hr_prv)
 
-        for p in role_rows:
+        print(f"mod_array has {len(mod_array)} entries")
+
+        # Build one privilege object per array position
+        # Frontend reads privileges[idx] by position — order must match mod_array
+        for i, mod_id in enumerate(mod_array):
             privileges.append({
-                "mod_id": p.mod_id,
-                "create_prv": p.create_prv,
-                "read_prv": p.read_prv,
-                "update_prv": p.update_prv,
-                "delete_prv": p.delete_prv,
-                "admin_prv": p.admin_prv,
-                "hr_prv": p.hr_prv,
-                "view_global": p.view_global
+                "mod_id":      mod_id,
+                "create_prv":  safe_get(create_prvs, i),
+                "read_prv":    safe_get(read_prvs, i),
+                "view_global": safe_get(view_prvs, i),   # frontend uses view_global key
+                "update_prv":  safe_get(update_prvs, i),
+                "delete_prv":  safe_get(delete_prvs, i),
+                "admin_prv":   safe_get(admin_prvs, i),
+                "hr_prv":      safe_get(hr_prvs, i),
             })
 
+        print(f"✅ Built {len(privileges)} privilege entries from role table")
+
+    # -------------------------------
+    # CASE 2: MODULE BASED
+    # -------------------------------
+    elif role_type in ["module based", "module_based"]:
+        print(f"Module Based user. Reading mod_id/privileges from emp table.")
+
+        mod_array   = parse_arr(user.mod_id)
+        create_prvs = parse_arr(user.create_prv)
+        read_prvs   = parse_arr(user.read_prv)
+        view_prvs   = parse_arr(user.view_prv)
+        update_prvs = parse_arr(user.update_prv)
+        delete_prvs = parse_arr(user.delete_prv)
+
+        # admin_prv and hr_prv are single values on emp table
+        try:
+            admin_val = int(user.admin_prv or 0)
+        except:
+            admin_val = 0
+        try:
+            hr_val = int(user.hr_prv or 0)
+        except:
+            hr_val = 0
+
+        print(f"mod_array has {len(mod_array)} entries")
+
+        for i, mod_id in enumerate(mod_array):
+            privileges.append({
+                "mod_id":      mod_id,
+                "create_prv":  safe_get(create_prvs, i),
+                "read_prv":    safe_get(read_prvs, i),
+                "view_global": safe_get(view_prvs, i),
+                "update_prv":  safe_get(update_prvs, i),
+                "delete_prv":  safe_get(delete_prvs, i),
+                "admin_prv":   admin_val,
+                "hr_prv":      hr_val,
+            })
+
+        print(f"✅ Built {len(privileges)} privilege entries from emp table")
+
+    # -------------------------------
+    # CASE 3: FALLBACK
+    # (no role_type set — use direct emp columns)
+    # -------------------------------
+    else:
+        print(f"No recognized role_type ('{role_type}'), using direct emp privilege columns")
+
+        try:
+            privileges.append({
+                "mod_id":      user.mod_id,
+                "create_prv":  int(user.create_prv or 0),
+                "read_prv":    int(user.read_prv or 0),
+                "view_global": int(user.view_prv or 0),
+                "update_prv":  int(user.update_prv or 0),
+                "delete_prv":  int(user.delete_prv or 0),
+                "admin_prv":   int(user.admin_prv or 0),
+                "hr_prv":      int(user.hr_prv or 0),
+            })
+        except Exception as fallback_err:
+            print(f"Fallback privilege error: {fallback_err}")
+
+        print(f" Built fallback privilege entry")
+
+    # ======================================================
+    # GUARD: must have at least one privilege entry
+    # ======================================================
     if not privileges:
         raise HTTPException(
             status_code=403,
-            detail="OTP verified but no privileges assigned"
+            detail="OTP verified but no privileges assigned to this user"
         )
 
+    # Debug log — verify key indices before sending
+    print(f"📋 Total privileges being sent: {len(privileges)}")
+    print(f"   priv[0]  = {privileges[0] if len(privileges) > 0 else 'MISSING'}")
+    print(f"   priv[1]  = {privileges[1] if len(privileges) > 1 else 'MISSING'}")
+    print(f"   priv[12] = {privileges[12] if len(privileges) > 12 else 'MISSING'}")
+    print(f"   priv[49] = {privileges[49] if len(privileges) > 49 else 'MISSING'}")
+
     # ======================================================
-    # FINAL SUCCESS → TOKEN
+    # FINAL SUCCESS → TOKEN + RESPONSE
     # ======================================================
     access_token = create_access_token(data={"sub": user.emp_id})
 
@@ -825,11 +940,26 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
         handle_db_error(e)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    if not user.auth_key:
-        raise HTTPException(status_code=400, detail="2FA not configured")
-    ok = verify_authenticator_otp_for_user(user, otp_input)
-    if not ok:
-        raise HTTPException(status_code=401, detail="Invalid Authenticator code")
+    # ── Try simple OTP first (from login step 1) ──────────────────────────
+    # Check lowercase key for consistency
+    key = str(user.emp_id).strip().lower()
+    stored = otp_store.get(key)
+    if stored and otp_input == stored.get("otp"):
+        if time.time() < stored.get("expires", 0):
+            print(" 2FA SUCCESS (Simple OTP)")
+            otp_store.pop(key, None) # Clear after use
+        else:
+            raise HTTPException(status_code=400, detail="OTP expired")
+    
+    # ── Fallback to Authenticator App (TOTP) ──────────────────────────────
+    elif user.auth_key:
+        ok = verify_authenticator_otp_for_user(user, otp_input)
+        if not ok:
+            raise HTTPException(status_code=401, detail="Invalid Authenticator code")
+        print(" 2FA SUCCESS (TOTP)")
+    
+    else:
+        raise HTTPException(status_code=400, detail="Invalid code or 2FA not configured")
     print(" 2FA SUCCESS")
     is_global_admin = False
     role_type = "Employee"
@@ -2236,7 +2366,6 @@ from datetime import datetime, timedelta
 from typing import Optional
 import traceback
 
-router = APIRouter()
 
 
 def _status_type(s: str) -> str:
