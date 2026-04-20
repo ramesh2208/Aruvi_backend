@@ -549,8 +549,11 @@ def auto_calculate_hours_endpoint(request: schemas.AutoCalculateHoursRequest, db
     result = auto_calculate_total_hours(emp_id, db)
     return result
 
-# ─── LOGIN ────────────────────────────────────────────────────────────────────────────
+otp_store = {}
 
+def generate_otp():
+    import random
+    return "".join([str(random.randint(0, 9)) for _ in range(6)])
 @app.post("/login")
 def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
 
@@ -615,7 +618,9 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
     # ======================================================
     if not input_otp:
         otp = generate_otp()
-        otp_store[user.emp_id] = {
+        # Use lowercase stripped emp_id as store key for consistency
+        key = str(user.emp_id).strip().lower()
+        otp_store[key] = {
             "otp": otp,
             "expires": time.time() + 120  # 2 mins
         }
@@ -627,6 +632,7 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
             "message": "OTP sent",
             "user_id": user.emp_id,
             "otp": otp,  # ⚠️ remove in production
+            "requires_2fa": True,
             "time_left": 120
         }
 
@@ -789,7 +795,7 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         except Exception as fallback_err:
             print(f"Fallback privilege error: {fallback_err}")
 
-        print(f"✅ Built fallback privilege entry")
+        print(f" Built fallback privilege entry")
 
     # ======================================================
     # GUARD: must have at least one privilege entry
@@ -819,6 +825,8 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         "username": user.p_mail,
         "privileges": privileges
     }
+
+
 @app.post("/forgot-password")
 def forgot_password(request: schemas.ForgotPasswordRequest, background_tasks: BackgroundTasks,
                     db: Session = Depends(get_db)):
@@ -932,11 +940,26 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
         handle_db_error(e)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    if not user.auth_key:
-        raise HTTPException(status_code=400, detail="2FA not configured")
-    ok = verify_authenticator_otp_for_user(user, otp_input)
-    if not ok:
-        raise HTTPException(status_code=401, detail="Invalid Authenticator code")
+    # ── Try simple OTP first (from login step 1) ──────────────────────────
+    # Check lowercase key for consistency
+    key = str(user.emp_id).strip().lower()
+    stored = otp_store.get(key)
+    if stored and otp_input == stored.get("otp"):
+        if time.time() < stored.get("expires", 0):
+            print(" 2FA SUCCESS (Simple OTP)")
+            otp_store.pop(key, None) # Clear after use
+        else:
+            raise HTTPException(status_code=400, detail="OTP expired")
+    
+    # ── Fallback to Authenticator App (TOTP) ──────────────────────────────
+    elif user.auth_key:
+        ok = verify_authenticator_otp_for_user(user, otp_input)
+        if not ok:
+            raise HTTPException(status_code=401, detail="Invalid Authenticator code")
+        print(" 2FA SUCCESS (TOTP)")
+    
+    else:
+        raise HTTPException(status_code=400, detail="Invalid code or 2FA not configured")
     print(" 2FA SUCCESS")
     is_global_admin = False
     role_type = "Employee"
