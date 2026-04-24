@@ -3577,4 +3577,180 @@ def get_team_attendance(manager_id: str, start_date: str, end_date: str, db: Ses
         handle_db_error(e)
 
 
+@app.get("/module-privileges/{user_id}")
+def get_module_privileges(user_id: str, db: Session = Depends(get_db)):
+    """Get module privileges for a user with proper privilege mapping"""
+    try:
+        # Get user privileges
+        user = db.query(models.User).filter(models.User.user_id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Module IDs and their corresponding privilege arrays
+        mod_id = [1, 2, 3, 4, 11, 12, 13, 14, 15, 16, 17, 33, 54, 57]
+        
+        # Initialize privilege arrays (0 = no privilege, actual number = has privilege)
+        create_prv = [0] * len(mod_id)
+        read_prv = [0] * len(mod_id)
+        update_prv = [0] * len(mod_id)
+        delete_prv = [0] * len(mod_id)
+        view_prv = [0] * len(mod_id)
+        
+        # Get user's actual privileges from database
+        user_privileges = db.query(models.UserPrivilege).filter(
+            models.UserPrivilege.user_id == user_id
+        ).all()
+        
+        # Map privileges to arrays
+        for priv in user_privileges:
+            try:
+                mod_index = mod_id.index(priv.mod_id)
+                create_prv[mod_index] = 1 if priv.create_prv else 0
+                read_prv[mod_index] = 2 if priv.read_prv else 0
+                update_prv[mod_index] = 3 if priv.update_prv else 0
+                delete_prv[mod_index] = 4 if priv.delete_prv else 0
+                view_prv[mod_index] = 5 if priv.view_prv else 0
+            except ValueError:
+                continue  # Skip if module ID not in our list
+        
+        # Build result array
+        result = []
+        for i in range(len(mod_id)):
+            data = {
+                "mod_id": mod_id[i],
+                "create": create_prv[i],
+                "read": read_prv[i],
+                "update": update_prv[i],
+                "delete": delete_prv[i],
+                "view": view_prv[i]
+            }
+            result.append(data)
+        
+        return {
+            "user_id": user_id,
+            "privileges": result,
+            "total_modules": len(result)
+        }
+        
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/filtered-data/{user_id}")
+def get_filtered_data_by_modules(user_id: str, db: Session = Depends(get_db)):
+    """Get data filtered by user's module privileges"""
+    try:
+        # Get user's module privileges
+        privileges_response = get_module_privileges(user_id, db)
+        privileges = privileges_response["privileges"]
+        
+        # Helper function to check if user has access to a module
+        def has_module_access(mod_id: int) -> bool:
+            for priv in privileges:
+                if priv["mod_id"] == mod_id:
+                    return (priv["create"] > 0 or priv["read"] > 0 or 
+                           priv["update"] > 0 or priv["delete"] > 0 or priv["view"] > 0)
+            return False
+        
+        # Helper function to check specific privilege
+        def has_privilege(mod_id: int, privilege_type: str) -> bool:
+            for priv in privileges:
+                if priv["mod_id"] == mod_id:
+                    return priv.get(privilege_type, 0) > 0
+            return False
+        
+        filtered_data = {
+            "user_id": user_id,
+            "accessible_modules": [],
+            "data": {}
+        }
+        
+        # Check each module and add data if user has access
+        module_mapping = {
+            1: "attendance",
+            2: "leave", 
+            3: "timesheet",
+            4: "permission",
+            11: "employee",
+            12: "leave_admin",
+            13: "timesheet_admin", 
+            14: "permission_admin",
+            15: "attendance_admin",
+            16: "client",
+            17: "project",
+            33: "overtime",
+            54: "wfh_admin",
+            57: "wfh"
+        }
+        
+        for mod_id, module_name in module_mapping.items():
+            if has_module_access(mod_id):
+                filtered_data["accessible_modules"].append({
+                    "mod_id": mod_id,
+                    "module_name": module_name,
+                    "can_create": has_privilege(mod_id, "create"),
+                    "can_read": has_privilege(mod_id, "read"),
+                    "can_update": has_privilege(mod_id, "update"),
+                    "can_delete": has_privilege(mod_id, "delete"),
+                    "can_view": has_privilege(mod_id, "view")
+                })
+                
+                # Add specific data based on module
+                if module_name == "attendance" and has_privilege(mod_id, "read"):
+                    # Get user's attendance data
+                    attendance_data = db.query(models.CheckIn).filter(
+                        models.CheckIn.emp_id == user_id
+                    ).limit(10).all()
+                    filtered_data["data"]["attendance"] = [
+                        {
+                            "date": str(record.t_date),
+                            "in_time": record.in_time,
+                            "out_time": record.out_time,
+                            "total_hours": record.Total_hours,
+                            "status": record.status
+                        } for record in attendance_data
+                    ]
+                
+                elif module_name == "leave" and has_privilege(mod_id, "read"):
+                    # Get user's leave data
+                    leave_data = db.query(models.LeaveRequest).filter(
+                        models.LeaveRequest.emp_id == user_id
+                    ).limit(10).all()
+                    filtered_data["data"]["leave"] = [
+                        {
+                            "leave_id": record.l_id,
+                            "leave_type": record.leave_type,
+                            "from_date": record.from_date,
+                            "to_date": record.to_date,
+                            "days": record.days,
+                            "status": record.status,
+                            "reason": record.reason
+                        } for record in leave_data
+                    ]
+                
+                elif module_name == "permission" and has_privilege(mod_id, "read"):
+                    # Get user's permission data
+                    permission_data = db.query(models.PermissionRequest).filter(
+                        models.PermissionRequest.emp_id == user_id
+                    ).limit(10).all()
+                    filtered_data["data"]["permission"] = [
+                        {
+                            "permission_id": record.p_id,
+                            "date": record.date,
+                            "from_time": record.f_time,
+                            "to_time": record.t_time,
+                            "total_hours": record.total_hours,
+                            "status": record.status,
+                            "reason": record.reason
+                        } for record in permission_data
+                    ]
+        
+        return filtered_data
+        
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 app.include_router(router)
