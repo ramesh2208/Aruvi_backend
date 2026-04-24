@@ -29,20 +29,33 @@ from sqlalchemy import extract
 import sqlalchemy
 import sys
 import os
-# Add current directory to sys.path to fix ModuleNotFoundError for local imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import models, schemas, database
 from database import engine, SessionLocal
 
-# Handle MySQL zero dates "0000-00-00" which cause Pydantic validation errors
 def safe_dt(d):
     if not d: return None
     s = str(d).strip()
     if "0000-00-00" in s: return None
     return d
 
-def parse_privilege_array(s: Optional[str]) -> List[str]:
+# ─── PRIVILEGE HELPERS ────────────────────────────────────────────────────────
+# PHP stores privileges as comma-separated strings in EmpDet:
+#   mod_id    = "1,2,3,4,11,12,13,14,15,16,17,33,54,57"
+#   create_prv= "0,1,1,1,0,1,0,0,1,1,1,0,0,1"
+#   read_prv  = "2,2,2,2,2,2,2,2,2,2,2,2,2,2"
+#   view_prv  = "0,0,0,0,0,5,5,5,0,5,5,5,5,0"  ← this IS view_global
+#
+# CRITICAL RULE: mod_id[i] == X means ALL privilege values at index i
+# belong to module X. PHP checks like:
+#   $mod_id[10] == 11 && $read_prv[10] == 2  → Employee list readable
+#
+# So we must preserve positional index — including blank/zero placeholders.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def parse_privilege_array(s):
+    """Split a comma-separated privilege string into a list of stripped strings."""
     if not s or not isinstance(s, str):
         return []
     s = s.strip()
@@ -50,10 +63,118 @@ def parse_privilege_array(s: Optional[str]) -> List[str]:
         s = s[1:-1]
     return [x.strip() for x in s.split(',')]
 
-# JWT Configuration
+
+def _safe_int(arr, idx):
+    """Return arr[idx] as int, or 0 on any failure."""
+    try:
+        if idx < len(arr) and arr[idx].strip().lstrip('-').isdigit():
+            return int(arr[idx].strip())
+    except Exception:
+        pass
+    return 0
+
+
+def _build_module_based_privileges(user):
+    """
+    Build privileges list for role_type == 'module based'.
+
+    IMPORTANT: blank mod entries get a zero-filled placeholder so that
+    higher positional indices (like 49, 52) remain reachable.
+    The view_prv column IS view_global — same column, both keys returned.
+    """
+    mod_ids     = parse_privilege_array(getattr(user, 'mod_id',     None))
+    create_prvs = parse_privilege_array(getattr(user, 'create_prv', None))
+    read_prvs   = parse_privilege_array(getattr(user, 'read_prv',   None))
+    view_prvs   = parse_privilege_array(getattr(user, 'view_prv',   None))  # = view_global
+    update_prvs = parse_privilege_array(getattr(user, 'update_prv', None))
+    delete_prvs = parse_privilege_array(getattr(user, 'delete_prv', None))
+    admin_prvs  = parse_privilege_array(getattr(user, 'admin_prv',  None))
+    hr_prvs     = parse_privilege_array(getattr(user, 'hr_prv',     None))
+
+    privileges = []
+    for i, mod in enumerate(mod_ids):
+        mod = mod.strip()
+        if not mod:
+            # Keep empty placeholder — positional index must stay intact
+            privileges.append({
+                "mod_id": 0, "create_prv": 0, "read_prv": 0,
+                "view_prv": 0, "update_prv": 0, "delete_prv": 0,
+                "admin_prv": 0, "hr_prv": 0, "view_global": 0,
+                "permissions": None
+            })
+            continue
+
+        mod_int = int(mod) if mod.isdigit() else mod
+        privileges.append({
+            "mod_id":      mod_int,
+            "create_prv":  _safe_int(create_prvs, i),
+            "read_prv":    _safe_int(read_prvs,   i),
+            "view_prv":    _safe_int(view_prvs,   i),
+            "update_prv":  _safe_int(update_prvs,  i),
+            "delete_prv":  _safe_int(delete_prvs,  i),
+            "admin_prv":   _safe_int(admin_prvs,   i),
+            "hr_prv":      _safe_int(hr_prvs,      i),
+            "view_global": _safe_int(view_prvs,    i),  # ← view_prv == view_global
+            "permissions": None
+        })
+
+    return privileges
+
+
+def _build_role_based_privileges(priv_rows):
+    """Build privileges list for rpd_id (role-based) users."""
+    privileges = []
+    for p in priv_rows:
+        privileges.append({
+            "mod_id":      p.mod_id,
+            "create_prv":  p.create_prv  or 0,
+            "read_prv":    p.read_prv    or 0,
+            "view_prv":    p.view_prv    or 0,
+            "update_prv":  p.update_prv  or 0,
+            "delete_prv":  p.delete_prv  or 0,
+            "admin_prv":   p.admin_prv   or 0,
+            "hr_prv":      p.hr_prv      or 0,
+            "view_global": p.view_global or 0,
+            "permissions": p.permissions
+        })
+    return privileges
+
+
+def get_user_privileges(user, db):
+    """
+    Single entry-point: given an EmpDet ORM object return its privileges list.
+    Handles both 'module based' and rpd_id role types.
+    """
+    emp_role_type = (user.role_type or "").strip().lower()
+
+    if emp_role_type in ("module based", "module_based"):
+        print(f" Fetching module-based privileges for {user.emp_id}")
+        privs = _build_module_based_privileges(user)
+        print(f" → {len(privs)} module positions parsed")
+        return privs
+
+    if user.rpd_id:
+        try:
+            print(f" Fetching role-based privileges for {user.emp_id} (rpd_id={user.rpd_id})")
+            priv_rows = (
+                db.query(models.RolePrivilege)
+                .filter(models.RolePrivilege.role_prv_ref_no == str(user.rpd_id))
+                .order_by(models.RolePrivilege.mod_id)
+                .all()
+            )
+            privs = _build_role_based_privileges(priv_rows)
+            print(f" → {len(privs)} role privilege rows found")
+            return privs
+        except Exception as priv_err:
+            print(f" Error fetching privileges: {priv_err}")
+
+    return []
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 SECRET_KEY = "your-secret-key-here-change-in-production"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 1440  # 24 hours
+ACCESS_TOKEN_EXPIRE_MINUTES = 1440
 
 def create_access_token(data: dict):
     try:
@@ -64,38 +185,28 @@ def create_access_token(data: dict):
         return encoded_jwt
     except Exception as e:
         print(f"JWT Token creation error: {e}")
-        # Fallback to simple token if JWT fails
         return f"fallback_token_{datetime.utcnow().timestamp()}"
 
-# ─── DB Error Handler Helper ──────────────────────────────────────────────────
 def handle_db_error(e: Exception):
     err_msg = str(e)
     print(f"❌ DATABASE ERROR: {err_msg}")
-    
-    # Check for IP restriction error (MySQL 1130)
     if "is not allowed to connect" in err_msg or "1130" in err_msg:
         import re
         ip_match = re.search(r"Host '([\d\.]+)' is not allowed", err_msg)
         server_ip = ip_match.group(1) if ip_match else "Unknown"
-        # Try to get the real external IP as well for clarity
         try:
             real_ip = requests.get("https://api.ipify.org?format=json", timeout=1).json().get("ip")
             if real_ip: server_ip = real_ip
         except: pass
-            
         raise HTTPException(
             status_code=503,
             detail=f"IP RESTRICTED: Please whitelist our server IP '{server_ip}' in your GoDaddy Remote MySQL settings. (Error: 1130)"
         )
-    
-    # Specific timeout or connection refused
     if "Connection refused" in err_msg or "Timed out" in err_msg or "timeout" in err_msg.lower():
         raise HTTPException(
             status_code=503,
             detail="Database connection timeout. The server/database is taking too long to respond. Please try again in 30 seconds."
         )
-
-    # Generic DB error
     raise HTTPException(
         status_code=503,
         detail="Database unavailable. The server may be waking up - please wait 30 seconds and try again."
@@ -104,27 +215,19 @@ def handle_db_error(e: Exception):
 
 app = FastAPI()
 
-# ─── DB connection with retry (fixes Render cold start + GoDaddy MySQL) ───────
 def run_migrations_with_retry(max_retries: int = 3, delay: int = 5):
-    """Checks for and adds missing columns automatically — prevents schema downtime."""
- 
     for attempt in range(1, max_retries + 1):
         try:
             print(f"[DB] Migration check (attempt {attempt}/{max_retries})...")
             with engine.begin() as conn:
-                # Add to_date to WFH table if missing
                 try:
                     conn.execute(sqlalchemy.text("ALTER TABLE xxits_aruvi_wfh_det_t ADD COLUMN to_date VARCHAR(20)"))
                     print(" ✅ Migration: Added to_date to xxits_aruvi_wfh_det_t")
                 except: pass
-                
-                # Add revision to Leave table if missing
                 try:
                     conn.execute(sqlalchemy.text("ALTER TABLE xxits_aruvi_emp_leave_t ADD COLUMN revision VARCHAR(10)"))
                     print(" ✅ Migration: Added revision to xxits_aruvi_emp_leave_t")
                 except: pass
-
-                # Add attribute7 to EmpDet for Push Notifications if missing
                 try:
                     conn.execute(sqlalchemy.text("ALTER TABLE xxits_emp_det_t ADD COLUMN attribute7 VARCHAR(255)"))
                     print(" ✅ Migration: Added attribute7 to xxits_emp_det_t")
@@ -136,7 +239,6 @@ def run_migrations_with_retry(max_retries: int = 3, delay: int = 5):
     return False
 
 def create_tables_with_retry(max_retries: int = 5, delay: int = 5):
-    """Retry DB connection on startup — handles Render cold start and GoDaddy MySQL wake-up."""
     for attempt in range(1, max_retries + 1):
         try:
             print(f"[DB] Connecting to database (attempt {attempt}/{max_retries})...")
@@ -151,7 +253,6 @@ def create_tables_with_retry(max_retries: int = 5, delay: int = 5):
                     current_ip = requests.get("https://api.ipify.org?format=json", timeout=2).json().get("ip")
                     print(f"⚠️  IP RESTRICTION DETECTED: Please add '{current_ip}' to GoDaddy Remote MySQL whitelists.")
                 except: pass
-            
             if attempt < max_retries:
                 print(f"   Retrying in {delay}s...")
                 time.sleep(delay)
@@ -161,19 +262,14 @@ def create_tables_with_retry(max_retries: int = 5, delay: int = 5):
 
 @app.on_event("startup")
 def startup_event():
-    """Run DB initialization in background on startup to avoid Render port-binding timeout."""
     import threading
-    
     def init_db():
         if create_tables_with_retry():
             run_migrations_with_retry()
-    
-    # Run in a separate thread so FastAPI can start and listen on port immediately
     thread = threading.Thread(target=init_db)
     thread.setDaemon(True)
     thread.start()
 
-# ─── In-memory OTP storage ────────────────────────────────────────────────────
 otp_store = {}
 
 app.add_middleware(
@@ -185,7 +281,6 @@ app.add_middleware(
 )
 
 
-# ─── Health check (Render ping / cold start detection) ───────────────────────
 @app.get("/")
 def read_root():
     return {"status": "online", "message": "Aruvi Backend is active"}
@@ -193,7 +288,6 @@ def read_root():
 
 @app.get("/health")
 def health_check():
-    """Health check endpoint — also warms up DB connection."""
     try:
         db = SessionLocal()
         db.execute(__import__("sqlalchemy").text("SELECT 1"))
@@ -212,18 +306,14 @@ def get_diag_ip():
         return {"error": str(e)}
 
 
-# ─── DB session with connection retry ─────────────────────────────────────────
 def get_db():
-    """DB dependency with automatic reconnect on stale connections."""
     db = database.SessionLocal()
     try:
-        # Ping to ensure connection is alive (fixes "MySQL server has gone away")
         db.execute(__import__("sqlalchemy").text("SELECT 1"))
         yield db
     except Exception:
         db.rollback()
         db.close()
-        # Re-create session
         db = database.SessionLocal()
         try:
             yield db
@@ -268,12 +358,7 @@ def parse_time_str(t_str: str):
         return None
     t_str = t_str.strip().upper()
     formats = (
-        "%I:%M:%S %p",
-        "%I:%M %p",
-        "%I:%M:%S%p",
-        "%I:%M%p",
-        "%H:%M:%S",
-        "%H:%M",
+        "%I:%M:%S %p", "%I:%M %p", "%I:%M:%S%p", "%I:%M%p", "%H:%M:%S", "%H:%M",
     )
     for fmt in formats:
         try:
@@ -285,10 +370,8 @@ def parse_time_str(t_str: str):
         h_str, m_str, s_str, period = match.groups()
         h, m = int(h_str), int(m_str)
         s = int(s_str) if s_str else 0
-        if period == "PM" and h < 12:
-            h += 12
-        if period == "AM" and h == 12:
-            h = 0
+        if period == "PM" and h < 12: h += 12
+        if period == "AM" and h == 12: h = 0
         try:
             return datetime(1900, 1, 1, h, m, s)
         except ValueError:
@@ -317,32 +400,23 @@ def format_time_safe(t):
 
 
 def auto_calculate_total_hours(emp_id: str, db: Session):
-    """Automatically calculate Total_hours from in_time and out_time and store in check-in table"""
     try:
-        # Get today's check-in record
         today = datetime.now().date()
         checkin_record = db.query(models.CheckIn).filter(
             models.CheckIn.emp_id == emp_id,
             models.CheckIn.t_date == today
         ).first()
-        
         if checkin_record and checkin_record.in_time and checkin_record.out_time:
-            # Parse times
             in_time = datetime.strptime(checkin_record.in_time, "%I:%M:%S")
             out_time = datetime.strptime(checkin_record.out_time, "%I:%M:%S")
-            
-            # Calculate total hours
             delta = out_time - in_time
             total_seconds = int(delta.total_seconds())
             hours = total_seconds // 3600
             minutes = (total_seconds % 3600) // 60
             total_hours_str = f"{hours}h {minutes}m"
-            
-            # Update Total_hours in check-in table
             checkin_record.Total_hours = total_hours_str
             checkin_record.last_update_date = datetime.now()
             db.commit()
-            
             print(f"✅ Auto-calculated Total_hours: {total_hours_str} for {emp_id}")
             return {"message": f"Total_hours auto-calculated: {total_hours_str}"}
         else:
@@ -353,12 +427,12 @@ def auto_calculate_total_hours(emp_id: str, db: Session):
 
 @app.post("/auto-calculate-hours")
 def auto_calculate_hours_endpoint(request: schemas.AutoCalculateHoursRequest, db: Session = Depends(get_db)):
-    """Endpoint to auto-calculate Total_hours from existing check-in record"""
     emp_id = request.emp_id.strip()
     result = auto_calculate_total_hours(emp_id, db)
     return result
 
-# ─── LOGIN ────────────────────────────────────────────────────────────────────────────
+
+# ─── LOGIN ────────────────────────────────────────────────────────────────────
 
 @app.post("/login", response_model=schemas.Token)
 def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
@@ -370,12 +444,9 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         input_pwd = request.password.strip()
         print(f" Username input: {username_input}")
 
-        # Check if database is available
         if not db:
-            print(" Database connection failed")
             raise HTTPException(status_code=500, detail="Database connection failed")
 
-        # Find user
         try:
             user = db.query(models.EmpDet).filter(
                 or_(
@@ -389,34 +460,27 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
             handle_db_error(db_err)
 
         if not user:
-            print(f" User not found for input: {username_input}")
             raise HTTPException(status_code=404, detail="Invalid Username")
 
         print(f" User FOUND: {user.emp_id} ({user.p_mail})")
 
-        # Password validation
         input_md5 = hashlib.md5(input_pwd.encode()).hexdigest()
-        print(f" Input MD5: {input_md5}")
-        print(f" User password: {user.password}")
-        print(f" User attribute15: {user.attribute15}")
-
         password_valid = False
-        
-        # Check password validation
+
         if user.attribute15 and user.attribute15.strip():
             if user.attribute15.lower() == input_md5.lower():
                 password_valid = True
                 print(" Password matched via attribute15 (MD5)")
-        
+
         if not password_valid and user.password and user.password.strip():
             if user.password.lower() == input_md5.lower():
                 password_valid = True
                 print(" Password matched via password field (MD5)")
-        
+
         if not password_valid and user.password == input_pwd:
             password_valid = True
             print(" Password matched via direct comparison")
-        
+
         if not password_valid and user.password and user.attribute15:
             try:
                 AES_KEY = b"1234567890abcdef"
@@ -432,19 +496,15 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
                 print(f" AES decrypt failed: {str(e)}")
 
         if not password_valid:
-            print(" PASSWORD FAILED - No validation method worked")
             raise HTTPException(status_code=401, detail="Invalid Password")
 
         print(" PASSWORD VERIFIED")
 
-        # Generate JWT token
         try:
             access_token = create_access_token(data={"sub": user.emp_id})
         except Exception as token_err:
-            print(f" Token generation error: {token_err}")
             raise HTTPException(status_code=500, detail="Token generation failed")
-        
-        # Get user role
+
         is_global_admin = False
         role_type = "Employee"
         if user.dom_id:
@@ -468,72 +528,8 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         print(f" 2FA: {has_2fa}, Role: {role_type}, Global Admin: {is_global_admin}")
         print("=" * 60)
 
-        # Fetch privileges
-        privileges = []
-        emp_role_type = user.role_type and str(user.role_type).strip().lower()
-
-        if emp_role_type == "module based" or emp_role_type == "module_based":
-            print(f" Fetching module-based privileges for user: {user.emp_id}")
-            try:
-                mod_ids = parse_privilege_array(user.mod_id)
-                create_prvs = parse_privilege_array(user.create_prv)
-                read_prvs = parse_privilege_array(user.read_prv)
-                view_prvs = parse_privilege_array(user.view_prv)
-                update_prvs = parse_privilege_array(user.update_prv)
-                delete_prvs = parse_privilege_array(user.delete_prv)
-                admin_prvs = parse_privilege_array(user.admin_prv)
-                hr_prvs = parse_privilege_array(user.hr_prv)
-                
-                for i in range(len(mod_ids)):
-                    mod = mod_ids[i]
-                    if mod:
-                        def safe_int_val(arr, idx):
-                            if idx < len(arr) and arr[idx]:
-                                try: return int(arr[idx])
-                                except: return 0
-                            return 0
-                        privileges.append({
-                            "mod_id": int(mod) if mod.isdigit() else mod,
-                            "create_prv": safe_int_val(create_prvs, i),
-                            "read_prv": safe_int_val(read_prvs, i),
-                            "view_prv": safe_int_val(view_prvs, i),
-                            "update_prv": safe_int_val(update_prvs, i),
-                            "delete_prv": safe_int_val(delete_prvs, i),
-                            "admin_prv": safe_int_val(admin_prvs, i),
-                            "hr_prv": safe_int_val(hr_prvs, i),
-                            "view_global": safe_int_val(view_prvs, i),
-                            "permissions": None
-                        })
-                print(f" Found {len(privileges)} module-based privilege records for module_based role")
-            except Exception as priv_err:
-                print(f" Error parsing module based config: {priv_err}")
-                
-        elif user.rpd_id:
-            try:
-                print(f" Fetching privileges for rpd_id: {user.rpd_id}")
-                # Fetch all privileges associated with this user's privilege group
-                priv_rows = db.query(models.RolePrivilege).filter(
-                    models.RolePrivilege.role_prv_ref_no == str(user.rpd_id)
-                ).all()
-                
-                for p in priv_rows:
-                    privileges.append({
-                        "mod_id": p.mod_id,
-                        "create_prv": p.create_prv,
-                        "read_prv": p.read_prv,
-                        "view_prv": p.view_prv,
-                        "update_prv": p.update_prv,
-                        "delete_prv": p.delete_prv,
-                        "admin_prv": p.admin_prv,
-                        "hr_prv": p.hr_prv,
-                        "view_global": p.view_global,
-                        "permissions": p.permissions
-                    })
-                print(f" Found {len(privileges)} role-based privilege records")
-            except Exception as priv_err:
-                print(f" Error fetching privileges: {priv_err}")
-                # Don't fail login just because privileges failed to fetch
-                pass
+        # ── FIXED: single call replaces the old duplicated 40-line block ──
+        privileges = get_user_privileges(user, db)
 
         return {
             "access_token": access_token,
@@ -546,7 +542,7 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
             "requires_2fa": has_2fa,
             "privileges": privileges
         }
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -568,7 +564,6 @@ def forgot_password(request: schemas.ForgotPasswordRequest, background_tasks: Ba
     otp = ''.join(random.choices(string.digits, k=6))
     otp_store[email] = {"otp": otp, "expires_at": datetime.now() + timedelta(minutes=5)}
     print(f" Generated OTP: {otp}")
-
     content = f"""
     <p>We received a request to change the password for your account.</p>
     <p>To complete this process, please use the One-Time Password (OTP) provided below:</p>
@@ -673,6 +668,7 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
     if not ok:
         raise HTTPException(status_code=401, detail="Invalid Authenticator code")
     print(" 2FA SUCCESS")
+
     is_global_admin = False
     role_type = "Employee"
     if user.dom_id:
@@ -691,64 +687,9 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
     if is_manager and role_type != "Admin":
         role_type = "Admin"
 
-    # Fetch privileges
-    privileges = []
-    emp_role_type = user.role_type and str(user.role_type).strip().lower()
+    # ── FIXED: single call replaces the old duplicated block ──
+    privileges = get_user_privileges(user, db)
 
-    if emp_role_type == "module based" or emp_role_type == "module_based":
-        try:
-            mod_ids = parse_privilege_array(user.mod_id)
-            create_prvs = parse_privilege_array(user.create_prv)
-            read_prvs = parse_privilege_array(user.read_prv)
-            view_prvs = parse_privilege_array(user.view_prv)
-            update_prvs = parse_privilege_array(user.update_prv)
-            delete_prvs = parse_privilege_array(user.delete_prv)
-            admin_prvs = parse_privilege_array(user.admin_prv)
-            hr_prvs = parse_privilege_array(user.hr_prv)
-            
-            for i in range(len(mod_ids)):
-                mod = mod_ids[i]
-                if mod:
-                    def safe_int_val(arr, idx):
-                        if idx < len(arr) and arr[idx]:
-                            try: return int(arr[idx])
-                            except: return 0
-                        return 0
-                    privileges.append({
-                        "mod_id": int(mod) if mod.isdigit() else mod,
-                        "create_prv": safe_int_val(create_prvs, i),
-                        "read_prv": safe_int_val(read_prvs, i),
-                        "view_prv": safe_int_val(view_prvs, i),
-                        "update_prv": safe_int_val(update_prvs, i),
-                        "delete_prv": safe_int_val(delete_prvs, i),
-                        "admin_prv": safe_int_val(admin_prvs, i),
-                        "hr_prv": safe_int_val(hr_prvs, i),
-                        "view_global": safe_int_val(view_prvs, i),
-                        "permissions": None
-                    })
-        except:
-            pass
-            
-    elif user.rpd_id:
-        try:
-            priv_rows = db.query(models.RolePrivilege).filter(
-                models.RolePrivilege.role_prv_ref_no == str(user.rpd_id)
-            ).all()
-            for p in priv_rows:
-                privileges.append({
-                    "mod_id": p.mod_id,
-                    "create_prv": p.create_prv,
-                    "read_prv": p.read_prv,
-                    "view_prv": p.view_prv,
-                    "update_prv": p.update_prv,
-                    "delete_prv": p.delete_prv,
-                    "admin_prv": p.admin_prv,
-                    "hr_prv": p.hr_prv,
-                    "view_global": p.view_global,
-                    "permissions": p.permissions
-                })
-        except:
-            pass
     return {
         "access_token": "REAL_TOKEN_HERE",
         "token_type": "bearer",
@@ -832,74 +773,29 @@ def get_employees(manager_id: Optional[str] = None, db: Session = Depends(get_db
     return results
 
 
+# ─── SYNC PRIVILEGES ─────────────────────────────────────────────────────────
+# Single clean endpoint — no duplicates, correct view_global from view_prv
+# ─────────────────────────────────────────────────────────────────────────────
 @app.get("/sync-privileges/{emp_id}")
 def sync_privileges(emp_id: str, db: Session = Depends(get_db)):
+    """
+    Returns current privileges for an employee, parsed in the same
+    positional order as PHP's session arrays. Called by the React Native
+    app on pull-to-refresh to keep sidebar/tab visibility in sync.
+    """
     emp_id = emp_id.strip()
     try:
-        user = db.query(models.EmpDet).filter(
-            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()).first()
+        user = (
+            db.query(models.EmpDet)
+            .filter(func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower())
+            .first()
+        )
         if not user:
             raise HTTPException(status_code=404, detail="Employee not found")
 
-        # Reuse same privilege parsing logic
-        privileges = []
-        emp_role_type = user.role_type and str(user.role_type).strip().lower()
-
-        if emp_role_type == "module based" or emp_role_type == "module_based":
-            try:
-                mod_ids = user.mod_id.split(',') if user.mod_id else []
-                create_prvs = user.create_prv.split(',') if user.create_prv else []
-                read_prvs = user.read_prv.split(',') if user.read_prv else []
-                view_prvs = getattr(user, 'view_prv', '').split(',') if getattr(user, 'view_prv', None) else []
-                update_prvs = user.update_prv.split(',') if user.update_prv else []
-                delete_prvs = user.delete_prv.split(',') if user.delete_prv else []
-                admin_prvs = user.admin_prv.split(',') if user.admin_prv else []
-                hr_prvs = user.hr_prv.split(',') if user.hr_prv else []
-                
-                def safe_prv(arr, idx):
-                    if idx < len(arr) and arr[idx].strip().isdigit():
-                        return int(arr[idx].strip())
-                    return 0
-
-                for i, mod in enumerate(mod_ids):
-                    if mod.strip():
-                        privileges.append({
-                            "mod_id": int(mod.strip()) if mod.strip().isdigit() else mod.strip(),
-                            "create_prv": safe_prv(create_prvs, i),
-                            "read_prv": safe_prv(read_prvs, i),
-                            "view_prv": safe_prv(view_prvs, i),
-                            "update_prv": safe_prv(update_prvs, i),
-                            "delete_prv": safe_prv(delete_prvs, i),
-                            "admin_prv": safe_prv(admin_prvs, i),
-                            "hr_prv": safe_prv(hr_prvs, i),
-                            "view_global": 0,
-                            "permissions": None
-                        })
-            except Exception as e:
-                print(f"Error parsing module privileges: {e}")
-                
-        elif user.rpd_id:
-            try:
-                priv_rows = db.query(models.RolePrivilege).filter(
-                    models.RolePrivilege.role_prv_ref_no == str(user.rpd_id)
-                ).all()
-                for p in priv_rows:
-                    privileges.append({
-                        "mod_id": p.mod_id,
-                        "create_prv": p.create_prv,
-                        "read_prv": p.read_prv,
-                        "view_prv": p.view_prv,
-                        "update_prv": p.update_prv,
-                        "delete_prv": p.delete_prv,
-                        "admin_prv": p.admin_prv,
-                        "hr_prv": p.hr_prv,
-                        "view_global": p.view_global,
-                        "permissions": p.permissions
-                    })
-            except Exception as e:
-                print(f"Error fetching role privileges: {e}")
-
+        privileges = get_user_privileges(user, db)
         return {"privileges": privileges}
+
     except HTTPException:
         raise
     except Exception as e:
@@ -994,19 +890,11 @@ def check_in(request: schemas.CheckInRequest, db: Session = Depends(get_db)):
         ).first()
         if existing:
             return {"message": "Already checked in today", "id": existing.check_in_id}
-        
         new_checkin = models.CheckIn(
-            emp_id=emp_id,
-            in_time=request.in_time,
-            t_date=today_date,
-            t_day=now.strftime("%A"),
-            month=now.strftime("%B"),
-            status="P",
-            Total_hours="0Hr 0Min",
-            created_by=emp_id,
-            creation_date=now,
-            last_updated_by=emp_id,
-            last_update_date=now
+            emp_id=emp_id, in_time=request.in_time, t_date=today_date,
+            t_day=now.strftime("%A"), month=now.strftime("%B"), status="P",
+            Total_hours="0Hr 0Min", created_by=emp_id, creation_date=now,
+            last_updated_by=emp_id, last_update_date=now
         )
         db.add(new_checkin)
         db.commit()
@@ -1023,7 +911,6 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
     now = datetime.now()
     today_date = now.date()
 
-    # ✅ Check-in record fetch
     try:
         checkin_record = db.query(models.CheckIn).filter(
             models.CheckIn.emp_id == emp_id,
@@ -1036,7 +923,6 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="No check-in found for today")
 
     try:
-        # ✅ in_time DB-ல இருந்து எடுக்கும்
         raw_in_time = (checkin_record.in_time or "").strip()
         raw_out_time = (request.out_time or "").strip()
 
@@ -1044,18 +930,15 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         print(f"DEBUG out_time from request: '{raw_out_time}'")
 
         if not raw_in_time:
-            # Fallback
             checkin_record.in_time = raw_out_time
             raw_in_time = raw_out_time
 
-        # ✅ Robust time parsing
         t1 = parse_time_str(raw_in_time)
         t2 = parse_time_str(raw_out_time)
 
         if not t1 or not t2:
             raise ValueError(f"Could not parse times: in={raw_in_time}, out={raw_out_time}")
 
-        # ✅ Grace period calculations
         grace_start_time = parse_time_str("09:30:00")
         grace_end_time   = parse_time_str("10:00:00")
         checkout_grace_start = parse_time_str("18:30:00")
@@ -1071,19 +954,15 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         else:
             checkin_record.out_time = raw_out_time
 
-        # ✅ Total hours calculation
         delta = t2 - t1
         total_seconds = int(delta.total_seconds())
         if total_seconds < 0: total_seconds += 24 * 3600
-        
         hours   = total_seconds // 3600
         minutes = (total_seconds % 3600) // 60
-        
-        # Priority to frontend if provided, but ALWAYS update total_hours_float
+
         if request.total_hours and request.total_hours not in ["0Hr 0Min", "0Hr 00Min"]:
             calculated_total_hours = request.total_hours
             try:
-                # Expected format "XHr YMin"
                 h_str = calculated_total_hours.split('Hr')[0].strip()
                 m_str = calculated_total_hours.split('Hr')[1].split('Min')[0].strip()
                 total_hours_float = int(h_str) + (int(m_str) / 60)
@@ -1093,22 +972,16 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
             calculated_total_hours = f"{hours}Hr {minutes:02d}Min"
             total_hours_float = hours + (minutes / 60)
 
-        # ✅ Persist to DB
         checkin_record.Total_hours      = calculated_total_hours
         checkin_record.last_update_date = now
         checkin_record.last_updated_by  = emp_id
-        
         db.add(checkin_record)
         print(f"DEBUG: Processing {emp_id} - {calculated_total_hours} (float: {total_hours_float})")
 
-        # ✅ Automatic Leave/LOP Deduction Policy
         days_to_deduct = 0.0
         new_status = "P"
         leave_reason = ""
 
-        print(f"DEBUG: Processing logic for {emp_id} with hours: {total_hours_float}")
-
-        # Determine deduction requirements based on worked hours
         if total_hours_float < 4.0:
             days_to_deduct = 1.0
             new_status = "CL"
@@ -1122,7 +995,6 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
             days_to_deduct = 0.0
 
         if days_to_deduct > 0:
-            # Check for Casual Leave (CL) balance - support both 'Casual' and 'CL' terms
             cl_balance = db.query(models.LeaveDet).filter(
                 models.LeaveDet.emp_id == emp_id,
                 or_(
@@ -1133,10 +1005,8 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
 
             actual_leave_type = "Casual Leave"
             l_det_id_val = None
-            
-            # Determine if we use CL or LOP
+
             if cl_balance and float(cl_balance.available_leave or 0) >= days_to_deduct:
-                # Deduct from CL balance
                 cl_balance.available_leave = float(cl_balance.available_leave) - days_to_deduct
                 cl_balance.availed_leave   = float(cl_balance.availed_leave or 0) + days_to_deduct
                 cl_balance.last_update_date = now
@@ -1146,46 +1016,30 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
                 l_det_id_val = cl_balance.l_det_id
                 checkin_record.status = new_status
             else:
-                # No CL balance -> Mark as LOP/0.5LOP and record as "Loss of Pay"
                 checkin_record.status = "LOP" if days_to_deduct == 1.0 else "0.5LOP"
                 actual_leave_type = "Loss of Pay"
                 print(f"⚠️ Status updated to {checkin_record.status} (No CL balance) for {emp_id}")
 
-            # Record in EmpLeave (Leave History Tracking) for both CL and LOP
             new_leave = models.EmpLeave(
-                l_det_id     = l_det_id_val,
-                emp_id       = emp_id,
-                leave_type   = actual_leave_type,
-                from_date    = today_date.strftime("%d-%b-%Y"),
-                to_date      = today_date.strftime("%d-%b-%Y"),
-                days         = str(days_to_deduct),
-                reason       = leave_reason,
-                status       = "Approved",
-                applied_date = now.strftime("%d-%b-%Y"),
-                # Exhaustive field list
+                l_det_id=l_det_id_val, emp_id=emp_id, leave_type=actual_leave_type,
+                from_date=today_date.strftime("%d-%b-%Y"), to_date=today_date.strftime("%d-%b-%Y"),
+                days=str(days_to_deduct), reason=leave_reason, status="Approved",
+                applied_date=now.strftime("%d-%b-%Y"),
                 mail_message_id="", hr_action="", hr_approval="", admin_approval="",
-                lop_days=str(days_to_deduct) if "LOP" in checkin_record.status else "0", 
-                remarks="Auto-generated on check-out", 
-                approved_by="System", 
-                reporting_manager="", 
-                approver="", 
-                revision="0",
-                attribute_category="AUTO", 
-                attribute1=str(days_to_deduct),
-                attribute2="", attribute3="", attribute4="", attribute5="", 
+                lop_days=str(days_to_deduct) if "LOP" in checkin_record.status else "0",
+                remarks="Auto-generated on check-out", approved_by="System",
+                reporting_manager="", approver="", revision="0",
+                attribute_category="AUTO", attribute1=str(days_to_deduct),
+                attribute2="", attribute3="", attribute4="", attribute5="",
                 attribute6="", attribute7="", attribute8="", attribute9="",
                 attribute10="", attribute11="", attribute12="", attribute13="",
-                attribute14="",
-                file="",
-                created_by        = emp_id,
-                creation_date     = now,
-                last_updated_by   = emp_id,
-                last_update_date  = now
+                attribute14="", file="",
+                created_by=emp_id, creation_date=now,
+                last_updated_by=emp_id, last_update_date=now
             )
             db.add(new_leave)
             print(f"✅ Leave history record ({actual_leave_type} - {days_to_deduct} days) created for {emp_id}")
         else:
-            # Enough hours worked (> 6 hours)
             checkin_record.status = "P"
             print(f"ℹ️ Status remained P (Worked {total_hours_float} hrs) for {emp_id}")
 
@@ -1196,7 +1050,6 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         print(f"❌ Check-out Error: {str(e)}")
-        # Final attempt to save basic info
         try:
             checkin_record.out_time = request.out_time
             if request.total_hours:
@@ -1226,7 +1079,6 @@ def get_check_status(emp_id: str, db: Session = Depends(get_db)):
         ).order_by(models.CheckIn.check_in_id.desc()).first()
     except Exception as e:
         handle_db_error(e)
-
     if record:
         return {
             "checked_in"  : True,
@@ -1268,17 +1120,9 @@ def get_leave_stats(emp_id: str, db: Session = Depends(get_db)):
         "sickLeave": {"total": 0, "availed": 0},
         "maternityPaternity": {"total": 0, "availed": 0},
         "marriageLeave": {"total": 5, "availed": 0},
-        "total": 0,
-        "availed": 0
+        "total": 0, "availed": 0
     }
-
-    cl_total: float = 0.0
-    sl_total: float = 0.0
-    mp_total: float = 0.0
-    cl_availed: float = 0.0
-    sl_availed: float = 0.0
-    mp_availed: float = 0.0
-
+    cl_total = sl_total = mp_total = cl_availed = sl_availed = mp_availed = 0.0
     for row in leave_rows:
         l_type = (row.leave_type or "").lower()
         try:
@@ -1286,23 +1130,17 @@ def get_leave_stats(emp_id: str, db: Session = Depends(get_db)):
             a_val = float(row.availed_leave or 0)
         except:
             t_val, a_val = 0.0, 0.0
-
         if 'casual' in l_type or l_type == 'cl':
-            cl_total = t_val
-            cl_availed = a_val
+            cl_total = t_val; cl_availed = a_val
         elif 'sick' in l_type or l_type == 'sl':
-            sl_total = t_val
-            sl_availed = a_val
+            sl_total = t_val; sl_availed = a_val
         elif 'maternity' in l_type or 'paternity' in l_type or l_type in ['ml', 'pl']:
-            mp_total = t_val
-            mp_availed = a_val
-
+            mp_total = t_val; mp_availed = a_val
     stats["casualLeave"] = {"total": cl_total, "availed": cl_availed}
     stats["sickLeave"] = {"total": sl_total, "availed": sl_availed}
     stats["maternityPaternity"] = {"total": mp_total, "availed": mp_availed}
     stats["total"] = cl_total + sl_total + mp_total
     stats["availed"] = cl_availed + sl_availed + mp_availed
-
     return {**stats, "has_record": len(leave_rows) > 0}
 
 
@@ -1316,14 +1154,8 @@ def get_wfh_history(emp_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         handle_db_error(e)
     return [
-        {
-            "wfh_id": row.wfh_id,
-            "from_date": row.from_date,
-            "to_date": row.to_date,
-            "days": row.days,
-            "reason": row.reason,
-            "status": row.status
-        }
+        {"wfh_id": row.wfh_id, "from_date": row.from_date, "to_date": row.to_date,
+         "days": row.days, "reason": row.reason, "status": row.status}
         for row in history
     ]
 
@@ -1338,18 +1170,9 @@ def get_leave_history(emp_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         handle_db_error(e)
     return [
-        {
-            "l_id": row.l_id,
-            "leaveType": row.leave_type,
-            "leave_type": row.leave_type,
-            "from_date": row.from_date,
-            "to_date": row.to_date,
-            "days": row.days,
-            "reason": row.reason,
-            "status": row.status,
-            "remarks": row.remarks,
-            "revision": row.revision
-        }
+        {"l_id": row.l_id, "leaveType": row.leave_type, "leave_type": row.leave_type,
+         "from_date": row.from_date, "to_date": row.to_date, "days": row.days,
+         "reason": row.reason, "status": row.status, "remarks": row.remarks, "revision": row.revision}
         for row in history
     ]
 
@@ -1358,22 +1181,10 @@ def send_email_notification(to_email: str, subject: str, body_html: str):
     if not to_email:
         print(" Email_id notification skipped: No recipient email provided")
         return False
-
     url = "https://devbms.ilantechsolutions.com/attendance/send-mail/"
     api_key = "my_secret_key_123"
-
-    payload = {
-        "to_email": to_email,
-        "subject": subject,
-        "body": body_html,
-        "content_type": "text/html",
-    }
-
-    headers = {
-        "x-api-key": api_key,
-        "Content-Type": "application/json"
-    }
-
+    payload = {"to_email": to_email, "subject": subject, "body": body_html, "content_type": "text/html"}
+    headers = {"x-api-key": api_key, "Content-Type": "application/json"}
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=15)
         if response.status_code in [200, 201]:
@@ -1388,28 +1199,17 @@ def send_email_notification(to_email: str, subject: str, body_html: str):
 
 
 def send_expo_push_notification(tokens, title, message, data=None):
-    """Dispatches notifications via Expo's push gateway."""
     url = "https://exp.host/--/api/v2/push/send"
     print(f"\n🔔 [EXPO PUSH] PREPARING TO SEND:")
     print(f"   Tokens: {tokens}")
     print(f"   Title: {title}")
-    
     payloads = []
     for token in tokens:
         if token and str(token).strip().startswith("ExponentPushToken"):
-            payload = {
-                "to": token.strip(),
-                "title": title,
-                "body": message,
-                "data": data or {},
-                "sound": "default"
-            }
-            payloads.append(payload)
-    
+            payloads.append({"to": token.strip(), "title": title, "body": message, "data": data or {}, "sound": "default"})
     if not payloads:
         print("   ⚠️ [EXPO PUSH] ABORTED: No valid ExponentPushTokens found.")
         return
-
     try:
         response = requests.post(url, json=payloads, headers={"Accept": "application/json"}, timeout=10)
         print(f"   [EXPO PUSH] RESPONSE CODE: {response.status_code}")
@@ -1423,23 +1223,17 @@ def send_expo_push_notification(tokens, title, message, data=None):
 
 @app.post("/register-push-token")
 def register_push_token(req: schemas.PushTokenRegisterRequest, db: Session = Depends(get_db)):
-    emp_id = req.user_id.strip().upper() # Use UPPER for matching EmpDet PK
+    emp_id = req.user_id.strip().upper()
     print(f"\n📥 [PUSH] REGISTER TOKEN REQUEST for: {emp_id}")
     print(f"   Token: {req.push_token[:30]}...")
-
-    # Case-insensitive robust match
     user = db.query(models.EmpDet).filter(
         func.lower(func.trim(models.EmpDet.emp_id)) == req.user_id.strip().lower()
     ).first()
-
     if not user:
-        print(f"❌ [PUSH] USER NOT FOUND: {emp_id}")
         raise HTTPException(status_code=404, detail=f"User {emp_id} not found")
-
     print(f"✅ [PUSH] USER FOUND: {user.name}")
     user.attribute7 = req.push_token
     user.last_update_date = datetime.now()
-    
     try:
         db.commit()
         db.refresh(user)
@@ -1447,13 +1241,11 @@ def register_push_token(req: schemas.PushTokenRegisterRequest, db: Session = Dep
         return {"message": "Push token registered successfully", "user_id": user.emp_id}
     except Exception as e:
         db.rollback()
-        print(f"❌ [PUSH] SAVE FAILED: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to save token to database")
 
 
 @app.post("/test-push")
 def test_push(req: schemas.PushTokenRegisterRequest, db: Session = Depends(get_db)):
-    """A hidden endpoint to manually trigger a push notification for testing."""
     send_expo_push_notification([req.push_token], "Aruvi Test Notification", "If you see this, push notifications are working perfectly!")
     return {"message": "Test push triggered"}
 
@@ -1461,24 +1253,17 @@ def test_push(req: schemas.PushTokenRegisterRequest, db: Session = Depends(get_d
 def get_approvers(db: Session, user: models.EmpDet):
     approvers = []
     approver_ids = set()
-
-    # 1. Assign Manager
     if user.assign_manager:
         m = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == user.assign_manager.strip().lower()).first()
         if m and m.emp_id not in approver_ids:
             approvers.append({"email": m.p_mail, "name": m.name, "token": m.attribute7})
             approver_ids.add(m.emp_id)
-
-    # 2. Project Manager
     if user.project_manager:
         pm = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == user.project_manager.strip().lower()).first()
         if pm and pm.emp_id not in approver_ids:
             approvers.append({"email": pm.p_mail, "name": pm.name, "token": pm.attribute7})
             approver_ids.add(pm.emp_id)
-
-    # 3. Admins / Management
     try:
-        # We manually filter because dom_id is a String in EmpDet but Integer in Domain
         all_doms = db.query(models.Domain).filter(
             or_(
                 func.lower(models.Domain.domain).contains("admin"),
@@ -1487,7 +1272,6 @@ def get_approvers(db: Session, user: models.EmpDet):
             )
         ).all()
         dom_ids = [str(d.dom_id) for d in all_doms]
-        
         if dom_ids:
             management_users = db.query(models.EmpDet).filter(models.EmpDet.dom_id.in_(dom_ids)).all()
             for m_user in management_users:
@@ -1496,7 +1280,6 @@ def get_approvers(db: Session, user: models.EmpDet):
                     approver_ids.add(m_user.emp_id)
     except Exception as e:
         print(f" Error fetching management users for notification: {e}")
-
     return approvers
 
 
@@ -1559,10 +1342,9 @@ async def apply_leave(
 
     if not user:
         raise HTTPException(status_code=404, detail=f"Employee with ID {emp_id} not found in the system.")
-        
+
     if half_day_date and days % 1 != 0:
         reason += f" [Half Day Date: {half_day_date}]"
-
 
     emp_name = user.name if user else 'Unknown'
     normalized_leave_type = (leave_type or "").strip().lower()
@@ -1576,21 +1358,17 @@ async def apply_leave(
     if attachments:
         upload_dir = "uploads/leave_attachments"
         os.makedirs(upload_dir, exist_ok=True)
-
         for i, file in enumerate(attachments):
-            if not file.filename:
-                continue
+            if not file.filename: continue
             file_extension = file.filename.split('.')[-1]
             file_name = f"{emp_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{i}.{file_extension}"
             file_path = os.path.join(upload_dir, file_name)
             with open(file_path, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
-            db_path = f"uploads/leave_attachments/{file_name}"
-            attachment_paths.append(db_path)
+            attachment_paths.append(f"uploads/leave_attachments/{file_name}")
 
     attr14_paths = ",".join(attachment_paths) if attachment_paths else None
     primary_attachment_path = attachment_paths[0] if attachment_paths else None
-
     lop_days_val = 0.0
     cl_days_to_deduct = requested_days
 
@@ -1604,7 +1382,6 @@ async def apply_leave(
         if requested_days <= 0:
             raise HTTPException(status_code=400, detail="Invalid leave days")
 
-        # Check for overlapping leave requests
         existing_leaves = db.query(models.EmpLeave).filter(
             func.lower(func.trim(models.EmpLeave.emp_id)) == emp_id.lower(),
             func.lower(func.trim(models.EmpLeave.status)).in_(["pending", "approved"])
@@ -1621,7 +1398,6 @@ async def apply_leave(
                     detail=f"You have already applied for {existing_type} on these dates ({row.from_date} to {row.to_date}). Please check your leave history."
                 )
 
-        # ─ 1. Fetch Balance Row Early ──────────────────────────────────────────
         l_type_lower = leave_type.lower()
         balance_row = None
         if 'casual' in l_type_lower or 'cl' == l_type_lower:
@@ -1646,20 +1422,16 @@ async def apply_leave(
                 func.lower(func.trim(models.LeaveDet.emp_id)) == emp_id.strip().lower(),
                 func.lower(func.trim(models.LeaveDet.leave_type)).contains(search_key)
             ).first()
-        
+
         print(f"DEBUG: balance_row found? {'Yes' if balance_row else 'No'} key={search_key}")
-        sl_available = float(balance_row.available_leave or 0) if balance_row else 0.0
-        
-        # ─ 2. Calculate LOP based on Policy & Balance ───────────────────────
+
         lop_days_val = 0.0
         cl_days_to_deduct = requested_days
 
-        # Rule A: Casual Leave monthly limit (3 days max)
         if normalized_leave_type == "casual leave":
             month_usage: dict[str, float] = {}
             for row in existing_leaves:
-                if (row.leave_type or "").strip().lower() != "casual leave":
-                    continue
+                if (row.leave_type or "").strip().lower() != "casual leave": continue
                 row_from = parse_date(row.from_date)
                 row_to = parse_date(row.to_date) if row.to_date else row_from
                 if row_from and row_to:
@@ -1686,13 +1458,12 @@ async def apply_leave(
                 if used_value + req_value > 3.0:
                     excess = (used_value + req_value) - 3.0
                     if excess > max_excess: max_excess = excess
-            
+
             if max_excess > 0:
                 policy_lop = min(requested_days, max_excess)
                 cl_days_to_deduct = requested_days - policy_lop
                 lop_days_val = policy_lop
 
-        # Rule B: Overall Balance Check (Applies to ALl types with balance)
         if balance_row:
             avail = float(balance_row.available_leave or 0)
             print(f"DEBUG: checking balance: req_deduct={cl_days_to_deduct}, avail={avail}")
@@ -1701,45 +1472,34 @@ async def apply_leave(
                 lop_days_val += extra_lop
                 cl_days_to_deduct = avail
         else:
-            # No balance row found for this type? Entirely LOP
             print(f"DEBUG: No balance_row for {leave_type}, forcing LOP")
             lop_days_val = requested_days
             cl_days_to_deduct = 0.0
 
-        # Rounded values for safety
         from decimal import Decimal, ROUND_HALF_UP
         _twodp = Decimal('0.01')
         cl_days_to_deduct = float(Decimal(str(cl_days_to_deduct)).quantize(_twodp, rounding=ROUND_HALF_UP))
         lop_days_val = float(Decimal(str(lop_days_val)).quantize(_twodp, rounding=ROUND_HALF_UP))
 
-        # ─ 3. Final Persistence ───────────────────────────────────────────
         det_id = balance_row.l_det_id if balance_row else None
-        
+
         new_leave = models.EmpLeave(
-            l_det_id=det_id,
-            emp_id=emp_id.strip(),
-            leave_type=leave_type,
-            from_date=req_from.strftime('%d-%b-%Y'),
-            to_date=req_to.strftime('%d-%b-%Y'),
-            days=fmt_days(cl_days_to_deduct),
-            reason=reason,
-            status=status,
-            file=primary_attachment_path,
-            attribute14=attr14_paths,
+            l_det_id=det_id, emp_id=emp_id.strip(), leave_type=leave_type,
+            from_date=req_from.strftime('%d-%b-%Y'), to_date=req_to.strftime('%d-%b-%Y'),
+            days=fmt_days(cl_days_to_deduct), reason=reason, status=status,
+            file=primary_attachment_path, attribute14=attr14_paths,
             applied_date=datetime.now().strftime('%d-%b-%Y'),
             mail_message_id="", hr_action="", hr_approval="", admin_approval="",
-            lop_days=fmt_days(lop_days_val),
-            remarks="", approved_by="", 
-            reporting_manager=(user.assign_manager.strip() if user.assign_manager else "") if user else "", 
-            approver=(user.project_manager.strip() if user.project_manager else "") if user else "", 
-            revision="0",
-            attribute_category=None, attribute1=None, # No longer storing requested_days here as per user request
+            lop_days=fmt_days(lop_days_val), remarks="", approved_by="",
+            reporting_manager=(user.assign_manager.strip() if user.assign_manager else "") if user else "",
+            approver=(user.project_manager.strip() if user.project_manager else "") if user else "",
+            revision="0", attribute_category=None, attribute1=None,
             attribute2="", attribute3="", attribute4="", attribute5="",
             last_update_login="", created_by=emp_id.strip(), creation_date=datetime.now(),
             last_updated_by=emp_id.strip(), last_update_date=datetime.now()
         )
         db.add(new_leave)
-        db.flush() # Get the new_leave.l_id if needed
+        db.flush()
 
         if balance_row and cl_days_to_deduct > 0:
             try:
@@ -1750,15 +1510,13 @@ async def apply_leave(
             except Exception as balance_err:
                 print(f"❌ Error updating balance: {balance_err}")
                 db.rollback()
-        
-        # Send notifications
+
         try:
             if user:
                 approvers = get_approvers(db, user)
                 day_text = "Day" if float(requested_days) == 1.0 else "Days"
                 summary_msg = f"{fmt_days(cl_days_to_deduct)} CL / {fmt_days(lop_days_val)} LOP" if lop_days_val > 0 else f"{fmt_days(requested_days)} {day_text}"
                 subject = f"ITS - {emp_name} - {leave_type} Request | {from_date} ({summary_msg})"
-                
                 for appr in approvers:
                     if appr["email"]:
                         content = f"""
@@ -1770,24 +1528,16 @@ async def apply_leave(
                         """
                         body = get_email_template(appr["name"], "Leave Request", content, emp_name)
                         background_tasks.add_task(send_email_notification, appr["email"], subject, body)
-                    
                     if appr["token"]:
-                        p_title = "New Leave Request"
-                        p_msg = f"{emp_name} has requested {leave_type} from {from_date} to {to_date}."
-                        background_tasks.add_task(send_expo_push_notification, [appr["token"]], p_title, p_msg)
+                        background_tasks.add_task(send_expo_push_notification, [appr["token"]],
+                            "New Leave Request", f"{emp_name} has requested {leave_type} from {from_date} to {to_date}.")
         except Exception as mail_err:
             print(f"❌ Error sending notifications: {mail_err}")
-        
+
         print(f"✅ Leave request submitted successfully for {emp_id}")
-        print(f"   Leave ID: {new_leave.l_id}")
-        print(f"   Leave Type: {leave_type}")
-        print(f"   Days: {fmt_days(cl_days_to_deduct)}")
-        print(f"   LOP Days: {fmt_days(lop_days_val)}")
-        
         return {"message": "Leave request submitted successfully", "leave_id": new_leave.l_id}
-    
+
     except HTTPException as http_err:
-        print(f"❌ HTTP Error in leave application: {http_err}")
         db.rollback()
         raise http_err
     except Exception as e:
@@ -1795,8 +1545,6 @@ async def apply_leave(
         traceback.print_exc()
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Leave application failed: {str(e)}")
-
-    return {"message": "Leave request submitted successfully", "leave_id": new_leave.l_id}
 
 
 @app.post("/send-leave-notification")
@@ -1810,61 +1558,24 @@ def send_leave_notification(notification: dict, db: Session = Depends(get_db)):
         days = notification.get("days", 0)
         is_half_day = notification.get("is_half_day", False)
         status = notification.get("status", "Pending")
-
         try:
             user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == emp_id).first()
             if not user:
                 return {"message": "Employee not found"}
-
             approvers = get_approvers(db, user)
             if not approvers:
                 return {"message": "No approvers found for this employee"}
-
             subject = f"Leave Request: {emp_name} - {leave_type} ({from_date} to {to_date})"
-            content = f"""
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0;">
-                    <h1 style="margin: 0; font-size: 24px;">Leave Request Notification</h1>
-                    <p style="margin: 10px 0 0 0; opacity: 0.9;">New leave application received</p>
-                </div>
-                <div style="background: #f8f9fa; padding: 30px; border-radius: 0 0 10px 10px;">
-                    <div style="background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
-                        <h3 style="margin: 0 0 15px 0; color: #333;">Employee Details</h3>
-                        <p style="margin: 5px 0;"><strong>Name:</strong> {emp_name}</p>
-                        <p style="margin: 5px 0;"><strong>Employee ID:</strong> {emp_id}</p>
-                        <p style="margin: 5px 0;"><strong>Department:</strong> {user.dpt_id or 'N/A'}</p>
-                    </div>
-                    <div style="background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
-                        <h3 style="margin: 0 0 15px 0; color: #333;">Leave Details</h3>
-                        <p style="margin: 5px 0;"><strong>Type:</strong> {leave_type}</p>
-                        <p style="margin: 5px 0;"><strong>From:</strong> {from_date}</p>
-                        <p style="margin: 5px 0;"><strong>To:</strong> {to_date}</p>
-                        <p style="margin: 5px 0;"><strong>Duration:</strong> {days} {('day' if days == 1 else 'days')} {'(Half Day)' if is_half_day else ''}</p>
-                        <p style="margin: 5px 0;"><strong>Status:</strong> <span style="background: #fff3cd; color: #856404; padding: 4px 8px; border-radius: 4px; font-size: 12px;">{status}</span></p>
-                    </div>
-                    <div style="text-align: center; margin-top: 25px;">
-                        <p style="margin: 0; color: #6c757d; font-size: 14px;">Please review this leave request in the system.</p>
-                    </div>
-                </div>
-            </div>
-            """
-
             sent_count = 0
             for appr in approvers:
                 if appr["email"]:
-                    body = get_email_template(appr["name"] or "Manager", subject, content, "Aruvi Leave System")
-                    email_sent = send_email_notification(appr["email"], subject, body)
-                    if email_sent:
+                    body = get_email_template(appr["name"] or "Manager", subject, f"<p>{emp_name} applied for {leave_type}.</p>", "Aruvi Leave System")
+                    if send_email_notification(appr["email"], subject, body):
                         sent_count += 1
-
             return {"message": f"Notification sent to {sent_count} approver(s)"}
-
         except Exception as e:
-            print(f" Error processing notification: {str(e)}")
             return {"message": f"Error processing notification: {str(e)}"}
-
     except Exception as e:
-        print(f" General error in send-leave-notification: {str(e)}")
         return {"message": f"General error: {str(e)}"}
 
 
@@ -1887,17 +1598,11 @@ def get_pending_leaves(manager_id: Optional[str] = None, db: Session = Depends(g
     results = []
     for leave, emp in pending:
         results.append({
-            "l_id": leave.l_id,
-            "emp_name": emp.name or "Unknown Employee",
+            "l_id": leave.l_id, "emp_name": emp.name or "Unknown Employee",
             "emp_id": emp.emp_id.strip() if emp.emp_id else "",
-            "leave_type": leave.leave_type,
-            "from_date": leave.from_date,
-            "to_date": leave.to_date,
-            "days": leave.days,
-            "reason": leave.reason,
-            "remarks": leave.remarks or "",
-            "status": leave.status,
-            "file": leave.file
+            "leave_type": leave.leave_type, "from_date": leave.from_date, "to_date": leave.to_date,
+            "days": leave.days, "reason": leave.reason, "remarks": leave.remarks or "",
+            "status": leave.status, "file": leave.file
         })
     return results
 
@@ -1921,18 +1626,11 @@ def get_all_leave_history(manager_id: Optional[str] = None, db: Session = Depend
     results = []
     for leave, emp in all_leaves:
         results.append({
-            "l_id": leave.l_id,
-            "emp_name": emp.name or "Unknown Employee",
+            "l_id": leave.l_id, "emp_name": emp.name or "Unknown Employee",
             "emp_id": emp.emp_id.strip() if emp.emp_id else "",
-            "leave_type": leave.leave_type,
-            "from_date": leave.from_date,
-            "to_date": leave.to_date,
-            "days": leave.days,
-            "reason": leave.reason,
-            "remarks": leave.remarks or "",
-            "status": leave.status,
-            "file": leave.file,
-            "revision": leave.revision
+            "leave_type": leave.leave_type, "from_date": leave.from_date, "to_date": leave.to_date,
+            "days": leave.days, "reason": leave.reason, "remarks": leave.remarks or "",
+            "status": leave.status, "file": leave.file, "revision": leave.revision
         })
     return results
 
@@ -1951,13 +1649,10 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
     leave.remarks = request_item.remarks
     leave.last_update_date = datetime.now()
     if request_item.action == 'Approved':
-        leave.admin_approval = 'Approved'
-        leave.hr_approval = 'Approved'
+        leave.admin_approval = 'Approved'; leave.hr_approval = 'Approved'
     elif request_item.action == 'Rejected':
-        leave.admin_approval = 'Rejected'
-        leave.hr_approval = 'Rejected'
-    admin_user = db.query(models.EmpDet).filter(
-        models.EmpDet.emp_id == request_item.admin_id.strip()).first()
+        leave.admin_approval = 'Rejected'; leave.hr_approval = 'Rejected'
+    admin_user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == request_item.admin_id.strip()).first()
     if admin_user:
         leave.approved_by = admin_user.name
         leave.approver = admin_user.name
@@ -1971,8 +1666,7 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
     if current_rev >= 3:
         raise HTTPException(status_code=400, detail="Maximum 3 revisions allowed for this leave request.")
 
-    next_rev = current_rev + 1
-    leave.revision = str(next_rev)
+    leave.revision = str(current_rev + 1)
     db.add(leave)
 
     if request_item.action == 'Rejected' and old_status != 'Rejected':
@@ -1987,74 +1681,49 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
             if balance.available_leave is not None:
                 balance.available_leave = float(balance.available_leave) + l_days
 
-    # ─── SYNC LEAVE TO CHECK-IN ON APPROVAL ───
     if request_item.action == 'Approved' and old_status != 'Approved':
         try:
             req_from = parse_date(leave.from_date)
             req_to = parse_date(leave.to_date) if leave.to_date else req_from
             if req_from and req_to:
                 current_date = req_from
-                # Based on the leave application, we will determine the day_status.
-                # Since the days and lop_days are formatted as strings, let's parse them safely.
                 cl_days = float(leave.days) if leave.days else 0.0
                 lop_days = float(leave.lop_days) if leave.lop_days else 0.0
                 requested_days = cl_days + lop_days
-                
                 temp_cl = cl_days
                 temp_lop = lop_days
                 prefix = "CL" if "casual" in (leave.leave_type or "").lower() else "SL" if "sick" in (leave.leave_type or "").lower() else "LOP"
-                
                 while current_date <= req_to:
-                    # check if the request was a half day (single day, total days = 0.5)
                     day_val = 0.5 if requested_days == 0.5 else 1.0
                     day_status = ""
-                    
                     if temp_cl >= day_val:
-                        day_status = f"{'0.5' if day_val == 0.5 else ''}{prefix}"
-                        temp_cl -= day_val
+                        day_status = f"{'0.5' if day_val == 0.5 else ''}{prefix}"; temp_cl -= day_val
                     elif temp_cl > 0:
-                        day_status = f"0.5{prefix}"
-                        temp_cl = 0
+                        day_status = f"0.5{prefix}"; temp_cl = 0
                     elif temp_lop >= day_val:
-                        day_status = f"{'0.5' if day_val == 0.5 else ''}LOP"
-                        temp_lop -= day_val
+                        day_status = f"{'0.5' if day_val == 0.5 else ''}LOP"; temp_lop -= day_val
                     elif temp_lop > 0:
-                        day_status = "0.5LOP"
-                        temp_lop = 0
+                        day_status = "0.5LOP"; temp_lop = 0
                     else:
                         day_status = f"{prefix}"
-                    
-                    # Update or Insert CheckIn table
                     existing_checkin = db.query(models.CheckIn).filter(
                         models.CheckIn.emp_id == leave.emp_id,
                         models.CheckIn.t_date == current_date.date()
                     ).first()
-                    
                     if existing_checkin:
                         existing_checkin.status = day_status
                         existing_checkin.last_updated_by = request_item.admin_id
                         existing_checkin.last_update_date = datetime.now()
                         if not existing_checkin.in_time or existing_checkin.in_time == "--:--":
-                            existing_checkin.in_time = ""
-                            existing_checkin.out_time = ""
-                            existing_checkin.Total_hours = ""
+                            existing_checkin.in_time = ""; existing_checkin.out_time = ""; existing_checkin.Total_hours = ""
                     else:
-                        new_attend = models.CheckIn(
-                            emp_id=leave.emp_id,
-                            t_date=current_date.date(),
-                            t_day=current_date.strftime("%A"),
-                            month=current_date.strftime("%B"),
-                            status=day_status,
-                            in_time="",
-                            out_time="",
-                            Total_hours="",
-                            created_by=request_item.admin_id,
-                            creation_date=datetime.now(),
-                            last_updated_by=request_item.admin_id,
-                            last_update_date=datetime.now()
-                        )
-                        db.add(new_attend)
-                    
+                        db.add(models.CheckIn(
+                            emp_id=leave.emp_id, t_date=current_date.date(),
+                            t_day=current_date.strftime("%A"), month=current_date.strftime("%B"),
+                            status=day_status, in_time="", out_time="", Total_hours="",
+                            created_by=request_item.admin_id, creation_date=datetime.now(),
+                            last_updated_by=request_item.admin_id, last_update_date=datetime.now()
+                        ))
                     current_date += timedelta(days=1)
         except Exception as e:
             print(f"❌ Error syncing checkin for approval: {e}")
@@ -2064,29 +1733,24 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
         emp_user = db.query(models.EmpDet).filter(
             func.lower(func.trim(models.EmpDet.emp_id)) == (leave.emp_id or "").strip().lower()
         ).first()
-
         if emp_user and emp_user.p_mail:
             subject = f"RE: ITS-{emp_user.name}-{leave.leave_type} Request on {leave.from_date}"
             content = f"""
             <p>Your request for <strong>{leave.leave_type}</strong> has been processed.</p>
-            <div style="font-size: 20px; font-weight: 700; color: #1f2937; margin: 20px 0;">
-                {request_item.action}
-            </div>
+            <div style="font-size: 20px; font-weight: 700; color: #1f2937; margin: 20px 0;">{request_item.action}</div>
             <p><strong>Dates:</strong> {leave.from_date} to {leave.to_date}</p>
             <p><strong>No of Days:</strong> {fmt_days(leave.days)} {"Day" if float(leave.days or 0) == 1.0 else "Days"}</p>
             <p><strong>Remarks:</strong> {request_item.remarks or 'No remarks provided.'}</p>
-            <p style="margin-top: 25px; font-size: 13px; color: #64748b;">You can view the full history and status in the Aruvi mobile app.</p>
             """
             body = get_email_template(emp_user.name, f"Leave Request {request_item.action}", content, leave.approved_by or "Manager")
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
             if emp_user.attribute7:
-                p_title = f"Leave Request {request_item.action}"
-                p_msg = f"Your {leave.leave_type} request has been {request_item.action.lower()} by {leave.approved_by or 'Manager'}."
-                background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7], p_title, p_msg)
+                background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7],
+                    f"Leave Request {request_item.action}",
+                    f"Your {leave.leave_type} request has been {request_item.action.lower()} by {leave.approved_by or 'Manager'}.")
     except Exception as e:
         print(f" Email_id notification failed: {e}")
-    return {"message": f"Leave request {request_item.action.lower()} successfully",
-            "approved_by": leave.approved_by}
+    return {"message": f"Leave request {request_item.action.lower()} successfully", "approved_by": leave.approved_by}
 
 
 from datetime import datetime, timedelta
@@ -2121,18 +1785,14 @@ def _status_label(s: str) -> str:
 
 
 def _fmt_date(val) -> str:
-    if val is None:
-        return ''
-    if hasattr(val, 'strftime'):
-        return val.strftime('%d-%b-%Y')
+    if val is None: return ''
+    if hasattr(val, 'strftime'): return val.strftime('%d-%b-%Y')
     return str(val)
 
 
 def _fmt_time(val) -> str:
-    if val is None:
-        return ''
-    if hasattr(val, 'strftime'):
-        return val.strftime('%I:%M %p')
+    if val is None: return ''
+    if hasattr(val, 'strftime'): return val.strftime('%I:%M %p')
     return str(val)
 
 
@@ -2297,7 +1957,6 @@ def get_notifications(
         except Exception as e:
             print(f"  ❌ Admin Timesheet error: {e}")
 
-    # Employee personal notifications
     try:
         for leave in (
             db.query(models.EmpLeave)
@@ -2443,15 +2102,13 @@ def clear_all_notifications(user_id: str, db: Session = Depends(get_db)):
 def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: BackgroundTasks,
              db: Session = Depends(get_db)):
     try:
-        user = db.query(models.EmpDet).filter(
-            func.trim(models.EmpDet.emp_id) == request.emp_id.strip()).first()
+        user = db.query(models.EmpDet).filter(func.trim(models.EmpDet.emp_id) == request.emp_id.strip()).first()
         if not user:
             raise HTTPException(status_code=404, detail="Employee not found")
         target_emp_id = user.emp_id
         ot_date_clean = (request.ot_date or "").strip()
         if not ot_date_clean:
             raise HTTPException(status_code=400, detail="Invalid OT date")
-
         duplicate_ot = db.query(models.OverTimeDet).filter(
             func.lower(func.trim(models.OverTimeDet.emp_id)) == target_emp_id.strip().lower(),
             func.lower(func.trim(models.OverTimeDet.ot_date)) == ot_date_clean.lower(),
@@ -2459,52 +2116,32 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
         ).first()
         if duplicate_ot:
             raise HTTPException(status_code=400, detail=f"OT already applied for {ot_date_clean}.")
-
         new_ot = models.OverTimeDet(
-            emp_id=target_emp_id,
-            ot_date=request.ot_date,
-            from_time=request.from_time,
-            to_time=request.to_time,
-            duration=request.duration,
-            reason=request.reason,
-            applied_date=datetime.now().strftime("%d-%b-%Y"),
-            status=request.status or "Pending",
-            created_by=target_emp_id,
-            creation_date=datetime.now(),
-            last_updated_by=target_emp_id,
-            last_update_date=datetime.now(),
-            last_update_login=target_emp_id
+            emp_id=target_emp_id, ot_date=request.ot_date, from_time=request.from_time,
+            to_time=request.to_time, duration=request.duration, reason=request.reason,
+            applied_date=datetime.now().strftime("%d-%b-%Y"), status=request.status or "Pending",
+            created_by=target_emp_id, creation_date=datetime.now(),
+            last_updated_by=target_emp_id, last_update_date=datetime.now(), last_update_login=target_emp_id
         )
         db.add(new_ot)
         db.commit()
         db.refresh(new_ot)
-
         try:
             approvers = get_approvers(db, user)
             subject = f"ITS - {user.name} - OT Request | {ot_date_clean} | {request.from_time} to {request.to_time}"
             for appr in approvers:
                 if appr["email"]:
-                    content = f"""
-                    <p><strong>Good Day!</strong></p>
-                    <p>An employee has requested overtime. Details below:</p>
-                    <p><strong>Overtime Request:</strong> {ot_date_clean}<br>
-                    <span>{request.from_time} to {request.to_time} ({request.duration})</span></p>
-                    <p><strong>Employee:</strong> {user.name}</p>
-                    <p><strong>Reason:</strong> {request.reason}</p>
-                    """
+                    content = f"<p>OT request from {user.name} for {ot_date_clean} ({request.from_time} to {request.to_time}).<br>Reason: {request.reason}</p>"
                     body = get_email_template(appr["name"], "New Overtime Request", content, user.name)
                     background_tasks.add_task(send_email_notification, appr["email"], subject, body)
                 if appr["token"]:
-                    p_title = "New OT Request"
-                    p_msg = f"{user.name} requested OT for {ot_date_clean} ({request.duration})."
-                    background_tasks.add_task(send_expo_push_notification, [appr["token"]], p_title, p_msg)
+                    background_tasks.add_task(send_expo_push_notification, [appr["token"]],
+                        "New OT Request", f"{user.name} requested OT for {ot_date_clean} ({request.duration}).")
         except Exception as mail_err:
             print(f" Non-critical OT notification error: {mail_err}")
-
         return {"message": "OT request submitted successfully", "ot_id": new_ot.ot_id}
     except HTTPException:
-        db.rollback()
-        raise
+        db.rollback(); raise
     except Exception as e:
         print(f" OT INSERT ERROR: {str(e)}")
         db.rollback()
@@ -2516,8 +2153,7 @@ def get_pending_permissions(manager_id: Optional[str] = None, db: Session = Depe
     try:
         query = db.query(models.EmpPermission, models.EmpDet).join(
             models.EmpDet,
-            func.lower(func.trim(models.EmpPermission.emp_id)) ==
-            func.lower(func.trim(models.EmpDet.emp_id))
+            func.lower(func.trim(models.EmpPermission.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id))
         ).filter(func.lower(func.trim(models.EmpPermission.status)) == "pending")
         if manager_id:
             query = query.filter(
@@ -2529,7 +2165,6 @@ def get_pending_permissions(manager_id: Optional[str] = None, db: Session = Depe
         pending = query.order_by(models.EmpPermission.creation_date.desc()).all()
     except Exception as e:
         handle_db_error(e)
-
     results = []
     for perm, emp in pending:
         try:
@@ -2557,8 +2192,7 @@ def get_all_permission_history(manager_id: Optional[str] = None, db: Session = D
     try:
         query = db.query(models.EmpPermission, models.EmpDet).join(
             models.EmpDet,
-            func.lower(func.trim(models.EmpPermission.emp_id)) ==
-            func.lower(func.trim(models.EmpDet.emp_id))
+            func.lower(func.trim(models.EmpPermission.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id))
         )
         if manager_id:
             query = query.filter(
@@ -2570,7 +2204,6 @@ def get_all_permission_history(manager_id: Optional[str] = None, db: Session = D
         all_perms = query.order_by(models.EmpPermission.creation_date.desc()).all()
     except Exception as e:
         handle_db_error(e)
-
     results = []
     for perm, emp in all_perms:
         try:
@@ -2598,42 +2231,31 @@ def get_all_permission_history(manager_id: Optional[str] = None, db: Session = D
 def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     try:
         target_emp_id = (request.emp_id or "").strip().lower()
-        user = db.query(models.EmpDet).filter(
-            func.lower(func.trim(models.EmpDet.emp_id)) == target_emp_id
-        ).first()
+        user = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == target_emp_id).first()
         if not user:
             raise HTTPException(status_code=404, detail="Employee not found")
-
         p_date_dt = parse_date(request.date)
         if not p_date_dt:
             raise HTTPException(status_code=400, detail=f"Invalid date format: {request.date}")
         p_date = p_date_dt.date()
-
         f_time_dt = parse_time_str(request.f_time)
         t_time_dt = parse_time_str(request.t_time)
         if not f_time_dt:
             raise HTTPException(status_code=400, detail=f"Invalid from time format: {request.f_time}")
         if not t_time_dt:
             raise HTTPException(status_code=400, detail=f"Invalid to time format: {request.t_time}")
-
         h1, m1 = f_time_dt.hour, f_time_dt.minute
         h2, m2 = t_time_dt.hour, t_time_dt.minute
         diff_mins = (h2 * 60 + m2) - (h1 * 60 + m1)
         if diff_mins <= 0:
             raise HTTPException(status_code=400, detail="To Time must be after From Time")
-
         if diff_mins <= 60:
-            approved_hrs = 1.0
-            lop_hrs = 0.0
+            approved_hrs = 1.0; lop_hrs = 0.0
         elif diff_mins <= 120:
-            approved_hrs = 2.0
-            lop_hrs = 0.0
+            approved_hrs = 2.0; lop_hrs = 0.0
         else:
-            approved_hrs = 2.0
-            lop_hrs = (diff_mins - 120.0) / 60.0
-
+            approved_hrs = 2.0; lop_hrs = (diff_mins - 120.0) / 60.0
         total_hrs_val = diff_mins / 60.0
-
         duplicate = db.query(models.EmpPermission).filter(
             func.lower(func.trim(models.EmpPermission.emp_id)) == target_emp_id,
             models.EmpPermission.date == p_date,
@@ -2641,7 +2263,6 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
         ).first()
         if duplicate:
             raise HTTPException(status_code=400, detail=f"Permission already applied for {request.date}.")
-
         try:
             curr_val = str(user.remaining_perm or "").strip()
             if not curr_val or curr_val in ("None", ""):
@@ -2653,10 +2274,8 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                 curr_perm = float(curr_val)
         except Exception:
             curr_perm = 4.0
-
         new_remaining = max(0.0, curr_perm - approved_hrs)
         user.remaining_perm = str(round(new_remaining, 2))
-
         new_perm = models.EmpPermission(
             emp_id=user.emp_id.strip(), date=p_date,
             f_time=f_time_dt.time(), t_time=t_time_dt.time(),
@@ -2671,7 +2290,6 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
         db.add(new_perm)
         db.commit()
         db.refresh(new_perm)
-
         try:
             approvers = get_approvers(db, user)
             f_display = f_time_dt.strftime("%I:%M %p").lstrip('0')
@@ -2681,9 +2299,7 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                 if appr["email"]:
                     content = f'''
                     <p><strong>Good Day!</strong></p>
-                    <p>I hope this email finds you well.</p>
-                    <p>I would like to request permission on <strong>{request.date}</strong>
-                       from <strong>{f_display}</strong> to <strong>{t_display}</strong>.</p>
+                    <p>I would like to request permission on <strong>{request.date}</strong> from <strong>{f_display}</strong> to <strong>{t_display}</strong>.</p>
                     <p><strong>Approved Hours:</strong> {approved_hrs} hr</p>
                     {f'<p><strong>LOP Hours:</strong> {round(lop_hrs, 2)} hr</p>' if lop_hrs > 0 else ''}
                     <p><strong>Reason:</strong> {request.reason}</p>
@@ -2691,20 +2307,15 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                     body = get_email_template(appr["name"], "Permission Request", content, user.name)
                     background_tasks.add_task(send_email_notification, appr["email"], subject, body)
                 if appr["token"]:
-                    p_title = "New Permission Request"
-                    p_msg = f"{user.name} requested permission for {request.date} ({f_display} to {t_display})."
-                    background_tasks.add_task(send_expo_push_notification, [appr["token"]], p_title, p_msg)
+                    background_tasks.add_task(send_expo_push_notification, [appr["token"]],
+                        "New Permission Request", f"{user.name} requested permission for {request.date} ({f_display} to {t_display}).")
         except Exception as mail_err:
             print(f"   Non-critical email error: {mail_err}")
-
         return {"message": "Permission applied successfully", "p_id": new_perm.p_id, "approved_hrs": approved_hrs, "lop_hrs": round(lop_hrs, 2)}
-
     except HTTPException:
-        db.rollback()
-        raise
+        db.rollback(); raise
     except Exception as e:
-        db.rollback()
-        traceback.print_exc()
+        db.rollback(); traceback.print_exc()
         raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
 
 
@@ -2716,27 +2327,23 @@ def approve_permission(request: schemas.PermissionApprovalAction, background_tas
         handle_db_error(e)
     if not perm:
         raise HTTPException(status_code=404, detail="Permission request not found")
-
     old_status = (perm.status or "").strip().lower()
     new_action = request.action.strip()
     perm.status = new_action
     perm.remarks = request.remarks or ""
     perm.last_update_date = datetime.now()
     perm.last_updated_by = request.admin_id.strip()
-
     try:
         curr_rev = int(perm.revision) if perm.revision and str(perm.revision).isdigit() else 0
         perm.revision = str(curr_rev + 1)
     except:
         perm.revision = "1"
-
     admin_user = db.query(models.EmpDet).filter(
         func.lower(func.trim(models.EmpDet.emp_id)) == request.admin_id.strip().lower()
     ).first()
     if admin_user:
         perm.approved_by = admin_user.name
         perm.remarks = (request.remarks or "").strip() + f" (Action by: {admin_user.name})"
-
     if new_action.lower() == "rejected" and old_status != "rejected":
         user = db.query(models.EmpDet).filter(
             func.lower(func.trim(models.EmpDet.emp_id)) == (perm.emp_id or "").strip().lower()
@@ -2748,9 +2355,7 @@ def approve_permission(request: schemas.PermissionApprovalAction, background_tas
                 user.remaining_perm = str(round(curr_rem + approved_to_refund, 2))
             except Exception as refund_err:
                 print(f"Refund error: {refund_err}")
-
     db.commit()
-
     try:
         emp_user = db.query(models.EmpDet).filter(
             func.lower(func.trim(models.EmpDet.emp_id)) == (perm.emp_id or "").strip().lower()
@@ -2769,12 +2374,10 @@ def approve_permission(request: schemas.PermissionApprovalAction, background_tas
             body = get_email_template(emp_user.name, f"Permission Request {new_action}", content, admin_user.name if admin_user else "Manager")
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
             if emp_user.attribute7:
-                p_title = f"Permission Request {new_action}"
-                p_msg = f"Your permission request for {perm_date} has been {new_action.lower()}."
-                background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7], p_title, p_msg)
+                background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7],
+                    f"Permission Request {new_action}", f"Your permission request for {perm_date} has been {new_action.lower()}.")
     except Exception as e:
         print(f"Email_id notification failed: {e}")
-
     return {"message": f"Permission {new_action.lower()} successfully"}
 
 
@@ -2860,7 +2463,6 @@ def approve_ot(request: schemas.OverTimeApprovalAction, background_tasks: Backgr
     try:
         emp_user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == ot.emp_id).first()
         if emp_user and emp_user.p_mail:
-            manager_name = admin_user.name if admin_user else "Manager"
             subject = f"OT Request {request.action.upper()} - {ot.ot_date}"
             content = f"""
             <p>Your request for <strong>Overtime</strong> has been processed.</p>
@@ -2872,9 +2474,8 @@ def approve_ot(request: schemas.OverTimeApprovalAction, background_tasks: Backgr
             body = get_email_template(emp_user.name, "OT Request Update", content, "HR Team")
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
             if emp_user.attribute7:
-                p_title = f"OT Request {request.action.upper()}"
-                p_msg = f"Your OT request for {ot.ot_date} has been {request.action.lower()}."
-                background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7], p_title, p_msg)
+                background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7],
+                    f"OT Request {request.action.upper()}", f"Your OT request for {ot.ot_date} has been {request.action.lower()}.")
     except Exception as e:
         print(f" Email_id notification failed: {e}")
     return {"message": f"OT request {request.action.lower()} successfully"}
@@ -2952,7 +2553,6 @@ def approve_wfh(request: schemas.WFHApprovalAction, background_tasks: Background
     try:
         emp_user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == wfh.emp_id).first()
         if emp_user and emp_user.p_mail:
-            manager_name = admin_user.name if admin_user else "Manager"
             subject = f"WFH Request {request.action.upper()} - {wfh.from_date}"
             content = f"""
             <p>Your request for <strong>Work From Home</strong> has been processed.</p>
@@ -2964,9 +2564,8 @@ def approve_wfh(request: schemas.WFHApprovalAction, background_tasks: Background
             body = get_email_template(emp_user.name, "WFH Request Update", content, "HR Team")
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
             if emp_user.attribute7:
-                p_title = f"WFH Request {request.action.upper()}"
-                p_msg = f"Your WFH request for {wfh.from_date} has been {request.action.lower()}."
-                background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7], p_title, p_msg)
+                background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7],
+                    f"WFH Request {request.action.upper()}", f"Your WFH request for {wfh.from_date} has been {request.action.lower()}.")
     except Exception as e:
         print(f" Email_id notification failed: {e}")
     return {"message": f"WFH request {request.action.lower()} successfully"}
@@ -2996,14 +2595,12 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
         from_date = from_date_input.strip()
         to_date = (request.to_date or from_date).strip()
         days_val = str(request.days) if request.days is not None else "1"
-
         req_from = parse_date(from_date)
         req_to = parse_date(to_date)
         if not req_from or not req_to:
             raise HTTPException(status_code=400, detail="Invalid WFH from/to date format")
         if req_to < req_from:
             raise HTTPException(status_code=400, detail="To date must be on or after from date")
-
         existing_wfh = db.query(models.WFHDet).filter(
             func.lower(func.trim(models.WFHDet.emp_id)) == clean_emp_id.lower(),
             func.lower(func.trim(models.WFHDet.status)).in_(["pending", "approved"])
@@ -3011,32 +2608,25 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
         for row in existing_wfh:
             row_from = parse_date(row.from_date)
             row_to = parse_date(row.to_date) if row.to_date else row_from
-            if not row_from or not row_to:
-                continue
+            if not row_from or not row_to: continue
             if not (req_to < row_from or req_from > row_to):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"WFH already applied for overlapping dates ({row.from_date} to {row.to_date})."
-                )
-
+                raise HTTPException(status_code=400,
+                    detail=f"WFH already applied for overlapping dates ({row.from_date} to {row.to_date}).")
         submitter = db.query(models.EmpDet).filter(
             func.lower(func.trim(models.EmpDet.emp_id)) == clean_emp_id.lower()
         ).first()
         normalized_status = (request.status or "Pending").strip() or "Pending"
         if normalized_status.lower() == "pending":
             normalized_status = "Pending"
-
         new_wfh = models.WFHDet(
             emp_id=clean_emp_id, from_date=from_date, to_date=to_date, days=days_val,
             reason=request.reason, status=normalized_status,
             created_by=clean_emp_id, creation_date=datetime.now(),
-            last_updated_by=clean_emp_id, last_update_date=datetime.now(),
-            last_update_login=clean_emp_id
+            last_updated_by=clean_emp_id, last_update_date=datetime.now(), last_update_login=clean_emp_id
         )
         db.add(new_wfh)
         db.commit()
         db.refresh(new_wfh)
-
         user = submitter
         try:
             if user:
@@ -3047,35 +2637,25 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
                     from_str = from_dt.strftime("%d-%b-%Y") if from_dt else from_date
                     to_str = to_dt.strftime("%d-%b-%Y") if to_dt else to_date
                 except:
-                    from_str = from_date
-                    to_str = to_date
+                    from_str = from_date; to_str = to_date
                 wfh_days_fmt = fmt_days(days_val)
                 wfh_day_label = "Day" if float(days_val or 0) == 1.0 else "Days"
                 subject = f"ITS - {user.name} - WFH | {from_str} to {to_str} ({wfh_days_fmt} {wfh_day_label})"
                 for appr in approvers:
                     if appr["email"]:
-                        content = f"""
-                        <p>An employee has requested to work from home.</p>
-                        <p><strong>Employee:</strong> {user.name}</p>
-                        <p><strong>Duration:</strong> {from_str} to {to_str} ({wfh_days_fmt} {wfh_day_label})</p>
-                        <p><strong>Reason:</strong> {request.reason}</p>
-                        """
+                        content = f"<p>{user.name} requested WFH from {from_str} to {to_str} ({wfh_days_fmt} {wfh_day_label}).<br>Reason: {request.reason}</p>"
                         body = get_email_template(appr["name"], "Work From Home Request", content, user.name)
                         background_tasks.add_task(send_email_notification, appr["email"], subject, body)
                     if appr["token"]:
-                        p_title = "New WFH Request"
-                        p_msg = f"{user.name} requested WFH from {from_str} to {to_str}."
-                        background_tasks.add_task(send_expo_push_notification, [appr["token"]], p_title, p_msg)
+                        background_tasks.add_task(send_expo_push_notification, [appr["token"]],
+                            "New WFH Request", f"{user.name} requested WFH from {from_str} to {to_str}.")
         except Exception as mail_err:
             print(f" Non-critical WFH notification error: {mail_err}")
-
         return {"message": "WFH request submitted successfully", "wfh_id": new_wfh.wfh_id}
     except HTTPException:
-        db.rollback()
-        raise
+        db.rollback(); raise
     except Exception as e:
-        db.rollback()
-        traceback.print_exc()
+        db.rollback(); traceback.print_exc()
         raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
 
 
@@ -3174,12 +2754,8 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
             h_date = parse_date(h.Office_Holiday_Date)
             if h_date:
                 h_date_flat = h_date.replace(hour=0, minute=0, second=0, microsecond=0)
-                if h_date_flat.month == today.month and h_date_flat.year == today.year:
-                    show_h = True
-                elif 0 <= (h_date_flat - today_flat).days <= 90:
-                    show_h = True
-                else:
-                    show_h = False
+                show_h = (h_date_flat.month == today.month and h_date_flat.year == today.year) or \
+                         (0 <= (h_date_flat - today_flat).days <= 90)
                 if show_h:
                     upcoming_events.append({
                         "id": f"holiday_{h.holiday_id}", "name": h.Holiday_Name, "type": "holiday",
@@ -3320,24 +2896,14 @@ def get_timesheet_month(emp_id: str, month: Optional[str] = None, year: Optional
     from sqlalchemy import or_, func
     clean_id = emp_id.replace(" ", "")
     query = db.query(models.TimesheetDet).filter(
-        or_(
-            models.TimesheetDet.emp_id == emp_id,
-            func.replace(models.TimesheetDet.emp_id, " ", "") == clean_id
-        )
+        or_(models.TimesheetDet.emp_id == emp_id, func.replace(models.TimesheetDet.emp_id, " ", "") == clean_id)
     )
     if month:
-        month_map = {
-            "January": "01", "February": "02", "March": "03", "April": "04",
-            "May": "05", "June": "06", "July": "07", "August": "08",
-            "September": "09", "October": "10", "November": "11", "December": "12"
-        }
+        month_map = {"January": "01", "February": "02", "March": "03", "April": "04", "May": "05", "June": "06",
+                     "July": "07", "August": "08", "September": "09", "October": "10", "November": "11", "December": "12"}
         m_num = month_map.get(month)
         if m_num:
-            query = query.filter(or_(
-                models.TimesheetDet.month.ilike(f"%{month}%"),
-                models.TimesheetDet.month.ilike(f"%{m_num}%"),
-                models.TimesheetDet.date.ilike(f"%-{month[:3]}-%")
-            ))
+            query = query.filter(or_(models.TimesheetDet.month.ilike(f"%{month}%"), models.TimesheetDet.month.ilike(f"%{m_num}%"), models.TimesheetDet.date.ilike(f"%-{month[:3]}-%")))
         else:
             query = query.filter(models.TimesheetDet.month.ilike(f"%{month}%"))
     if year:
@@ -3350,18 +2916,11 @@ def get_admin_timesheet_employees(month: Optional[str] = None, year: Optional[st
     ts_query = db.query(models.TimesheetDet.emp_id)
     month_filter = None
     if month:
-        month_map = {
-            "January": "01", "February": "02", "March": "03", "April": "04",
-            "May": "05", "June": "06", "July": "07", "August": "08",
-            "September": "09", "October": "10", "November": "11", "December": "12"
-        }
+        month_map = {"January": "01", "February": "02", "March": "03", "April": "04", "May": "05", "June": "06",
+                     "July": "07", "August": "08", "September": "09", "October": "10", "November": "11", "December": "12"}
         m_num = month_map.get(month)
         if m_num:
-            month_filter = or_(
-                models.TimesheetDet.month.ilike(f"%{month}%"),
-                models.TimesheetDet.month.ilike(f"%{m_num}%"),
-                models.TimesheetDet.date.ilike(f"%-{month[:3]}-%")
-            )
+            month_filter = or_(models.TimesheetDet.month.ilike(f"%{month}%"), models.TimesheetDet.month.ilike(f"%{m_num}%"), models.TimesheetDet.date.ilike(f"%-{month[:3]}-%"))
         else:
             month_filter = models.TimesheetDet.month.ilike(f"%{month}%")
     if month_filter is not None:
@@ -3452,10 +3011,8 @@ def get_next_project_ref(db: Session = Depends(get_db)):
                 match = re.search(r'(\d+)', ref_no[len(prefix):])
                 if match:
                     num = int(match.group(1))
-                    if num > max_num:
-                        max_num = num
-            except:
-                continue
+                    if num > max_num: max_num = num
+            except: continue
     return {"next_ref": f"{prefix}{max_num + 1:04d}"}
 
 
@@ -3544,10 +3101,8 @@ def get_ot_stats(emp_id: str, db: Session = Depends(get_db)):
     def parse_duration(duration_str):
         if not duration_str: return 0.0
         duration_str = str(duration_str).strip()
-        try:
-            return float(duration_str)
-        except ValueError:
-            pass
+        try: return float(duration_str)
+        except ValueError: pass
         hr_match = re.search(r'(\d+)\s*(h|hr)', duration_str, re.IGNORECASE)
         min_match = re.search(r'(\d+)\s*(m|min)', duration_str, re.IGNORECASE)
         if hr_match or min_match:
@@ -3557,10 +3112,8 @@ def get_ot_stats(emp_id: str, db: Session = Depends(get_db)):
         if ':' in duration_str:
             parts = duration_str.split(':')
             if len(parts) == 2:
-                try:
-                    return float(parts[0]) + float(parts[1]) / 60.0
-                except:
-                    pass
+                try: return float(parts[0]) + float(parts[1]) / 60.0
+                except: pass
         return 0.0
 
     for row in ot_records:
@@ -3700,8 +3253,7 @@ def get_next_client_ref(db: Session = Depends(get_db)):
             match = re.search(r'ITS-CLI-(\d+)$', c.client_ref_no)
             if match:
                 num = int(match.group(1))
-                if num > max_num:
-                    max_num = num
+                if num > max_num: max_num = num
     return {"next_ref": f"ITS-CLI-{max_num + 1:04d}"}
 
 
@@ -3867,11 +3419,8 @@ def create_client(client_req: schemas.ClientApplyRequest, db: Session = Depends(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-# ─── ATTENDANCE REPORT ENDPOINTS ─────────────────────────────────────────────────
-
 @app.get("/attendance-report/{emp_id}")
 def get_attendance_report(emp_id: str, start_date: str, end_date: str, db: Session = Depends(get_db)):
-    """Get attendance report for an employee combining data from BMS, CheckIn, and DailyAttendanceReport"""
     emp_id = emp_id.strip()
     try:
         start_dt = parse_date(start_date)
@@ -3880,90 +3429,52 @@ def get_attendance_report(emp_id: str, start_date: str, end_date: str, db: Sessi
             raise HTTPException(status_code=400, detail="Invalid date format")
     except:
         raise HTTPException(status_code=400, detail="Invalid date format")
-
     try:
-        # Get employee details
-        emp = db.query(models.EmpDet).filter(
-            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()
-        ).first()
+        emp = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()).first()
         if not emp:
             raise HTTPException(status_code=404, detail="Employee not found")
-
-        # Get attendance data from DailyAttendanceReport
         attendance_reports = db.query(models.DailyAttendanceReport).filter(
             models.DailyAttendanceReport.Employee_Code == emp.emp_id,
             models.DailyAttendanceReport.Date >= start_date,
             models.DailyAttendanceReport.Date <= end_date
         ).all()
-
-        # Get check-in data
         checkin_data = db.query(models.CheckIn).filter(
             func.lower(func.trim(models.CheckIn.emp_id)) == emp_id.lower(),
-            models.CheckIn.t_date >= start_dt.date(),
-            models.CheckIn.t_date <= end_dt.date()
+            models.CheckIn.t_date >= start_dt.date(), models.CheckIn.t_date <= end_dt.date()
         ).all()
-
-        # Get BMS data
         bms_data = db.query(models.BMS).filter(
             func.lower(func.trim(models.BMS.emp_id)) == emp_id.lower(),
-            models.BMS.attendance_date >= start_dt.date(),
-            models.BMS.attendance_date <= end_dt.date()
+            models.BMS.attendance_date >= start_dt.date(), models.BMS.attendance_date <= end_dt.date()
         ).all()
-
-        # Combine data
         result = []
         checkin_map = {str(checkin.t_date): checkin for checkin in checkin_data}
         bms_map = {str(bms.attendance_date): bms for bms in bms_data}
-
         for report in attendance_reports:
             report_date = report.Date
             checkin = checkin_map.get(report_date)
             bms = bms_map.get(report_date)
-
-            # Determine min_in and max_out from BMS and CheckIn
             min_in = bms.min_in if bms else None
             max_out = bms.max_out if bms else None
-            
-            # Fallback to CheckIn data if BMS data not available
-            if not min_in and checkin:
-                min_in = checkin.in_time
-            if not max_out and checkin:
-                max_out = checkin.out_time
-
+            if not min_in and checkin: min_in = checkin.in_time
+            if not max_out and checkin: max_out = checkin.out_time
             result.append({
-                "date": report_date,
-                "employee_code": report.Employee_Code,
-                "employee_name": report.Employee_Name,
-                "company": report.Company,
-                "department": report.Department,
-                "category": report.Category,
-                "designation": report.Degination,
-                "grade": report.Grade,
-                "team": report.Team,
-                "shift": report.Shift,
-                "in_time": report.In_Time,
-                "out_time": report.Out_Time,
-                "duration": report.Duration,
-                "late_by": report.Late_By,
-                "early_by": report.Early_By,
-                "status": report.Status,
-                "punch_records": report.Punch_Records,
-                "overtime": report.Overtime,
-                "min_in": min_in,  # From BMS or CheckIn
-                "max_out": max_out,  # From BMS or CheckIn
+                "date": report_date, "employee_code": report.Employee_Code,
+                "employee_name": report.Employee_Name, "company": report.Company,
+                "department": report.Department, "category": report.Category,
+                "designation": report.Degination, "grade": report.Grade,
+                "team": report.Team, "shift": report.Shift,
+                "in_time": report.In_Time, "out_time": report.Out_Time,
+                "duration": report.Duration, "late_by": report.Late_By,
+                "early_by": report.Early_By, "status": report.Status,
+                "punch_records": report.Punch_Records, "overtime": report.Overtime,
+                "min_in": min_in, "max_out": max_out,
                 "checkin_in_time": checkin.in_time if checkin else None,
                 "checkin_out_time": checkin.out_time if checkin else None,
                 "checkin_total_hours": checkin.Total_hours if checkin else None,
                 "checkin_status": checkin.status if checkin else None
             })
-
         return {
-            "employee": {
-                "emp_id": emp.emp_id,
-                "name": emp.name,
-                "department": emp.dpt_id,
-                "designation": emp.role_type
-            },
+            "employee": {"emp_id": emp.emp_id, "name": emp.name, "department": emp.dpt_id, "designation": emp.role_type},
             "attendance_data": result,
             "summary": {
                 "total_days": len(result),
@@ -3979,79 +3490,47 @@ def get_attendance_report(emp_id: str, start_date: str, end_date: str, db: Sessi
 
 @app.get("/attendance-summary/{emp_id}")
 def get_attendance_summary(emp_id: str, month: int, year: int, db: Session = Depends(get_db)):
-    """Get attendance summary for an employee for a specific month"""
     emp_id = emp_id.strip()
     try:
-        # Get employee details
-        emp = db.query(models.EmpDet).filter(
-            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()
-        ).first()
+        emp = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()).first()
         if not emp:
             raise HTTPException(status_code=404, detail="Employee not found")
-
-        # Get attendance data from DailyAttendanceReport for the month
         attendance_reports = db.query(models.DailyAttendanceReport).filter(
             models.DailyAttendanceReport.Employee_Code == emp.emp_id,
             extract('month', func.str_to_date(models.DailyAttendanceReport.Date, '%d-%b-%Y')) == month,
             extract('year', func.str_to_date(models.DailyAttendanceReport.Date, '%d-%b-%Y')) == year
         ).all()
-
-        # Get check-in data for the month
         checkin_data = db.query(models.CheckIn).filter(
             func.lower(func.trim(models.CheckIn.emp_id)) == emp_id.lower(),
             extract('month', models.CheckIn.t_date) == month,
             extract('year', models.CheckIn.t_date) == year
         ).all()
-
-        # Get BMS data for the month
         bms_data = db.query(models.BMS).filter(
             func.lower(func.trim(models.BMS.emp_id)) == emp_id.lower(),
             extract('month', models.BMS.attendance_date) == month,
             extract('year', models.BMS.attendance_date) == year
         ).all()
-
-        # Calculate summary
         total_days = len(attendance_reports)
         present = len([r for r in attendance_reports if r.Status == "P"])
         absent = len([r for r in attendance_reports if r.Status == "A"])
         late = len([r for r in attendance_reports if r.Late_By and r.Late_By != ""])
         early = len([r for r in attendance_reports if r.Early_By and r.Early_By != ""])
-        
-        # Calculate overtime from checkin data
         total_overtime = 0
         for checkin in checkin_data:
             if checkin.Total_hours and "Hr" in checkin.Total_hours:
                 try:
-                    hours_part = checkin.Total_hours.split("Hr")[0].strip()
-                    hours = int(hours_part)
-                    if hours > 8:  # Assuming 8 hours is regular work time
-                        total_overtime += (hours - 8)
-                except:
-                    pass
-
+                    hours = int(checkin.Total_hours.split("Hr")[0].strip())
+                    if hours > 8: total_overtime += (hours - 8)
+                except: pass
         return {
-            "employee": {
-                "emp_id": emp.emp_id,
-                "name": emp.name,
-                "department": emp.dpt_id,
-                "designation": emp.role_type
-            },
-            "month": month,
-            "year": year,
+            "employee": {"emp_id": emp.emp_id, "name": emp.name, "department": emp.dpt_id, "designation": emp.role_type},
+            "month": month, "year": year,
             "summary": {
-                "total_days": total_days,
-                "present": present,
-                "absent": absent,
-                "late": late,
-                "early": early,
+                "total_days": total_days, "present": present, "absent": absent, "late": late, "early": early,
                 "attendance_percentage": round((present / total_days * 100) if total_days > 0 else 0, 2),
                 "total_overtime_hours": total_overtime
             },
-            "data_sources": {
-                "daily_attendance_reports": len(attendance_reports),
-                "checkin_records": len(checkin_data),
-                "bms_records": len(bms_data)
-            }
+            "data_sources": {"daily_attendance_reports": len(attendance_reports), "checkin_records": len(checkin_data), "bms_records": len(bms_data)}
         }
     except Exception as e:
         handle_db_error(e)
@@ -4059,7 +3538,6 @@ def get_attendance_summary(emp_id: str, month: int, year: int, db: Session = Dep
 
 @app.get("/team-attendance/{manager_id}")
 def get_team_attendance(manager_id: str, start_date: str, end_date: str, db: Session = Depends(get_db)):
-    """Get attendance report for all employees under a manager"""
     manager_id = manager_id.strip()
     try:
         start_dt = parse_date(start_date)
@@ -4068,112 +3546,33 @@ def get_team_attendance(manager_id: str, start_date: str, end_date: str, db: Ses
             raise HTTPException(status_code=400, detail="Invalid date format")
     except:
         raise HTTPException(status_code=400, detail="Invalid date format")
-
     try:
-        # Get all employees under this manager
         employees = db.query(models.EmpDet).filter(
             func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.lower()
         ).all()
-
         if not employees:
             return {"message": "No employees found under this manager", "team_attendance": []}
-
         team_attendance = []
         for emp in employees:
-            # Get attendance summary for each employee
             attendance_reports = db.query(models.DailyAttendanceReport).filter(
                 models.DailyAttendanceReport.Employee_Code == emp.emp_id,
                 models.DailyAttendanceReport.Date >= start_date,
                 models.DailyAttendanceReport.Date <= end_date
             ).all()
-
             present = len([r for r in attendance_reports if r.Status == "P"])
             absent = len([r for r in attendance_reports if r.Status == "A"])
             total_days = len(attendance_reports)
-
             team_attendance.append({
-                "emp_id": emp.emp_id,
-                "name": emp.name,
-                "department": emp.dpt_id,
-                "designation": emp.role_type,
-                "total_days": total_days,
-                "present": present,
-                "absent": absent,
+                "emp_id": emp.emp_id, "name": emp.name, "department": emp.dpt_id,
+                "designation": emp.role_type, "total_days": total_days, "present": present, "absent": absent,
                 "attendance_percentage": round((present / total_days * 100) if total_days > 0 else 0, 2)
             })
-
         return {
             "manager_id": manager_id,
             "period": {"start_date": start_date, "end_date": end_date},
             "team_size": len(employees),
             "team_attendance": team_attendance
         }
-    except Exception as e:
-        handle_db_error(e)
-
-@app.get("/sync-privileges/{emp_id}")
-def sync_privileges_endpoint(emp_id: str, db: Session = Depends(get_db)):
-    emp_id = emp_id.strip()
-    try:
-        user = db.query(models.EmpDet).filter(
-            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()
-        ).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        privileges = []
-        emp_role_type = user.role_type and str(user.role_type).strip().lower()
-
-        if emp_role_type == "module based" or emp_role_type == "module_based":
-            mod_ids = parse_privilege_array(user.mod_id)
-            create_prvs = parse_privilege_array(user.create_prv)
-            read_prvs = parse_privilege_array(user.read_prv)
-            view_prvs = parse_privilege_array(user.view_prv)
-            update_prvs = parse_privilege_array(user.update_prv)
-            delete_prvs = parse_privilege_array(user.delete_prv)
-            admin_prvs = parse_privilege_array(user.admin_prv)
-            hr_prvs = parse_privilege_array(user.hr_prv)
-            
-            def safe_int_val(arr, idx):
-                if idx < len(arr) and arr[idx]:
-                    try: return int(arr[idx])
-                    except: return 0
-                return 0
-
-            for i in range(len(mod_ids)):
-                mod = mod_ids[i]
-                if mod:
-                    privileges.append({
-                        "mod_id": int(mod) if mod.isdigit() else mod,
-                        "create_prv": safe_int_val(create_prvs, i),
-                        "read_prv": safe_int_val(read_prvs, i),
-                        "view_prv": safe_int_val(view_prvs, i),
-                        "update_prv": safe_int_val(update_prvs, i),
-                        "delete_prv": safe_int_val(delete_prvs, i),
-                        "admin_prv": safe_int_val(admin_prvs, i),
-                        "hr_prv": safe_int_val(hr_prvs, i),
-                        "view_global": safe_int_val(view_prvs, i),
-                        "permissions": None
-                    })
-        elif user.rpd_id:
-            priv_rows = db.query(models.RolePrivilege).filter(
-                models.RolePrivilege.role_prv_ref_no == str(user.rpd_id)
-            ).all()
-            for p in priv_rows:
-                privileges.append({
-                    "mod_id": p.mod_id,
-                    "create_prv": p.create_prv,
-                    "read_prv": p.read_prv,
-                    "view_prv": p.view_prv,
-                    "update_prv": p.update_prv,
-                    "delete_prv": p.delete_prv,
-                    "admin_prv": p.admin_prv,
-                    "hr_prv": p.hr_prv,
-                    "view_global": p.view_global,
-                    "permissions": p.permissions
-                })
-        
-        return {"privileges": privileges}
     except Exception as e:
         handle_db_error(e)
 
