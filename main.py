@@ -3400,35 +3400,9 @@ def get_next_project_ref(db: Session = Depends(get_db)):
     return {"next_ref": f"{prefix}{max_num + 1:04d}"}
 
 
-@app.get("/admin/projects")
-def get_projects(skip: int = 0, limit: int = 100, search: Optional[str] = None, 
-                 manager_id: Optional[str] = None, paginated: bool = False, 
-                 db: Session = Depends(get_db)):
-    try:
-        query = db.query(models.Project)
-        
-        if manager_id:
-            query = query.filter(func.lower(func.trim(models.Project.project_manager)) == manager_id.strip().lower())
-            
-        if search:
-            search_term = f"%{search.strip().lower()}%"
-            query = query.filter(
-                or_(
-                    func.lower(models.Project.project_name).like(search_term),
-                    func.lower(models.Project.project_ref_no).like(search_term),
-                    func.lower(models.Project.client_ref_no).like(search_term),
-                    func.lower(models.Project.status).like(search_term)
-                )
-            )
-            
-        total = query.count()
-        projects = query.order_by(models.Project.pro_id.desc()).offset(skip).limit(limit).all()
-        
-        if paginated:
-            return {"total": total, "data": projects}
-        return projects
-    except Exception as e:
-        handle_db_error(e)
+@app.get("/admin/projects", response_model=List[schemas.ProjectResponse])
+def get_projects(db: Session = Depends(get_db)):
+    return db.query(models.Project).all()
 
 
 @app.get("/admin/projects/{pro_id}", response_model=schemas.ProjectResponse)
@@ -3961,6 +3935,7 @@ def get_attendance_report(emp_id: str, start_date: str, end_date: str, db: Sessi
     except Exception as e:
         handle_db_error(e)
 
+
 @app.get("/attendance-summary/{emp_id}")
 def get_attendance_summary(emp_id: str, month: int, year: int, db: Session = Depends(get_db)):
     """Get attendance summary for an employee for a specific month"""
@@ -4105,8 +4080,58 @@ def sync_privileges_endpoint(emp_id: str, db: Session = Depends(get_db)):
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         
-        # Reuse central building logic for 60-slot sparse array parity
-        privileges = build_privileges_for_user(user, db)
+        privileges = []
+        emp_role_type = user.role_type and str(user.role_type).strip().lower()
+
+        if emp_role_type == "module based" or emp_role_type == "module_based":
+            mod_ids = parse_privilege_array(user.mod_id)
+            create_prvs = parse_privilege_array(user.create_prv)
+            read_prvs = parse_privilege_array(user.read_prv)
+            view_prvs = parse_privilege_array(user.view_prv)
+            update_prvs = parse_privilege_array(user.update_prv)
+            delete_prvs = parse_privilege_array(user.delete_prv)
+            admin_prvs = parse_privilege_array(user.admin_prv)
+            hr_prvs = parse_privilege_array(user.hr_prv)
+            
+            def safe_int_val(arr, idx):
+                if idx < len(arr) and arr[idx]:
+                    try: return int(arr[idx])
+                    except: return 0
+                return 0
+
+            for i in range(len(mod_ids)):
+                mod = mod_ids[i]
+                if mod:
+                    privileges.append({
+                        "mod_id": int(mod) if mod.isdigit() else mod,
+                        "create_prv": safe_int_val(create_prvs, i),
+                        "read_prv": safe_int_val(read_prvs, i),
+                        "view_prv": safe_int_val(view_prvs, i),
+                        "update_prv": safe_int_val(update_prvs, i),
+                        "delete_prv": safe_int_val(delete_prvs, i),
+                        "admin_prv": safe_int_val(admin_prvs, i),
+                        "hr_prv": safe_int_val(hr_prvs, i),
+                        "view_global": safe_int_val(view_prvs, i),
+                        "permissions": None
+                    })
+        elif user.rpd_id:
+            priv_rows = db.query(models.RolePrivilege).filter(
+                models.RolePrivilege.role_prv_ref_no == str(user.rpd_id)
+            ).all()
+            for p in priv_rows:
+                privileges.append({
+                    "mod_id": p.mod_id,
+                    "create_prv": p.create_prv,
+                    "read_prv": p.read_prv,
+                    "view_prv": p.view_prv,
+                    "update_prv": p.update_prv,
+                    "delete_prv": p.delete_prv,
+                    "admin_prv": p.admin_prv,
+                    "hr_prv": p.hr_prv,
+                    "view_global": p.view_global,
+                    "permissions": p.permissions
+                })
+        
         return {"privileges": privileges}
     except Exception as e:
         handle_db_error(e)
