@@ -638,7 +638,6 @@ class RolePrivilege(Base):
     last_updated_by = Column(String(100))
     last_update_date = Column(DateTime)
     last_update_login = Column(String(100))
-    view_global = Column(String(240))
     mod_array = Column(String(240))
     create_prv = Column(String(240))
     read_prv = Column(String(240))
