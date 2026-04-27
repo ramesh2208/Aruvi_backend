@@ -85,12 +85,30 @@ MASTER_MOD_IDS = [
     44, 45, 46, 47, 48, 49, 50, 51, 52, 53,
     54, 55, 56, 57
 ]
+
+MODULE_NAMES = {
+    1: "Attendance",
+    2: "Leave",
+    3: "Timesheet",
+    4: "Permission",
+    11: "Employee List",
+    12: "Timesheet (Global)",
+    13: "HR Leave",
+    14: "HR Permission",
+    15: "Attendance (Global)",
+    16: "Client",
+    17: "Project",
+    33: "OT (Global)",
+    54: "WFH (Global)",
+    57: "WFH"
+}
  
  
 def _build_empty_priv(mod_id_val: int = 0) -> dict:
     """Return a zero-filled privilege dict for a given mod_id."""
     return {
         "mod_id":      mod_id_val,
+        "module_name": MODULE_NAMES.get(mod_id_val, f"Module {mod_id_val}"),
         "create_prv":  0,
         "read_prv":    0,
         "view_prv":    0,
@@ -123,102 +141,69 @@ def _safe_int(arr, idx):
     return 0
  
  
-def _build_module_based_privileges(user) -> list:
+def _build_privileges_from_arrays(source_obj) -> list:
     """
-    Build privileges for role_type == 'module based'.
- 
-    PHP stores parallel comma-separated arrays in EmpDet:
-      mod_id     = "1,2,3,4,11,12,13,14,15,16,17,33,54,57"
-      create_prv = "0,1,1,1,0,1,0,0,1,1,1,0,0,1"
-      read_prv   = "2,2,2,2,2,2,2,2,2,2,2,2,2,2"
-      view_prv   = "0,0,0,0,5,5,5,5,0,5,5,5,5,0"  ← same as view_global
- 
-    We iterate MASTER_MOD_IDS → for each, look up its position in user's
-    mod_id array → read all privilege values at that position.
+    Unified logic to build privileges from any object (EmpDet or RolePrivilege)
+    that stores module access as parallel comma-separated strings (arrays).
     """
-    mod_ids_raw = parse_privilege_array(getattr(user, 'mod_id',     None))
-    create_prvs = parse_privilege_array(getattr(user, 'create_prv', None))
-    read_prvs   = parse_privilege_array(getattr(user, 'read_prv',   None))
-    view_prvs   = parse_privilege_array(getattr(user, 'view_prv',   None))
-    update_prvs = parse_privilege_array(getattr(user, 'update_prv', None))
-    delete_prvs = parse_privilege_array(getattr(user, 'delete_prv', None))
-    admin_prvs  = parse_privilege_array(getattr(user, 'admin_prv',  None))
-    hr_prvs     = parse_privilege_array(getattr(user, 'hr_prv',     None))
- 
-    # Build lookup: mod_id_value → position index in user's arrays
+    # 1. Parse all arrays from the source object
+    mid_raw = getattr(source_obj, 'mod_array', None) or getattr(source_obj, 'mod_id', None)
+    
+    mod_ids_raw = parse_privilege_array(mid_raw)
+    create_prvs = parse_privilege_array(getattr(source_obj, 'create_prv', None))
+    read_prvs   = parse_privilege_array(getattr(source_obj, 'read_prv',   None))
+    view_prvs   = parse_privilege_array(getattr(source_obj, 'view_prv',   None))
+    update_prvs = parse_privilege_array(getattr(source_obj, 'update_prv', None))
+    delete_prvs = parse_privilege_array(getattr(source_obj, 'delete_prv', None))
+    admin_prvs  = parse_privilege_array(getattr(source_obj, 'admin_prv',  None))
+    hr_prvs     = parse_privilege_array(getattr(source_obj, 'hr_prv',     None))
+
+    # 2. Build lookup: mod_id_value → position index in the source arrays
     user_mod_index: dict[int, int] = {}
     for i, m in enumerate(mod_ids_raw):
         m = m.strip()
         if m and m.isdigit():
             user_mod_index[int(m)] = i
- 
+
+    # 3. Align results to MASTER_MOD_IDS for consistent response order
     privileges = []
     for master_mod in MASTER_MOD_IDS:
         if master_mod in user_mod_index:
             i = user_mod_index[master_mod]
+            # view_prv is treated as view_global in this system (value 5)
             vg = _safe_int(view_prvs, i)
             privileges.append({
                 "mod_id":      master_mod,
-                "create_prv":  _safe_int(create_prvs, i),
-                "read_prv":    _safe_int(read_prvs,   i),
-                "view_prv":    vg,
-                "update_prv":  _safe_int(update_prvs, i),
-                "delete_prv":  _safe_int(delete_prvs, i),
+                "module_name": MODULE_NAMES.get(master_mod, f"Module {master_mod}"),
+                "create_prv":  _safe_int(create_prvs, i), # 1 = Enabled
+                "read_prv":    _safe_int(read_prvs,   i), # 2 = Enabled
+                "view_prv":    vg,                        # 5 = Global View
+                "update_prv":  _safe_int(update_prvs, i), # 3 = Enabled
+                "delete_prv":  _safe_int(delete_prvs, i), # 4 = Enabled
                 "admin_prv":   _safe_int(admin_prvs,  i),
                 "hr_prv":      _safe_int(hr_prvs,     i),
-                "view_global": vg,   # view_prv IS view_global
-                "permissions": None,
-            })
-        else:
-            privileges.append(_build_empty_priv(master_mod))
- 
-    return privileges
- 
- 
-def _build_role_based_privileges(priv_rows) -> list:
-    """
-    Build privileges for rpd_id (role-based) users.
- 
-    `priv_rows` = all RolePrivilege rows for this role (one row per mod_id).
- 
-    RolePrivilege table expected columns:
-      mod_id, create_prv, read_prv, update_prv, delete_prv,
-      view_global (5=global, 0=own), admin_prv, hr_prv,
-      role_prv_ref_no, permissions
- 
-    We iterate MASTER_MOD_IDS so output is always same-length & same-order
-    as module_based output → frontend can use same logic for both.
-    """
-    # Build lookup: mod_id → row
-    row_map: dict[int, object] = {}
-    for p in priv_rows:
-        try:
-            mid = int(p.mod_id)
-            row_map[mid] = p
-        except Exception:
-            pass
- 
-    privileges = []
-    for master_mod in MASTER_MOD_IDS:
-        p = row_map.get(master_mod)
-        if p:
-            vg = int(p.view_global or 0)
-            privileges.append({
-                "mod_id":      master_mod,
-                "create_prv":  int(p.create_prv  or 0),
-                "read_prv":    int(p.read_prv     or 0),
-                "view_prv":    vg,
-                "update_prv":  int(p.update_prv   or 0),
-                "delete_prv":  int(p.delete_prv   or 0),
-                "admin_prv":   int(getattr(p, 'admin_prv', 0) or 0),
-                "hr_prv":      int(getattr(p, 'hr_prv',    0) or 0),
                 "view_global": vg,
-                "permissions": getattr(p, 'permissions', None),
+                "permissions": getattr(source_obj, 'permissions', None),
             })
         else:
+            # Module not assigned to user/role
             privileges.append(_build_empty_priv(master_mod))
- 
+
     return privileges
+
+
+def _build_module_based_privileges(user) -> list:
+    """Helper for module-based users (arrays stored in EmpDet)."""
+    return _build_privileges_from_arrays(user)
+
+
+def _build_role_based_privileges(priv_rows) -> list:
+    """Helper for role-based users (arrays stored in RolePrivilege)."""
+    if not priv_rows:
+        return [_build_empty_priv(m) for m in MASTER_MOD_IDS]
+    
+    # In 'array type' logic, the first matching row contains the full arrays
+    return _build_privileges_from_arrays(priv_rows[0])
  
  
 def get_user_privileges(user, db) -> list:
