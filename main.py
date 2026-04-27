@@ -30,40 +30,89 @@ import sqlalchemy
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
+ 
 import models, schemas, database
 from database import engine, SessionLocal
-
+ 
 def safe_dt(d):
     if not d: return None
     s = str(d).strip()
     if "0000-00-00" in s: return None
     return d
-
-# ─── PRIVILEGE HELPERS ────────────────────────────────────────────────────────
-# PHP stores privileges as comma-separated strings in EmpDet:
-#   mod_id    = "1,2,3,4,11,12,13,14,15,16,17,33,54,57"
-#   create_prv= "0,1,1,1,0,1,0,0,1,1,1,0,0,1"
-#   read_prv  = "2,2,2,2,2,2,2,2,2,2,2,2,2,2"
-#   view_prv  = "0,0,0,0,0,5,5,5,0,5,5,5,5,0"  ← this IS view_global
+ 
+# ═══════════════════════════════════════════════════════════════════════════════
+# PRIVILEGE SYSTEM - COMPLETE FIXED
+# ═══════════════════════════════════════════════════════════════════════════════
 #
-# CRITICAL RULE: mod_id[i] == X means ALL privilege values at index i
-# belong to module X. PHP checks like:
-#   $mod_id[10] == 11 && $read_prv[10] == 2  → Employee list readable
+# MASTER MOD_ID LIST — positional order mirrors PHP session arrays.
+# Backend always returns privileges aligned to this list.
+# Frontend finds by mod_id value (not index).
 #
-# So we must preserve positional index — including blank/zero placeholders.
-# ─────────────────────────────────────────────────────────────────────────────
-
+# mod_id => module
+#  1  = Attendance (own)
+#  2  = Leave (own)
+#  3  = Timesheet (own)
+#  4  = Permission (own)
+#  5-10 = reserved
+#  11 = Employee list
+#  12 = Timesheet (global/HR)
+#  13 = HR Leave (global)
+#  14 = HR Permission (global)
+#  15 = Attendance (global)
+#  16 = Client
+#  17 = Project (admin + own)
+#  18-32 = reserved
+#  33 = OT (global/HR)
+#  34-53 = reserved
+#  54 = WFH (global)
+#  55-56 = reserved
+#  57 = WFH (own)
+#
+# PRIVILEGE VALUE MEANINGS:
+#   create_prv = 1  → can create
+#   read_prv   = 2  → can read/access page
+#   update_prv = 3  → can update
+#   delete_prv = 4  → can delete
+#   view_global= 5  → global/HR view (see all employees)
+#   0 = no privilege
+# ═══════════════════════════════════════════════════════════════════════════════
+ 
+MASTER_MOD_IDS = [
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+    11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+    21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+    31, 32, 33, 34, 35, 36, 37, 38, 39,
+    44, 45, 46, 47, 48, 49, 50, 51, 52, 53,
+    54, 55, 56, 57
+]
+ 
+ 
+def _build_empty_priv(mod_id_val: int = 0) -> dict:
+    """Return a zero-filled privilege dict for a given mod_id."""
+    return {
+        "mod_id":      mod_id_val,
+        "create_prv":  0,
+        "read_prv":    0,
+        "view_prv":    0,
+        "update_prv":  0,
+        "delete_prv":  0,
+        "admin_prv":   0,
+        "hr_prv":      0,
+        "view_global": 0,
+        "permissions": None,
+    }
+ 
+ 
 def parse_privilege_array(s):
-    """Split a comma-separated privilege string into a list of stripped strings."""
+    """Split a comma-separated privilege string into list of stripped strings."""
     if not s or not isinstance(s, str):
         return []
     s = s.strip()
     if s.startswith('[') and s.endswith(']'):
         s = s[1:-1]
     return [x.strip() for x in s.split(',')]
-
-
+ 
+ 
 def _safe_int(arr, idx):
     """Return arr[idx] as int, or 0 on any failure."""
     try:
@@ -72,110 +121,142 @@ def _safe_int(arr, idx):
     except Exception:
         pass
     return 0
-
-
-def _build_module_based_privileges(user):
+ 
+ 
+def _build_module_based_privileges(user) -> list:
     """
-    Build privileges list for role_type == 'module based'.
-
-    IMPORTANT: blank mod entries get a zero-filled placeholder so that
-    higher positional indices (like 49, 52) remain reachable.
-    The view_prv column IS view_global — same column, both keys returned.
+    Build privileges for role_type == 'module based'.
+ 
+    PHP stores parallel comma-separated arrays in EmpDet:
+      mod_id     = "1,2,3,4,11,12,13,14,15,16,17,33,54,57"
+      create_prv = "0,1,1,1,0,1,0,0,1,1,1,0,0,1"
+      read_prv   = "2,2,2,2,2,2,2,2,2,2,2,2,2,2"
+      view_prv   = "0,0,0,0,5,5,5,5,0,5,5,5,5,0"  ← same as view_global
+ 
+    We iterate MASTER_MOD_IDS → for each, look up its position in user's
+    mod_id array → read all privilege values at that position.
     """
-    mod_ids     = parse_privilege_array(getattr(user, 'mod_id',     None))
+    mod_ids_raw = parse_privilege_array(getattr(user, 'mod_id',     None))
     create_prvs = parse_privilege_array(getattr(user, 'create_prv', None))
     read_prvs   = parse_privilege_array(getattr(user, 'read_prv',   None))
-    view_prvs   = parse_privilege_array(getattr(user, 'view_prv',   None))  # = view_global
+    view_prvs   = parse_privilege_array(getattr(user, 'view_prv',   None))
     update_prvs = parse_privilege_array(getattr(user, 'update_prv', None))
     delete_prvs = parse_privilege_array(getattr(user, 'delete_prv', None))
     admin_prvs  = parse_privilege_array(getattr(user, 'admin_prv',  None))
     hr_prvs     = parse_privilege_array(getattr(user, 'hr_prv',     None))
-
+ 
+    # Build lookup: mod_id_value → position index in user's arrays
+    user_mod_index: dict[int, int] = {}
+    for i, m in enumerate(mod_ids_raw):
+        m = m.strip()
+        if m and m.isdigit():
+            user_mod_index[int(m)] = i
+ 
     privileges = []
-    for i, mod in enumerate(mod_ids):
-        mod = mod.strip()
-        if not mod:
-            # Keep empty placeholder — positional index must stay intact
+    for master_mod in MASTER_MOD_IDS:
+        if master_mod in user_mod_index:
+            i = user_mod_index[master_mod]
+            vg = _safe_int(view_prvs, i)
             privileges.append({
-                "mod_id": 0, "create_prv": 0, "read_prv": 0,
-                "view_prv": 0, "update_prv": 0, "delete_prv": 0,
-                "admin_prv": 0, "hr_prv": 0, "view_global": 0,
-                "permissions": None
+                "mod_id":      master_mod,
+                "create_prv":  _safe_int(create_prvs, i),
+                "read_prv":    _safe_int(read_prvs,   i),
+                "view_prv":    vg,
+                "update_prv":  _safe_int(update_prvs, i),
+                "delete_prv":  _safe_int(delete_prvs, i),
+                "admin_prv":   _safe_int(admin_prvs,  i),
+                "hr_prv":      _safe_int(hr_prvs,     i),
+                "view_global": vg,   # view_prv IS view_global
+                "permissions": None,
             })
-            continue
-
-        mod_int = int(mod) if mod.isdigit() else mod
-        privileges.append({
-            "mod_id":      mod_int,
-            "create_prv":  _safe_int(create_prvs, i),
-            "read_prv":    _safe_int(read_prvs,   i),
-            "view_prv":    _safe_int(view_prvs,   i),
-            "update_prv":  _safe_int(update_prvs,  i),
-            "delete_prv":  _safe_int(delete_prvs,  i),
-            "admin_prv":   _safe_int(admin_prvs,   i),
-            "hr_prv":      _safe_int(hr_prvs,      i),
-            "view_global": _safe_int(view_prvs,    i),  # ← view_prv == view_global
-            "permissions": None
-        })
-
+        else:
+            privileges.append(_build_empty_priv(master_mod))
+ 
     return privileges
-
-
-def _build_role_based_privileges(priv_rows):
-    """Build privileges list for rpd_id (role-based) users."""
-    privileges = []
+ 
+ 
+def _build_role_based_privileges(priv_rows) -> list:
+    """
+    Build privileges for rpd_id (role-based) users.
+ 
+    `priv_rows` = all RolePrivilege rows for this role (one row per mod_id).
+ 
+    RolePrivilege table expected columns:
+      mod_id, create_prv, read_prv, update_prv, delete_prv,
+      view_global (5=global, 0=own), admin_prv, hr_prv,
+      role_prv_ref_no, permissions
+ 
+    We iterate MASTER_MOD_IDS so output is always same-length & same-order
+    as module_based output → frontend can use same logic for both.
+    """
+    # Build lookup: mod_id → row
+    row_map: dict[int, object] = {}
     for p in priv_rows:
-        privileges.append({
-            "mod_id":      p.mod_id,
-            "create_prv":  p.create_prv  or 0,
-            "read_prv":    p.read_prv    or 0,
-            "view_prv":    p.view_prv    or 0,
-            "update_prv":  p.update_prv  or 0,
-            "delete_prv":  p.delete_prv  or 0,
-            "admin_prv":   p.admin_prv   or 0,
-            "hr_prv":      p.hr_prv      or 0,
-            "view_global": p.view_global or 0,
-            "permissions": p.permissions
-        })
-    return privileges
-
-
-def get_user_privileges(user, db):
-    """
-    Single entry-point: given an EmpDet ORM object return its privileges list.
-    Handles both 'module based' and rpd_id role types.
-    """
-    emp_role_type = (user.role_type or "").strip().lower()
-
-    if emp_role_type in ("module based", "module_based"):
-        print(f" Fetching module-based privileges for {user.emp_id}")
-        privs = _build_module_based_privileges(user)
-        print(f" → {len(privs)} module positions parsed")
-        return privs
-
-    if user.rpd_id:
         try:
-            print(f" Fetching role-based privileges for {user.emp_id} (rpd_id={user.rpd_id})")
+            mid = int(p.mod_id)
+            row_map[mid] = p
+        except Exception:
+            pass
+ 
+    privileges = []
+    for master_mod in MASTER_MOD_IDS:
+        p = row_map.get(master_mod)
+        if p:
+            vg = int(p.view_global or 0)
+            privileges.append({
+                "mod_id":      master_mod,
+                "create_prv":  int(p.create_prv  or 0),
+                "read_prv":    int(p.read_prv     or 0),
+                "view_prv":    vg,
+                "update_prv":  int(p.update_prv   or 0),
+                "delete_prv":  int(p.delete_prv   or 0),
+                "admin_prv":   int(getattr(p, 'admin_prv', 0) or 0),
+                "hr_prv":      int(getattr(p, 'hr_prv',    0) or 0),
+                "view_global": vg,
+                "permissions": getattr(p, 'permissions', None),
+            })
+        else:
+            privileges.append(_build_empty_priv(master_mod))
+ 
+    return privileges
+ 
+ 
+def get_user_privileges(user, db) -> list:
+    """
+    Single entry-point: return privilege list for any EmpDet user.
+    Always returns list aligned to MASTER_MOD_IDS (same length, same order).
+    """
+    emp_role_type = (getattr(user, 'role_type', '') or '').strip().lower()
+ 
+    if emp_role_type in ('module based', 'module_based'):
+        print(f"[PRIV] module-based → {user.emp_id}")
+        privs = _build_module_based_privileges(user)
+        print(f"[PRIV] → {len(privs)} entries returned")
+        return privs
+ 
+    if getattr(user, 'rpd_id', None):
+        try:
+            print(f"[PRIV] role-based → {user.emp_id} (rpd_id={user.rpd_id})")
             priv_rows = (
                 db.query(models.RolePrivilege)
                 .filter(models.RolePrivilege.role_prv_ref_no == str(user.rpd_id))
-                .order_by(models.RolePrivilege.mod_id)
                 .all()
             )
             privs = _build_role_based_privileges(priv_rows)
-            print(f" → {len(privs)} role privilege rows found")
+            print(f"[PRIV] → {len(privs)} entries, {len(priv_rows)} DB rows")
             return privs
-        except Exception as priv_err:
-            print(f" Error fetching privileges: {priv_err}")
-
-    return []
-
-# ─────────────────────────────────────────────────────────────────────────────
-
+        except Exception as e:
+            print(f"[PRIV] Error fetching role privileges: {e}")
+ 
+    print(f"[PRIV] No privileges found for {user.emp_id}, returning zeros")
+    return [_build_empty_priv(m) for m in MASTER_MOD_IDS]
+ 
+# ═══════════════════════════════════════════════════════════════════════════════
+ 
 SECRET_KEY = "your-secret-key-here-change-in-production"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 1440
-
+ 
 def create_access_token(data: dict):
     try:
         to_encode = data.copy()
@@ -186,7 +267,7 @@ def create_access_token(data: dict):
     except Exception as e:
         print(f"JWT Token creation error: {e}")
         return f"fallback_token_{datetime.utcnow().timestamp()}"
-
+ 
 def handle_db_error(e: Exception):
     err_msg = str(e)
     print(f"❌ DATABASE ERROR: {err_msg}")
@@ -211,10 +292,10 @@ def handle_db_error(e: Exception):
         status_code=503,
         detail="Database unavailable. The server may be waking up - please wait 30 seconds and try again."
     )
-
-
+ 
+ 
 app = FastAPI()
-
+ 
 def run_migrations_with_retry(max_retries: int = 3, delay: int = 5):
     for attempt in range(1, max_retries + 1):
         try:
@@ -237,7 +318,7 @@ def run_migrations_with_retry(max_retries: int = 3, delay: int = 5):
             print(f"❌ Migration failed: {e}")
             time.sleep(delay)
     return False
-
+ 
 def create_tables_with_retry(max_retries: int = 5, delay: int = 5):
     for attempt in range(1, max_retries + 1):
         try:
@@ -259,7 +340,7 @@ def create_tables_with_retry(max_retries: int = 5, delay: int = 5):
             else:
                 print("❌ CRITICAL: Could not connect to database after all retries. App will start anyway.")
                 return False
-
+ 
 @app.on_event("startup")
 def startup_event():
     import threading
@@ -269,9 +350,9 @@ def startup_event():
     thread = threading.Thread(target=init_db)
     thread.setDaemon(True)
     thread.start()
-
+ 
 otp_store = {}
-
+ 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -279,13 +360,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
+ 
+ 
 @app.get("/")
 def read_root():
     return {"status": "online", "message": "Aruvi Backend is active"}
-
-
+ 
+ 
 @app.get("/health")
 def health_check():
     try:
@@ -295,8 +376,8 @@ def health_check():
         return {"status": "healthy", "db": "connected"}
     except Exception as e:
         return {"status": "degraded", "db": "disconnected", "error": str(e)}
-
-
+ 
+ 
 @app.get("/diag/ip")
 def get_diag_ip():
     try:
@@ -304,8 +385,8 @@ def get_diag_ip():
         return {"ip": response.json().get("ip"), "note": "Add this IP to GoDaddy Remote MySQL host list."}
     except Exception as e:
         return {"error": str(e)}
-
-
+ 
+ 
 def get_db():
     db = database.SessionLocal()
     try:
@@ -321,8 +402,8 @@ def get_db():
             db.close()
     else:
         db.close()
-
-
+ 
+ 
 def parse_date(d):
     if not d:
         return None
@@ -351,8 +432,8 @@ def parse_date(d):
         except:
             continue
     return None
-
-
+ 
+ 
 def parse_time_str(t_str: str):
     if not t_str:
         return None
@@ -377,8 +458,8 @@ def parse_time_str(t_str: str):
         except ValueError:
             return None
     return None
-
-
+ 
+ 
 def format_time_safe(t):
     if not t:
         return ""
@@ -397,8 +478,8 @@ def format_time_safe(t):
     except:
         pass
     return str(t)
-
-
+ 
+ 
 def auto_calculate_total_hours(emp_id: str, db: Session):
     try:
         today = datetime.now().date()
@@ -424,16 +505,16 @@ def auto_calculate_total_hours(emp_id: str, db: Session):
     except Exception as e:
         print(f"❌ Auto-calculation error: {str(e)}")
         return {"error": str(e)}
-
+ 
 @app.post("/auto-calculate-hours")
 def auto_calculate_hours_endpoint(request: schemas.AutoCalculateHoursRequest, db: Session = Depends(get_db)):
     emp_id = request.emp_id.strip()
     result = auto_calculate_total_hours(emp_id, db)
     return result
-
-
+ 
+ 
 # ─── LOGIN ────────────────────────────────────────────────────────────────────
-
+ 
 @app.post("/login", response_model=schemas.Token)
 def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
     try:
@@ -443,10 +524,10 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         username_input = request.username.strip().lower()
         input_pwd = request.password.strip()
         print(f" Username input: {username_input}")
-
+ 
         if not db:
             raise HTTPException(status_code=500, detail="Database connection failed")
-
+ 
         try:
             user = db.query(models.EmpDet).filter(
                 or_(
@@ -458,29 +539,29 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         except Exception as db_err:
             print(f" Database query error: {db_err}")
             handle_db_error(db_err)
-
+ 
         if not user:
             raise HTTPException(status_code=404, detail="Invalid Username")
-
+ 
         print(f" User FOUND: {user.emp_id} ({user.p_mail})")
-
+ 
         input_md5 = hashlib.md5(input_pwd.encode()).hexdigest()
         password_valid = False
-
+ 
         if user.attribute15 and user.attribute15.strip():
             if user.attribute15.lower() == input_md5.lower():
                 password_valid = True
                 print(" Password matched via attribute15 (MD5)")
-
+ 
         if not password_valid and user.password and user.password.strip():
             if user.password.lower() == input_md5.lower():
                 password_valid = True
                 print(" Password matched via password field (MD5)")
-
+ 
         if not password_valid and user.password == input_pwd:
             password_valid = True
             print(" Password matched via direct comparison")
-
+ 
         if not password_valid and user.password and user.attribute15:
             try:
                 AES_KEY = b"1234567890abcdef"
@@ -494,17 +575,17 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
                         print(" Password matched via AES decryption")
             except Exception as e:
                 print(f" AES decrypt failed: {str(e)}")
-
+ 
         if not password_valid:
             raise HTTPException(status_code=401, detail="Invalid Password")
-
+ 
         print(" PASSWORD VERIFIED")
-
+ 
         try:
             access_token = create_access_token(data={"sub": user.emp_id})
         except Exception as token_err:
             raise HTTPException(status_code=500, detail="Token generation failed")
-
+ 
         is_global_admin = False
         role_type = "Employee"
         if user.dom_id:
@@ -517,20 +598,21 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
                         is_global_admin = True
             except:
                 pass
-
+ 
         is_manager = db.query(models.EmpDet).filter(
             func.lower(func.trim(models.EmpDet.assign_manager)) == user.emp_id.lower().strip()
         ).first() is not None
         if is_manager and role_type != "Admin":
             role_type = "Admin"
-
+ 
         has_2fa = bool(user.auth_key and user.auth_key.strip())
         print(f" 2FA: {has_2fa}, Role: {role_type}, Global Admin: {is_global_admin}")
-        print("=" * 60)
-
-        # ── FIXED: single call replaces the old duplicated 40-line block ──
+ 
+        # ── Get privileges (works for BOTH module-based AND role-based) ──────
         privileges = get_user_privileges(user, db)
-
+        print(f" Privileges: {len(privileges)} modules loaded")
+        print("=" * 60)
+ 
         return {
             "access_token": access_token,
             "token_type": "bearer",
@@ -542,14 +624,14 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
             "requires_2fa": has_2fa,
             "privileges": privileges
         }
-
+ 
     except HTTPException:
         raise
     except Exception as e:
         print(f" LOGIN ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error during login")
-
-
+ 
+ 
 @app.post("/forgot-password")
 def forgot_password(request: schemas.ForgotPasswordRequest, background_tasks: BackgroundTasks,
                     db: Session = Depends(get_db)):
@@ -574,8 +656,8 @@ def forgot_password(request: schemas.ForgotPasswordRequest, background_tasks: Ba
     body = get_email_template(user.name or 'User', "Password Reset OTP", content, "Security Team")
     background_tasks.add_task(send_email_notification, email, "ITS - Password Reset Mail", body)
     return {"message": "OTP sent successfully"}
-
-
+ 
+ 
 @app.post("/verify-otp")
 def verify_otp(request: schemas.VerifyOtpRequest):
     email = request.email.strip().lower()
@@ -588,11 +670,11 @@ def verify_otp(request: schemas.VerifyOtpRequest):
             else:
                 raise HTTPException(status_code=400, detail="OTP expired")
     raise HTTPException(status_code=400, detail="Invalid OTP")
-
-
+ 
+ 
 FERNET_KEY = "8wXVu4azfUZx6g0yJOC4FFXG7O5WzFn1WyVTxmEtHQ0="
-
-
+ 
+ 
 def decrypt_auth_key_fernet(encrypted_auth_key: str) -> str:
     try:
         fernet = Fernet(FERNET_KEY.encode())
@@ -601,18 +683,18 @@ def decrypt_auth_key_fernet(encrypted_auth_key: str) -> str:
     except Exception as e:
         print(f" Fernet decryption error: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to decrypt 2FA secret")
-
-
+ 
+ 
 class GetAuthKeyRequest(BaseModel):
     p_mail: str
-
-
+ 
+ 
 class GetAuthKeyResponse(BaseModel):
     auth_key: str
     auth_timer: int
     p_mail: str
-
-
+ 
+ 
 @app.post("/get-user-auth-key", response_model=GetAuthKeyResponse)
 def get_user_auth_key(request: GetAuthKeyRequest, db: Session = Depends(get_db)):
     p_mail = request.p_mail.strip().lower()
@@ -627,8 +709,8 @@ def get_user_auth_key(request: GetAuthKeyRequest, db: Session = Depends(get_db))
     if not user.auth_key:
         raise HTTPException(status_code=400, detail="2FA not configured for this user")
     return GetAuthKeyResponse(auth_key=user.auth_key, auth_timer=user.auth_timer or 30, p_mail=user.p_mail)
-
-
+ 
+ 
 def verify_authenticator_otp_for_user(user, otp_input: str) -> bool:
     try:
         encrypted_key = user.auth_key
@@ -647,8 +729,8 @@ def verify_authenticator_otp_for_user(user, otp_input: str) -> bool:
     except Exception as e:
         print(f" OTP verify error: {str(e)}")
         return False
-
-
+ 
+ 
 @app.post("/verify-2fa")
 def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db)):
     print("\n" + "=" * 60)
@@ -668,7 +750,7 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
     if not ok:
         raise HTTPException(status_code=401, detail="Invalid Authenticator code")
     print(" 2FA SUCCESS")
-
+ 
     is_global_admin = False
     role_type = "Employee"
     if user.dom_id:
@@ -686,10 +768,12 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
     ).first() is not None
     if is_manager and role_type != "Admin":
         role_type = "Admin"
-
-    # ── FIXED: single call replaces the old duplicated block ──
+ 
+    # ── Get privileges (works for BOTH module-based AND role-based) ──────────
     privileges = get_user_privileges(user, db)
-
+    print(f" Privileges: {len(privileges)} modules loaded")
+    print("=" * 60)
+ 
     return {
         "access_token": "REAL_TOKEN_HERE",
         "token_type": "bearer",
@@ -701,8 +785,8 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
         "requires_2fa": False,
         "privileges": privileges
     }
-
-
+ 
+ 
 @app.post("/reset-password")
 def reset_password(request: schemas.ResetPasswordRequest, db: Session = Depends(get_db)):
     email = request.email.strip().lower()
@@ -731,8 +815,35 @@ def reset_password(request: schemas.ResetPasswordRequest, db: Session = Depends(
     db.commit()
     otp_store.pop(email, None)
     return {"message": "Password reset successfully"}
-
-
+ 
+ 
+# ─── SYNC PRIVILEGES ──────────────────────────────────────────────────────────
+@app.get("/sync-privileges/{emp_id}")
+def sync_privileges(emp_id: str, db: Session = Depends(get_db)):
+    """
+    Returns current privileges for an employee.
+    Always returns list aligned to MASTER_MOD_IDS.
+    Called by the app on pull-to-refresh.
+    """
+    emp_id = emp_id.strip()
+    try:
+        user = (
+            db.query(models.EmpDet)
+            .filter(func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower())
+            .first()
+        )
+        if not user:
+            raise HTTPException(status_code=404, detail="Employee not found")
+ 
+        privileges = get_user_privileges(user, db)
+        return {"privileges": privileges}
+ 
+    except HTTPException:
+        raise
+    except Exception as e:
+        handle_db_error(e)
+ 
+ 
 @app.get("/admin/employees")
 def get_employees(manager_id: Optional[str] = None, db: Session = Depends(get_db)):
     try:
@@ -771,37 +882,8 @@ def get_employees(manager_id: Optional[str] = None, db: Session = Depends(get_db
             "address": emp.address or ""
         })
     return results
-
-
-# ─── SYNC PRIVILEGES ─────────────────────────────────────────────────────────
-# Single clean endpoint — no duplicates, correct view_global from view_prv
-# ─────────────────────────────────────────────────────────────────────────────
-@app.get("/sync-privileges/{emp_id}")
-def sync_privileges(emp_id: str, db: Session = Depends(get_db)):
-    """
-    Returns current privileges for an employee, parsed in the same
-    positional order as PHP's session arrays. Called by the React Native
-    app on pull-to-refresh to keep sidebar/tab visibility in sync.
-    """
-    emp_id = emp_id.strip()
-    try:
-        user = (
-            db.query(models.EmpDet)
-            .filter(func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower())
-            .first()
-        )
-        if not user:
-            raise HTTPException(status_code=404, detail="Employee not found")
-
-        privileges = get_user_privileges(user, db)
-        return {"privileges": privileges}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        handle_db_error(e)
-
-
+ 
+ 
 @app.get("/employee-profile/{emp_id}", response_model=schemas.EmployeeProfileResponse)
 def get_employee_profile(emp_id: str, db: Session = Depends(get_db)):
     emp_id = emp_id.strip()
@@ -841,8 +923,8 @@ def get_employee_profile(emp_id: str, db: Session = Depends(get_db)):
         "pan_no": user.pan_no,
         "passport_no": user.passport_no
     }
-
-
+ 
+ 
 @app.get("/admin/attendance-logs")
 def get_attendance_logs(manager_id: Optional[str] = None, db: Session = Depends(get_db)):
     today = datetime.now().date()
@@ -876,8 +958,8 @@ def get_attendance_logs(manager_id: Optional[str] = None, db: Session = Depends(
             "status": log.status if log and log.status else "Absent"
         })
     return results
-
-
+ 
+ 
 @app.post("/check-in")
 def check_in(request: schemas.CheckInRequest, db: Session = Depends(get_db)):
     emp_id = request.emp_id.strip()
@@ -903,14 +985,14 @@ def check_in(request: schemas.CheckInRequest, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         handle_db_error(e)
-
-
+ 
+ 
 @app.post("/check-out")
 def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
     emp_id = request.emp_id.strip()
     now = datetime.now()
     today_date = now.date()
-
+ 
     try:
         checkin_record = db.query(models.CheckIn).filter(
             models.CheckIn.emp_id == emp_id,
@@ -918,48 +1000,48 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         ).order_by(models.CheckIn.check_in_id.desc()).first()
     except Exception as e:
         handle_db_error(e)
-
+ 
     if not checkin_record:
         raise HTTPException(status_code=404, detail="No check-in found for today")
-
+ 
     try:
         raw_in_time = (checkin_record.in_time or "").strip()
         raw_out_time = (request.out_time or "").strip()
-
+ 
         print(f"DEBUG in_time from DB : '{raw_in_time}'")
         print(f"DEBUG out_time from request: '{raw_out_time}'")
-
+ 
         if not raw_in_time:
             checkin_record.in_time = raw_out_time
             raw_in_time = raw_out_time
-
+ 
         t1 = parse_time_str(raw_in_time)
         t2 = parse_time_str(raw_out_time)
-
+ 
         if not t1 or not t2:
             raise ValueError(f"Could not parse times: in={raw_in_time}, out={raw_out_time}")
-
+ 
         grace_start_time = parse_time_str("09:30:00")
         grace_end_time   = parse_time_str("10:00:00")
         checkout_grace_start = parse_time_str("18:30:00")
         checkout_grace_end   = parse_time_str("19:00:00")
-
+ 
         if grace_start_time and grace_end_time and grace_start_time <= t1 <= grace_end_time:
             t1 = grace_start_time
             checkin_record.in_time = "09:30:00"
-
+ 
         if checkout_grace_start and checkout_grace_end and checkout_grace_start <= t2 <= checkout_grace_end:
             t2 = checkout_grace_end
             checkin_record.out_time = "19:00:00"
         else:
             checkin_record.out_time = raw_out_time
-
+ 
         delta = t2 - t1
         total_seconds = int(delta.total_seconds())
         if total_seconds < 0: total_seconds += 24 * 3600
         hours   = total_seconds // 3600
         minutes = (total_seconds % 3600) // 60
-
+ 
         if request.total_hours and request.total_hours not in ["0Hr 0Min", "0Hr 00Min"]:
             calculated_total_hours = request.total_hours
             try:
@@ -971,17 +1053,17 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         else:
             calculated_total_hours = f"{hours}Hr {minutes:02d}Min"
             total_hours_float = hours + (minutes / 60)
-
+ 
         checkin_record.Total_hours      = calculated_total_hours
         checkin_record.last_update_date = now
         checkin_record.last_updated_by  = emp_id
         db.add(checkin_record)
         print(f"DEBUG: Processing {emp_id} - {calculated_total_hours} (float: {total_hours_float})")
-
+ 
         days_to_deduct = 0.0
         new_status = "P"
         leave_reason = ""
-
+ 
         if total_hours_float < 4.0:
             days_to_deduct = 1.0
             new_status = "CL"
@@ -993,7 +1075,7 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         else:
             new_status = "P"
             days_to_deduct = 0.0
-
+ 
         if days_to_deduct > 0:
             cl_balance = db.query(models.LeaveDet).filter(
                 models.LeaveDet.emp_id == emp_id,
@@ -1002,10 +1084,10 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
                     func.lower(models.LeaveDet.leave_type) == "cl"
                 )
             ).first()
-
+ 
             actual_leave_type = "Casual Leave"
             l_det_id_val = None
-
+ 
             if cl_balance and float(cl_balance.available_leave or 0) >= days_to_deduct:
                 cl_balance.available_leave = float(cl_balance.available_leave) - days_to_deduct
                 cl_balance.availed_leave   = float(cl_balance.availed_leave or 0) + days_to_deduct
@@ -1019,7 +1101,7 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
                 checkin_record.status = "LOP" if days_to_deduct == 1.0 else "0.5LOP"
                 actual_leave_type = "Loss of Pay"
                 print(f"⚠️ Status updated to {checkin_record.status} (No CL balance) for {emp_id}")
-
+ 
             new_leave = models.EmpLeave(
                 l_det_id=l_det_id_val, emp_id=emp_id, leave_type=actual_leave_type,
                 from_date=today_date.strftime("%d-%b-%Y"), to_date=today_date.strftime("%d-%b-%Y"),
@@ -1042,11 +1124,11 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         else:
             checkin_record.status = "P"
             print(f"ℹ️ Status remained P (Worked {total_hours_float} hrs) for {emp_id}")
-
+ 
         db.commit()
         db.refresh(checkin_record)
         print(f"✅ Successfully committed Total_hours: {checkin_record.Total_hours}")
-
+ 
     except Exception as e:
         db.rollback()
         print(f"❌ Check-out Error: {str(e)}")
@@ -1060,14 +1142,14 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
             print("⚠️ Saved partial check-out data after error.")
         except:
             db.rollback()
-
+ 
     return {
         "message"     : "Check-out successful",
         "total_hours" : checkin_record.Total_hours or "0Hr 0Min",
         "status"      : checkin_record.status
     }
-
-
+ 
+ 
 @app.get("/check-status/{emp_id}")
 def get_check_status(emp_id: str, db: Session = Depends(get_db)):
     emp_id = emp_id.strip()
@@ -1087,8 +1169,8 @@ def get_check_status(emp_id: str, db: Session = Depends(get_db)):
             "total_hours" : record.Total_hours or "0Hr 0Min"
         }
     return {"checked_in": False}
-
-
+ 
+ 
 @app.get("/attendance-month/{emp_id}")
 def get_attendance_month(emp_id: str, month: int, year: int, db: Session = Depends(get_db)):
     emp_id = emp_id.strip()
@@ -1105,8 +1187,8 @@ def get_attendance_month(emp_id: str, month: int, year: int, db: Session = Depen
             if not isinstance(log.t_date, str):
                 log.t_date = log.t_date.strftime("%Y-%m-%d")
     return logs
-
-
+ 
+ 
 @app.get("/leave-stats/{emp_id}")
 def get_leave_stats(emp_id: str, db: Session = Depends(get_db)):
     emp_id = emp_id.strip()
@@ -1142,8 +1224,8 @@ def get_leave_stats(emp_id: str, db: Session = Depends(get_db)):
     stats["total"] = cl_total + sl_total + mp_total
     stats["availed"] = cl_availed + sl_availed + mp_availed
     return {**stats, "has_record": len(leave_rows) > 0}
-
-
+ 
+ 
 @app.get("/wfh-history/{emp_id}")
 def get_wfh_history(emp_id: str, db: Session = Depends(get_db)):
     emp_id = emp_id.strip()
@@ -1158,8 +1240,8 @@ def get_wfh_history(emp_id: str, db: Session = Depends(get_db)):
          "days": row.days, "reason": row.reason, "status": row.status}
         for row in history
     ]
-
-
+ 
+ 
 @app.get("/leave-history/{emp_id}")
 def get_leave_history(emp_id: str, db: Session = Depends(get_db)):
     emp_id = emp_id.strip()
@@ -1175,8 +1257,8 @@ def get_leave_history(emp_id: str, db: Session = Depends(get_db)):
          "reason": row.reason, "status": row.status, "remarks": row.remarks, "revision": row.revision}
         for row in history
     ]
-
-
+ 
+ 
 def send_email_notification(to_email: str, subject: str, body_html: str):
     if not to_email:
         print(" Email_id notification skipped: No recipient email provided")
@@ -1196,8 +1278,8 @@ def send_email_notification(to_email: str, subject: str, body_html: str):
     except Exception as e:
         print(f" ERROR calling email API for {to_email}: {str(e)}")
         return False
-
-
+ 
+ 
 def send_expo_push_notification(tokens, title, message, data=None):
     url = "https://exp.host/--/api/v2/push/send"
     print(f"\n🔔 [EXPO PUSH] PREPARING TO SEND:")
@@ -1219,8 +1301,8 @@ def send_expo_push_notification(tokens, title, message, data=None):
             print(f"   ❌ [EXPO PUSH] FAILED: {response.text}")
     except Exception as e:
         print(f"   ❌ [EXPO PUSH] ERROR: {str(e)}")
-
-
+ 
+ 
 @app.post("/register-push-token")
 def register_push_token(req: schemas.PushTokenRegisterRequest, db: Session = Depends(get_db)):
     emp_id = req.user_id.strip().upper()
@@ -1242,14 +1324,14 @@ def register_push_token(req: schemas.PushTokenRegisterRequest, db: Session = Dep
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail="Failed to save token to database")
-
-
+ 
+ 
 @app.post("/test-push")
 def test_push(req: schemas.PushTokenRegisterRequest, db: Session = Depends(get_db)):
     send_expo_push_notification([req.push_token], "Aruvi Test Notification", "If you see this, push notifications are working perfectly!")
     return {"message": "Test push triggered"}
-
-
+ 
+ 
 def get_approvers(db: Session, user: models.EmpDet):
     approvers = []
     approver_ids = set()
@@ -1281,8 +1363,8 @@ def get_approvers(db: Session, user: models.EmpDet):
     except Exception as e:
         print(f" Error fetching management users for notification: {e}")
     return approvers
-
-
+ 
+ 
 def fmt_days(d):
     try:
         val = float(d)
@@ -1291,8 +1373,8 @@ def fmt_days(d):
         return f"{val:.2f}".rstrip('0').rstrip('.')
     except (ValueError, TypeError):
         return str(d)
-
-
+ 
+ 
 def get_email_template(receiver_name, title, content_html, sender_name="Aruvi Team"):
     return f"""
     <html>
