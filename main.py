@@ -73,7 +73,7 @@ def safe_dt(d):
 #   read_prv   = 2  → can read/access page
 #   update_prv = 3  → can update
 #   delete_prv = 4  → can delete
-#   view_global= 5  → global/HR view (see all employees)
+#   view_prv= 5  → global/HR view (see all employees)
 #   0 = no privilege
 # ═══════════════════════════════════════════════════════════════════════════════
  
@@ -116,7 +116,6 @@ def _build_empty_priv(mod_id_val: int = 0) -> dict:
         "delete_prv":  0,
         "admin_prv":   0,
         "hr_prv":      0,
-        "view_global": 0,
         "permissions": None,
     }
  
@@ -170,7 +169,7 @@ def _build_privileges_from_arrays(source_obj) -> list:
     for master_mod in MASTER_MOD_IDS:
         if master_mod in user_mod_index:
             i = user_mod_index[master_mod]
-            # view_prv is treated as view_global in this system (value 5)
+            # view_prv is treated as view_prv in this system (value 5)
             vg = _safe_int(view_prvs, i)
             privileges.append({
                 "mod_id":      master_mod,
@@ -182,7 +181,6 @@ def _build_privileges_from_arrays(source_obj) -> list:
                 "delete_prv":  _safe_int(delete_prvs, i), # 4 = Enabled
                 "admin_prv":   _safe_int(admin_prvs,  i),
                 "hr_prv":      _safe_int(hr_prvs,     i),
-                "view_global": vg,
                 "permissions": getattr(source_obj, 'permissions', None),
             })
         else:
