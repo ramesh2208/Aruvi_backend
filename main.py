@@ -222,9 +222,11 @@ def get_user_privileges(user, db) -> list:
     if getattr(user, 'rpd_id', None):
         try:
             print(f"[PRIV] role-based → {user.emp_id} (rpd_id={user.rpd_id})")
+            # Convert rpd_id to int as it's the primary key in RolePrivilege
+            r_id = int(str(user.rpd_id).strip())
             priv_rows = (
                 db.query(models.RolePrivilege)
-                .filter(models.RolePrivilege.role_prv_ref_no == str(user.rpd_id))
+                .filter(models.RolePrivilege.rpd_id == r_id)
                 .all()
             )
             privs = _build_role_based_privileges(priv_rows)
