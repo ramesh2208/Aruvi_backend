@@ -553,11 +553,7 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
                 encrypted_bytes = base64.b64decode(user.password)
                 iv_bytes = base64.b64decode(user.attribute15)
                 if len(iv_bytes) == 16:
-                    cipher = AES.new(AES_KEY, AES.MODE_CBC, iv_bytes)
-                    decrypted = unpad(cipher.decrypt(encrypted_bytes), 16).decode()
-                    if decrypted == input_pwd:
-                        password_valid = True
-                        print(" Password matched via AES decryption")
+                    # Domain-based role logic removed – role now determined by manager status
             except Exception as e:
                 print(f" AES decrypt failed: {str(e)}")
  
@@ -573,16 +569,7 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
  
         is_global_admin = False
         role_type = "Employee"
-        if user.dom_id:
-            try:
-                d_id = int(str(user.dom_id).strip())
-                domain_obj = db.query(models.Domain).filter(models.Domain.dom_id == d_id).first()
-                if domain_obj and domain_obj.domain:
-                    if any(x in domain_obj.domain.lower() for x in ["admin", "executive", "management"]):
-                        role_type = "Admin"
-                        is_global_admin = True
-            except:
-                pass
+        # Domain-based role logic removed – role determined by manager status
  
         is_manager = db.query(models.EmpDet).filter(
             func.lower(func.trim(models.EmpDet.assign_manager)) == user.emp_id.lower().strip()
@@ -736,18 +723,9 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
         raise HTTPException(status_code=401, detail="Invalid Authenticator code")
     print(" 2FA SUCCESS")
  
+    # Determine role based on manager status only
     is_global_admin = False
     role_type = "Employee"
-    if user.dom_id:
-        try:
-            d_id = int(str(user.dom_id).strip())
-            domain_obj = db.query(models.Domain).filter(models.Domain.dom_id == d_id).first()
-            if domain_obj and domain_obj.domain:
-                if any(x in domain_obj.domain.lower() for x in ["admin", "executive", "management"]):
-                    role_type = "Admin"
-                    is_global_admin = True
-        except:
-            pass
     is_manager = db.query(models.EmpDet).filter(
         func.lower(func.trim(models.EmpDet.assign_manager)) == user.emp_id.lower().strip()
     ).first() is not None
@@ -760,7 +738,7 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
     print("=" * 60)
  
     return {
-        "access_token": "REAL_TOKEN_HERE",
+        access_token = create_access_token(data={"sub": user.emp_id})
         "token_type": "bearer",
         "username": user.p_mail or "",
         "role_type": role_type,
@@ -1330,23 +1308,7 @@ def get_approvers(db: Session, user: models.EmpDet):
         if pm and pm.emp_id not in approver_ids:
             approvers.append({"email": pm.p_mail, "name": pm.name, "token": pm.attribute7})
             approver_ids.add(pm.emp_id)
-    try:
-        all_doms = db.query(models.Domain).filter(
-            or_(
-                func.lower(models.Domain.domain).contains("admin"),
-                func.lower(models.Domain.domain).contains("executive"),
-                func.lower(models.Domain.domain).contains("management")
-            )
-        ).all()
-        dom_ids = [str(d.dom_id) for d in all_doms]
-        if dom_ids:
-            management_users = db.query(models.EmpDet).filter(models.EmpDet.dom_id.in_(dom_ids)).all()
-            for m_user in management_users:
-                if m_user.emp_id not in approver_ids:
-                    approvers.append({"email": m_user.p_mail, "name": m_user.name, "token": m_user.attribute7})
-                    approver_ids.add(m_user.emp_id)
-    except Exception as e:
-        print(f" Error fetching management users for notification: {e}")
+# Domain-based approver lookup removed; only manager and project manager are considered
     return approvers
  
  
