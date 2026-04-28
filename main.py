@@ -509,10 +509,10 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         username_input = request.username.strip().lower()
         input_pwd = request.password.strip()
         print(f" Username input: {username_input}")
- 
+
         if not db:
             raise HTTPException(status_code=500, detail="Database connection failed")
- 
+
         try:
             user = db.query(models.EmpDet).filter(
                 or_(
@@ -524,29 +524,29 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         except Exception as db_err:
             print(f" Database query error: {db_err}")
             handle_db_error(db_err)
- 
+
         if not user:
             raise HTTPException(status_code=404, detail="Invalid Username")
- 
+
         print(f" User FOUND: {user.emp_id} ({user.p_mail})")
- 
+
         input_md5 = hashlib.md5(input_pwd.encode()).hexdigest()
         password_valid = False
- 
+
         if user.attribute15 and user.attribute15.strip():
             if user.attribute15.lower() == input_md5.lower():
                 password_valid = True
                 print(" Password matched via attribute15 (MD5)")
- 
+
         if not password_valid and user.password and user.password.strip():
             if user.password.lower() == input_md5.lower():
                 password_valid = True
                 print(" Password matched via password field (MD5)")
- 
+
         if not password_valid and user.password == input_pwd:
             password_valid = True
             print(" Password matched via direct comparison")
- 
+
         if not password_valid and user.password and user.attribute15:
             try:
                 AES_KEY = b"1234567890abcdef"
@@ -560,44 +560,36 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
                         print(" Password matched via AES decryption")
             except Exception as e:
                 print(f" AES decrypt failed: {str(e)}")
- 
+
         if not password_valid:
             raise HTTPException(status_code=401, detail="Invalid Password")
- 
+
         print(" PASSWORD VERIFIED")
- 
+
         try:
             access_token = create_access_token(data={"sub": user.emp_id})
         except Exception as token_err:
             raise HTTPException(status_code=500, detail="Token generation failed")
- 
-        is_global_admin = False
+
+        # ── Role: Only Manager check remains ──────────────────────────────
         role_type = "Employee"
-        if user.dom_id:
-            try:
-                d_id = int(str(user.dom_id).strip())
-                domain_obj = db.query(models.Domain).filter(models.Domain.dom_id == d_id).first()
-                if domain_obj and domain_obj.domain:
-                    if any(x in domain_obj.domain.lower() for x in ["admin", "executive", "management"]):
-                        role_type = "Admin"
-                        is_global_admin = True
-            except:
-                pass
- 
+        is_global_admin = False
+
         is_manager = db.query(models.EmpDet).filter(
             func.lower(func.trim(models.EmpDet.assign_manager)) == user.emp_id.lower().strip()
         ).first() is not None
-        if is_manager and role_type != "Admin":
+
+        if is_manager:
             role_type = "Admin"
- 
+            is_global_admin = True
+
         has_2fa = bool(user.auth_key and user.auth_key.strip())
         print(f" 2FA: {has_2fa}, Role: {role_type}, Global Admin: {is_global_admin}")
- 
-        # ── Get privileges (works for BOTH module-based AND role-based) ──────
+
         privileges = get_user_privileges(user, db)
         print(f" Privileges: {len(privileges)} modules loaded")
         print("=" * 60)
- 
+
         return {
             "access_token": access_token,
             "token_type": "bearer",
@@ -609,7 +601,7 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
             "requires_2fa": has_2fa,
             "privileges": privileges
         }
- 
+
     except HTTPException:
         raise
     except Exception as e:
