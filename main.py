@@ -553,8 +553,11 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
                 encrypted_bytes = base64.b64decode(user.password)
                 iv_bytes = base64.b64decode(user.attribute15)
                 if len(iv_bytes) == 16:
-                    # Placeholder for any future decryption logic
-                    pass
+                    cipher = AES.new(AES_KEY, AES.MODE_CBC, iv_bytes)
+                    decrypted = unpad(cipher.decrypt(encrypted_bytes), 16).decode()
+                    if decrypted == input_pwd:
+                        password_valid = True
+                        print(" Password matched via AES decryption")
             except Exception as e:
                 print(f" AES decrypt failed: {str(e)}")
  
@@ -570,6 +573,16 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
  
         is_global_admin = False
         role_type = "Employee"
+        if user.dom_id:
+            try:
+                d_id = int(str(user.dom_id).strip())
+                domain_obj = db.query(models.Domain).filter(models.Domain.dom_id == d_id).first()
+                if domain_obj and domain_obj.domain:
+                    if any(x in domain_obj.domain.lower() for x in ["admin", "executive", "management"]):
+                        role_type = "Admin"
+                        is_global_admin = True
+            except:
+                pass
  
         is_manager = db.query(models.EmpDet).filter(
             func.lower(func.trim(models.EmpDet.assign_manager)) == user.emp_id.lower().strip()
@@ -670,7 +683,6 @@ class GetAuthKeyResponse(BaseModel):
 @app.post("/get-user-auth-key", response_model=GetAuthKeyResponse)
 def get_user_auth_key(request: GetAuthKeyRequest, db: Session = Depends(get_db)):
     p_mail = request.p_mail.strip().lower()
-    p_mail = request.p_mail.strip().lower()
     if not p_mail:
         raise HTTPException(status_code=400, detail="Email_id is required")
     try:
@@ -704,11 +716,8 @@ def verify_authenticator_otp_for_user(user, otp_input: str) -> bool:
         return False
  
  
+@app.post("/verify-2fa")
 def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db)):
-    """Verify 2FA code and return access token."""
-    print("\n" + "=" * 60)
-    print(" 2FA VERIFY")
-    print("=" * 60)
     print("\n" + "=" * 60)
     print(" 2FA VERIFY")
     print("=" * 60)
@@ -727,9 +736,18 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
         raise HTTPException(status_code=401, detail="Invalid Authenticator code")
     print(" 2FA SUCCESS")
  
-    # Determine role based on manager status only
     is_global_admin = False
     role_type = "Employee"
+    if user.dom_id:
+        try:
+            d_id = int(str(user.dom_id).strip())
+            domain_obj = db.query(models.Domain).filter(models.Domain.dom_id == d_id).first()
+            if domain_obj and domain_obj.domain:
+                if any(x in domain_obj.domain.lower() for x in ["admin", "executive", "management"]):
+                    role_type = "Admin"
+                    is_global_admin = True
+        except:
+            pass
     is_manager = db.query(models.EmpDet).filter(
         func.lower(func.trim(models.EmpDet.assign_manager)) == user.emp_id.lower().strip()
     ).first() is not None
@@ -741,9 +759,8 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
     print(f" Privileges: {len(privileges)} modules loaded")
     print("=" * 60)
  
-    access_token = create_access_token(data={"sub": user.emp_id})
     return {
-        "access_token": access_token,
+        "access_token": "REAL_TOKEN_HERE",
         "token_type": "bearer",
         "username": user.p_mail or "",
         "role_type": role_type,
@@ -753,12 +770,10 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
         "requires_2fa": False,
         "privileges": privileges
     }
-
  
  
 @app.post("/reset-password")
 def reset_password(request: schemas.ResetPasswordRequest, db: Session = Depends(get_db)):
-
     email = request.email.strip().lower()
     otp = request.otp.strip()
     new_pwd = request.new_password.strip()
@@ -795,7 +810,6 @@ def sync_privileges(emp_id: str, db: Session = Depends(get_db)):
     Always returns list aligned to MASTER_MOD_IDS.
     Called by the app on pull-to-refresh.
     """
-
     emp_id = emp_id.strip()
     try:
         user = (
@@ -816,8 +830,7 @@ def sync_privileges(emp_id: str, db: Session = Depends(get_db)):
  
  
 @app.get("/admin/employees")
-def get_admin_employees(manager_id: Optional[str] = None, db: Session = Depends(get_db)):
-    """Retrieve list of employees, optionally filtered by manager ID."""
+def get_employees(manager_id: Optional[str] = None, db: Session = Depends(get_db)):
     try:
         query = db.query(models.EmpDet).filter(
             (models.EmpDet.end_date == None) | (models.EmpDet.end_date == "")
@@ -854,12 +867,10 @@ def get_admin_employees(manager_id: Optional[str] = None, db: Session = Depends(
             "address": emp.address or ""
         })
     return results
-
-
  
  
 @app.get("/employee-profile/{emp_id}", response_model=schemas.EmployeeProfileResponse)
-
+def get_employee_profile(emp_id: str, db: Session = Depends(get_db)):
     emp_id = emp_id.strip()
     try:
         user = db.query(models.EmpDet).filter(
@@ -935,7 +946,6 @@ def get_attendance_logs(manager_id: Optional[str] = None, db: Session = Depends(
  
  
 @app.post("/check-in")
-
 def check_in(request: schemas.CheckInRequest, db: Session = Depends(get_db)):
     emp_id = request.emp_id.strip()
     now = datetime.now()
@@ -964,7 +974,6 @@ def check_in(request: schemas.CheckInRequest, db: Session = Depends(get_db)):
  
 @app.post("/check-out")
 def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
-
     emp_id = request.emp_id.strip()
     now = datetime.now()
     today_date = now.date()
@@ -1127,7 +1136,7 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
  
  
 @app.get("/check-status/{emp_id}")
-
+def get_check_status(emp_id: str, db: Session = Depends(get_db)):
     emp_id = emp_id.strip()
     today_date = datetime.now().date()
     try:
@@ -1148,7 +1157,7 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
  
  
 @app.get("/attendance-month/{emp_id}")
-
+def get_attendance_month(emp_id: str, month: int, year: int, db: Session = Depends(get_db)):
     emp_id = emp_id.strip()
     try:
         logs = db.query(models.CheckIn).filter(
@@ -1166,7 +1175,7 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
  
  
 @app.get("/leave-stats/{emp_id}")
-
+def get_leave_stats(emp_id: str, db: Session = Depends(get_db)):
     emp_id = emp_id.strip()
     try:
         leave_rows = db.query(models.LeaveDet).filter(
@@ -1203,7 +1212,7 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
  
  
 @app.get("/wfh-history/{emp_id}")
-
+def get_wfh_history(emp_id: str, db: Session = Depends(get_db)):
     emp_id = emp_id.strip()
     try:
         history = db.query(models.WFHDet).filter(
@@ -1219,7 +1228,7 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
  
  
 @app.get("/leave-history/{emp_id}")
-
+def get_leave_history(emp_id: str, db: Session = Depends(get_db)):
     emp_id = emp_id.strip()
     try:
         history = db.query(models.EmpLeave).filter(
@@ -1280,7 +1289,6 @@ def send_expo_push_notification(tokens, title, message, data=None):
  
  
 @app.post("/register-push-token")
-
 def register_push_token(req: schemas.PushTokenRegisterRequest, db: Session = Depends(get_db)):
     emp_id = req.user_id.strip().upper()
     print(f"\n📥 [PUSH] REGISTER TOKEN REQUEST for: {emp_id}")
@@ -1304,7 +1312,7 @@ def register_push_token(req: schemas.PushTokenRegisterRequest, db: Session = Dep
  
  
 @app.post("/test-push")
-
+def test_push(req: schemas.PushTokenRegisterRequest, db: Session = Depends(get_db)):
     send_expo_push_notification([req.push_token], "Aruvi Test Notification", "If you see this, push notifications are working perfectly!")
     return {"message": "Test push triggered"}
  
@@ -1322,7 +1330,23 @@ def get_approvers(db: Session, user: models.EmpDet):
         if pm and pm.emp_id not in approver_ids:
             approvers.append({"email": pm.p_mail, "name": pm.name, "token": pm.attribute7})
             approver_ids.add(pm.emp_id)
-# Domain-based approver lookup removed; only manager and project manager are considered
+    try:
+        all_doms = db.query(models.Domain).filter(
+            or_(
+                func.lower(models.Domain.domain).contains("admin"),
+                func.lower(models.Domain.domain).contains("executive"),
+                func.lower(models.Domain.domain).contains("management")
+            )
+        ).all()
+        dom_ids = [str(d.dom_id) for d in all_doms]
+        if dom_ids:
+            management_users = db.query(models.EmpDet).filter(models.EmpDet.dom_id.in_(dom_ids)).all()
+            for m_user in management_users:
+                if m_user.emp_id not in approver_ids:
+                    approvers.append({"email": m_user.p_mail, "name": m_user.name, "token": m_user.attribute7})
+                    approver_ids.add(m_user.emp_id)
+    except Exception as e:
+        print(f" Error fetching management users for notification: {e}")
     return approvers
  
  
