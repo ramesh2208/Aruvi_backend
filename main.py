@@ -795,6 +795,7 @@ def sync_privileges(emp_id: str, db: Session = Depends(get_db)):
     Always returns list aligned to MASTER_MOD_IDS.
     Called by the app on pull-to-refresh.
     """
+
     emp_id = emp_id.strip()
     try:
         user = (
@@ -815,7 +816,8 @@ def sync_privileges(emp_id: str, db: Session = Depends(get_db)):
  
  
 @app.get("/admin/employees")
-
+def get_admin_employees(manager_id: Optional[str] = None, db: Session = Depends(get_db)):
+    """Retrieve list of employees, optionally filtered by manager ID."""
     try:
         query = db.query(models.EmpDet).filter(
             (models.EmpDet.end_date == None) | (models.EmpDet.end_date == "")
@@ -852,6 +854,8 @@ def sync_privileges(emp_id: str, db: Session = Depends(get_db)):
             "address": emp.address or ""
         })
     return results
+
+
  
  
 @app.get("/employee-profile/{emp_id}", response_model=schemas.EmployeeProfileResponse)
