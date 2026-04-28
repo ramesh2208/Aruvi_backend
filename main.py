@@ -553,7 +553,8 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
                 encrypted_bytes = base64.b64decode(user.password)
                 iv_bytes = base64.b64decode(user.attribute15)
                 if len(iv_bytes) == 16:
-                    # Domain-based role logic removed – role now determined by manager status
+                    # Placeholder for any future decryption logic
+                    pass
             except Exception as e:
                 print(f" AES decrypt failed: {str(e)}")
  
@@ -569,7 +570,6 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
  
         is_global_admin = False
         role_type = "Employee"
-        # Domain-based role logic removed – role determined by manager status
  
         is_manager = db.query(models.EmpDet).filter(
             func.lower(func.trim(models.EmpDet.assign_manager)) == user.emp_id.lower().strip()
@@ -670,6 +670,7 @@ class GetAuthKeyResponse(BaseModel):
 @app.post("/get-user-auth-key", response_model=GetAuthKeyResponse)
 def get_user_auth_key(request: GetAuthKeyRequest, db: Session = Depends(get_db)):
     p_mail = request.p_mail.strip().lower()
+    p_mail = request.p_mail.strip().lower()
     if not p_mail:
         raise HTTPException(status_code=400, detail="Email_id is required")
     try:
@@ -703,8 +704,11 @@ def verify_authenticator_otp_for_user(user, otp_input: str) -> bool:
         return False
  
  
-@app.post("/verify-2fa")
 def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db)):
+    """Verify 2FA code and return access token."""
+    print("\n" + "=" * 60)
+    print(" 2FA VERIFY")
+    print("=" * 60)
     print("\n" + "=" * 60)
     print(" 2FA VERIFY")
     print("=" * 60)
@@ -737,8 +741,9 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
     print(f" Privileges: {len(privileges)} modules loaded")
     print("=" * 60)
  
+    access_token = create_access_token(data={"sub": user.emp_id})
     return {
-        access_token = create_access_token(data={"sub": user.emp_id})
+        "access_token": access_token,
         "token_type": "bearer",
         "username": user.p_mail or "",
         "role_type": role_type,
@@ -748,10 +753,12 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
         "requires_2fa": False,
         "privileges": privileges
     }
+
  
  
 @app.post("/reset-password")
 def reset_password(request: schemas.ResetPasswordRequest, db: Session = Depends(get_db)):
+
     email = request.email.strip().lower()
     otp = request.otp.strip()
     new_pwd = request.new_password.strip()
@@ -808,7 +815,7 @@ def sync_privileges(emp_id: str, db: Session = Depends(get_db)):
  
  
 @app.get("/admin/employees")
-def get_employees(manager_id: Optional[str] = None, db: Session = Depends(get_db)):
+
     try:
         query = db.query(models.EmpDet).filter(
             (models.EmpDet.end_date == None) | (models.EmpDet.end_date == "")
@@ -848,7 +855,7 @@ def get_employees(manager_id: Optional[str] = None, db: Session = Depends(get_db
  
  
 @app.get("/employee-profile/{emp_id}", response_model=schemas.EmployeeProfileResponse)
-def get_employee_profile(emp_id: str, db: Session = Depends(get_db)):
+
     emp_id = emp_id.strip()
     try:
         user = db.query(models.EmpDet).filter(
@@ -924,6 +931,7 @@ def get_attendance_logs(manager_id: Optional[str] = None, db: Session = Depends(
  
  
 @app.post("/check-in")
+
 def check_in(request: schemas.CheckInRequest, db: Session = Depends(get_db)):
     emp_id = request.emp_id.strip()
     now = datetime.now()
@@ -952,6 +960,7 @@ def check_in(request: schemas.CheckInRequest, db: Session = Depends(get_db)):
  
 @app.post("/check-out")
 def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
+
     emp_id = request.emp_id.strip()
     now = datetime.now()
     today_date = now.date()
@@ -1114,7 +1123,7 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
  
  
 @app.get("/check-status/{emp_id}")
-def get_check_status(emp_id: str, db: Session = Depends(get_db)):
+
     emp_id = emp_id.strip()
     today_date = datetime.now().date()
     try:
@@ -1135,7 +1144,7 @@ def get_check_status(emp_id: str, db: Session = Depends(get_db)):
  
  
 @app.get("/attendance-month/{emp_id}")
-def get_attendance_month(emp_id: str, month: int, year: int, db: Session = Depends(get_db)):
+
     emp_id = emp_id.strip()
     try:
         logs = db.query(models.CheckIn).filter(
@@ -1153,7 +1162,7 @@ def get_attendance_month(emp_id: str, month: int, year: int, db: Session = Depen
  
  
 @app.get("/leave-stats/{emp_id}")
-def get_leave_stats(emp_id: str, db: Session = Depends(get_db)):
+
     emp_id = emp_id.strip()
     try:
         leave_rows = db.query(models.LeaveDet).filter(
@@ -1190,7 +1199,7 @@ def get_leave_stats(emp_id: str, db: Session = Depends(get_db)):
  
  
 @app.get("/wfh-history/{emp_id}")
-def get_wfh_history(emp_id: str, db: Session = Depends(get_db)):
+
     emp_id = emp_id.strip()
     try:
         history = db.query(models.WFHDet).filter(
@@ -1206,7 +1215,7 @@ def get_wfh_history(emp_id: str, db: Session = Depends(get_db)):
  
  
 @app.get("/leave-history/{emp_id}")
-def get_leave_history(emp_id: str, db: Session = Depends(get_db)):
+
     emp_id = emp_id.strip()
     try:
         history = db.query(models.EmpLeave).filter(
@@ -1267,6 +1276,7 @@ def send_expo_push_notification(tokens, title, message, data=None):
  
  
 @app.post("/register-push-token")
+
 def register_push_token(req: schemas.PushTokenRegisterRequest, db: Session = Depends(get_db)):
     emp_id = req.user_id.strip().upper()
     print(f"\n📥 [PUSH] REGISTER TOKEN REQUEST for: {emp_id}")
@@ -1290,7 +1300,7 @@ def register_push_token(req: schemas.PushTokenRegisterRequest, db: Session = Dep
  
  
 @app.post("/test-push")
-def test_push(req: schemas.PushTokenRegisterRequest, db: Session = Depends(get_db)):
+
     send_expo_push_notification([req.push_token], "Aruvi Test Notification", "If you see this, push notifications are working perfectly!")
     return {"message": "Test push triggered"}
  
