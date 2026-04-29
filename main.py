@@ -2970,9 +2970,45 @@ def get_birthdays_this_month(db: Session = Depends(get_db)):
 
 
 @app.get("/timesheet-month/{emp_id}", response_model=List[schemas.TimesheetResponse])
-def get_timesheet_month(emp_id: str, month: Optional[str] = None, year: Optional[str] = None, db: Session = Depends(get_db)):
+def get_timesheet_month(emp_id: str, month: Optional[str] = None, year: Optional[str] = None, requester_id: Optional[str] = None, db: Session = Depends(get_db)):
     from sqlalchemy import or_, func
     clean_id = emp_id.replace(" ", "")
+    
+    # 1. Authorization check
+    if requester_id and requester_id.strip().lower() != emp_id.strip().lower():
+        req_id = requester_id.strip()
+        # Check if requester is global admin or manager
+        is_authorized = False
+        requester = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == req_id.lower()).first()
+        if requester:
+            # Global Admin check
+            top_domains = [1, 2, 3, 9]
+            try:
+                if requester.dom_id and int(str(requester.dom_id).strip()) in top_domains:
+                    is_authorized = True
+            except: pass
+            
+            if not is_authorized and requester.rpd_id:
+                try:
+                    r_id = int(str(requester.rpd_id).strip())
+                    role_priv = db.query(models.RolePrivilege).filter(models.RolePrivilege.rpd_id == r_id).first()
+                    if role_priv and role_priv.role_prv_name:
+                        top_roles = ["Admin", "Management", "Executive", "Project Management"]
+                        if any(tr.lower() in role_priv.role_prv_name.lower() for tr in top_roles):
+                            is_authorized = True
+                except: pass
+            
+            # Manager check
+            if not is_authorized:
+                target_emp = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()).first()
+                if target_emp:
+                    if (target_emp.assign_manager and target_emp.assign_manager.strip().lower() == req_id.lower()) or \
+                       (target_emp.project_manager and target_emp.project_manager.strip().lower() == req_id.lower()):
+                        is_authorized = True
+        
+        if not is_authorized:
+             raise HTTPException(status_code=403, detail="Not authorized to view this timesheet")
+
     query = db.query(models.TimesheetDet).filter(
         or_(models.TimesheetDet.emp_id == emp_id, func.replace(models.TimesheetDet.emp_id, " ", "") == clean_id)
     )
@@ -2989,9 +3025,48 @@ def get_timesheet_month(emp_id: str, month: Optional[str] = None, year: Optional
     return query.all()
 
 
-@app.get("/admin/timesheet-employees", response_model=List[schemas.AdminTimesheetEmpResponse])
-def get_admin_timesheet_employees(month: Optional[str] = None, year: Optional[str] = None, db: Session = Depends(get_db)):
-    ts_query = db.query(models.TimesheetDet.emp_id)
+@app.get("/admin/timesheet-employees")
+def get_admin_timesheet_employees(month: Optional[str] = None, year: Optional[str] = None, requester_id: Optional[str] = None, db: Session = Depends(get_db)):
+    # 1. Determine if requester is global admin
+    is_global = False
+    if requester_id:
+        requester_id = requester_id.strip()
+        user = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == requester_id.lower()).first()
+        if user:
+            top_domains = [1, 2, 3, 9]
+            try:
+                if user.dom_id and int(str(user.dom_id).strip()) in top_domains:
+                    is_global = True
+            except: pass
+            
+            if not is_global and user.rpd_id:
+                try:
+                    r_id = int(str(user.rpd_id).strip())
+                    role_priv = db.query(models.RolePrivilege).filter(models.RolePrivilege.rpd_id == r_id).first()
+                    if role_priv and role_priv.role_prv_name:
+                        top_roles = ["Admin", "Management", "Executive", "Project Management"]
+                        if any(tr.lower() in role_priv.role_prv_name.lower() for tr in top_roles):
+                            is_global = True
+                except: pass
+
+    # 2. Start building employee query
+    emp_query = db.query(models.EmpDet).filter((models.EmpDet.end_date == None) | (models.EmpDet.end_date == ""))
+    if not is_global and requester_id:
+        emp_query = emp_query.filter(
+            or_(
+                func.lower(func.trim(models.EmpDet.assign_manager)) == requester_id.lower(),
+                func.lower(func.trim(models.EmpDet.project_manager)) == requester_id.lower()
+            )
+        )
+    
+    employees = emp_query.all()
+    if not employees:
+        return []
+
+    # 3. Filter by those who have timesheets in the given month/year
+    emp_ids = [e.emp_id for e in employees if e.emp_id]
+    
+    ts_query = db.query(models.TimesheetDet.emp_id).filter(models.TimesheetDet.emp_id.in_(emp_ids))
     month_filter = None
     if month:
         month_map = {"January": "01", "February": "02", "March": "03", "April": "04", "May": "05", "June": "06",
@@ -3005,32 +3080,44 @@ def get_admin_timesheet_employees(month: Optional[str] = None, year: Optional[st
         ts_query = ts_query.filter(month_filter)
     if year:
         ts_query = ts_query.filter(models.TimesheetDet.date.ilike(f"%{year}%"))
+    
     ts_results = ts_query.distinct().all()
-    emp_ids = [r.emp_id for r in ts_results]
-    if not emp_ids:
+    matched_ids = {r.emp_id.replace(" ", "") for r in ts_results if r.emp_id}
+
+    if not matched_ids:
         return []
-    clean_ids = [eid.replace(" ", "") for eid in emp_ids]
-    employees = db.query(models.EmpDet).all()
-    matched_employees = [e for e in employees if e.emp_id and e.emp_id.replace(" ", "") in clean_ids]
-    pending_query = db.query(models.TimesheetDet.emp_id, func.count(models.TimesheetDet.t_id).label('pending_count')).filter(models.TimesheetDet.status.ilike('Pending'))
+
+    # 4. Filter employees list to those with timesheets
+    final_employees = [e for e in employees if e.emp_id and e.emp_id.replace(" ", "") in matched_ids]
+
+    # 5. Get pending counts
+    pending_query = db.query(models.TimesheetDet.emp_id, func.count(models.TimesheetDet.t_id).label('pending_count')).filter(
+        models.TimesheetDet.status.ilike('Pending'),
+        models.TimesheetDet.emp_id.in_(list(matched_ids))
+    )
     if month_filter is not None:
         pending_query = pending_query.filter(month_filter)
     if year:
         pending_query = pending_query.filter(models.TimesheetDet.date.ilike(f"%{year}%"))
+    
     pending_results = pending_query.group_by(models.TimesheetDet.emp_id).all()
-    pending_map = {}
-    for r in pending_results:
-        cid = r.emp_id.replace(" ", "")
-        pending_map[cid] = pending_map.get(cid, 0) + r.pending_count
+    pending_map = {r.emp_id.replace(" ", ""): r.pending_count for r in pending_results}
+
+    # 6. Format results
     results = []
-    for emp in matched_employees:
+    for emp in final_employees:
         domain_name = "Employee"
         if emp.dom_id:
             domain = db.query(models.Domain).filter(models.Domain.dom_id == emp.dom_id).first()
             if domain:
                 domain_name = domain.domain
         cid = emp.emp_id.replace(" ", "")
-        results.append({"id": emp.emp_id, "name": emp.name or "Unknown", "department": domain_name, "requests": pending_map.get(cid, 0)})
+        results.append({
+            "id": emp.emp_id, 
+            "name": emp.name or "Unknown", 
+            "department": domain_name, 
+            "requests": pending_map.get(cid, 0)
+        })
     return results
 
 
@@ -3661,9 +3748,9 @@ def get_attendance_summary(emp_id: str, month: int, year: int, db: Session = Dep
         handle_db_error(e)
 
 
-@app.get("/team-attendance/{manager_id}")
-def get_team_attendance(manager_id: str, start_date: str, end_date: str, db: Session = Depends(get_db)):
-    manager_id = manager_id.strip()
+@app.get("/team-attendance/{requester_id}")
+def get_team_attendance(requester_id: str, start_date: str, end_date: str, db: Session = Depends(get_db)):
+    requester_id = requester_id.strip()
     try:
         start_dt = parse_date(start_date)
         end_dt = parse_date(end_date)
@@ -3671,12 +3758,43 @@ def get_team_attendance(manager_id: str, start_date: str, end_date: str, db: Ses
             raise HTTPException(status_code=400, detail="Invalid date format")
     except:
         raise HTTPException(status_code=400, detail="Invalid date format")
+    
     try:
-        employees = db.query(models.EmpDet).filter(
-            func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.lower()
-        ).all()
+        # Check if requester is global admin
+        user = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == requester_id.lower()).first()
+        is_global = False
+        if user:
+            top_domains = [1, 2, 3, 9]
+            try:
+                if user.dom_id and int(str(user.dom_id).strip()) in top_domains:
+                    is_global = True
+            except: pass
+            
+            # Also check role name for "Admin" etc.
+            if not is_global and user.rpd_id:
+                try:
+                    r_id = int(str(user.rpd_id).strip())
+                    role_priv = db.query(models.RolePrivilege).filter(models.RolePrivilege.rpd_id == r_id).first()
+                    if role_priv and role_priv.role_prv_name:
+                        top_roles = ["Admin", "Management", "Executive", "Project Management"]
+                        if any(tr.lower() in role_priv.role_prv_name.lower() for tr in top_roles):
+                            is_global = True
+                except: pass
+
+        # Fetch employees
+        query = db.query(models.EmpDet).filter((models.EmpDet.end_date == None) | (models.EmpDet.end_date == ""))
+        if not is_global:
+            query = query.filter(
+                or_(
+                    func.lower(func.trim(models.EmpDet.assign_manager)) == requester_id.lower(),
+                    func.lower(func.trim(models.EmpDet.project_manager)) == requester_id.lower()
+                )
+            )
+        employees = query.all()
+        
         if not employees:
-            return {"message": "No employees found under this manager", "team_attendance": []}
+            return {"message": "No employees found", "team_attendance": []}
+            
         team_attendance = []
         for emp in employees:
             attendance_reports = db.query(models.DailyAttendanceReport).filter(
@@ -3684,16 +3802,25 @@ def get_team_attendance(manager_id: str, start_date: str, end_date: str, db: Ses
                 models.DailyAttendanceReport.Date >= start_date,
                 models.DailyAttendanceReport.Date <= end_date
             ).all()
+            
             present = len([r for r in attendance_reports if r.Status == "P"])
             absent = len([r for r in attendance_reports if r.Status == "A"])
             total_days = len(attendance_reports)
+            
             team_attendance.append({
-                "emp_id": emp.emp_id, "name": emp.name, "department": emp.dpt_id,
-                "designation": emp.role_type, "total_days": total_days, "present": present, "absent": absent,
+                "emp_id": emp.emp_id, 
+                "name": emp.name or "Unknown", 
+                "department": emp.dpt_id or "N/A",
+                "designation": emp.role_type or "Employee", 
+                "total_days": total_days, 
+                "present": present, 
+                "absent": absent,
                 "attendance_percentage": round((present / total_days * 100) if total_days > 0 else 0, 2)
             })
+            
         return {
-            "manager_id": manager_id,
+            "requester_id": requester_id,
+            "is_global_view": is_global,
             "period": {"start_date": start_date, "end_date": end_date},
             "team_size": len(employees),
             "team_attendance": team_attendance
