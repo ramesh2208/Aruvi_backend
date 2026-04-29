@@ -571,20 +571,38 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         except Exception as token_err:
             raise HTTPException(status_code=500, detail="Token generation failed")
 
-        # ── Role: Only Manager check remains ──────────────────────────────
-        role_type = "Employee"
-        is_global_admin = False
+        # ── Role & Domain Logic ──────────────────────────────────────────
+        top_roles = ["Admin", "Management", "Executive", "Project Management"]
+        top_domains = [1, 2, 3, 9]
+        
+        role_name = ""
+        if user.rpd_id:
+            try:
+                # rpd_id is stored as string in EmpDet but int in RolePrivilege primary key
+                r_id = int(str(user.rpd_id).strip())
+                role_priv = db.query(models.RolePrivilege).filter(models.RolePrivilege.rpd_id == r_id).first()
+                if role_priv:
+                    role_name = role_priv.role_prv_name or ""
+            except:
+                pass
+
+        is_super_global = any(tr.lower() in role_name.lower() for tr in top_roles)
+        if not is_super_global and user.dom_id:
+            try:
+                if int(str(user.dom_id).strip()) in top_domains:
+                    is_super_global = True
+            except:
+                pass
 
         is_manager = db.query(models.EmpDet).filter(
             func.lower(func.trim(models.EmpDet.assign_manager)) == user.emp_id.lower().strip()
         ).first() is not None
 
-        if is_manager:
-            role_type = "Admin"
-            is_global_admin = True
+        role_type = "Admin" if (is_manager or is_super_global) else "Employee"
+        is_global_admin = is_super_global
 
         has_2fa = bool(user.auth_key and user.auth_key.strip())
-        print(f" 2FA: {has_2fa}, Role: {role_type}, Global Admin: {is_global_admin}")
+        print(f" 2FA: {has_2fa}, Role: {role_type}, Global Admin: {is_global_admin}, Role Name: {role_name}")
 
         privileges = get_user_privileges(user, db)
         print(f" Privileges: {len(privileges)} modules loaded")
@@ -596,6 +614,7 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
             "username": user.p_mail or "",
             "role_type": role_type,
             "is_global_admin": is_global_admin,
+            "role_name": role_name,
             "user_id": user.emp_id or "",
             "name": user.name or "User",
             "requires_2fa": has_2fa,
