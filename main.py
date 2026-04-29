@@ -572,25 +572,16 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
             raise HTTPException(status_code=500, detail="Token generation failed")
 
         # ── Role: Only Manager check remains ──────────────────────────────
-        role_name = ""
-        if user.rpd_id:
-            try:
-                r_id = int(str(user.rpd_id).strip())
-                rp = db.query(models.RolePrivilege).filter(models.RolePrivilege.rpd_id == r_id).first()
-                if rp:
-                    role_name = rp.role_prv_name or ""
-            except:
-                pass
+        role_type = "Employee"
+        is_global_admin = False
 
-        top_roles = ["Admin", "Management", "Executive", "Project Management"]
-        is_super_global = any(tr.lower() in role_name.lower() for tr in top_roles)
-        
         is_manager = db.query(models.EmpDet).filter(
             func.lower(func.trim(models.EmpDet.assign_manager)) == user.emp_id.lower().strip()
         ).first() is not None
 
-        role_type = "Admin" if (is_manager or is_super_global) else "Employee"
-        is_global_admin = is_super_global
+        if is_manager:
+            role_type = "Admin"
+            is_global_admin = True
 
         has_2fa = bool(user.auth_key and user.auth_key.strip())
         print(f" 2FA: {has_2fa}, Role: {role_type}, Global Admin: {is_global_admin}")
@@ -605,7 +596,6 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
             "username": user.p_mail or "",
             "role_type": role_type,
             "is_global_admin": is_global_admin,
-            "role_name": role_name,
             "user_id": user.emp_id or "",
             "name": user.name or "User",
             "requires_2fa": has_2fa,
