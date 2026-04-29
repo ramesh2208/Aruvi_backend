@@ -3075,9 +3075,36 @@ def get_next_project_ref(db: Session = Depends(get_db)):
     return {"next_ref": f"{prefix}{max_num + 1:04d}"}
 
 
-@app.get("/admin/projects", response_model=List[schemas.ProjectResponse])
-def get_projects(db: Session = Depends(get_db)):
-    return db.query(models.Project).all()
+@app.get("/admin/projects")
+def get_projects(
+    manager_id: Optional[str] = None, 
+    search: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 100,
+    paginated: bool = False,
+    db: Session = Depends(get_db)
+):
+    query = db.query(models.Project)
+    
+    if manager_id:
+        query = query.filter(models.Project.project_manager == manager_id)
+    
+    if search:
+        search_filter = f"%{search}%"
+        query = query.filter(
+            or_(
+                models.Project.project_name.ilike(search_filter),
+                models.Project.project_ref_no.ilike(search_filter),
+                models.Project.client_ref_no.ilike(search_filter)
+            )
+        )
+    
+    if paginated:
+        total = query.count()
+        data = query.order_by(models.Project.pro_id.desc()).offset(skip).limit(limit).all()
+        return {"data": data, "total": total}
+        
+    return query.order_by(models.Project.pro_id.desc()).all()
 
 
 @app.get("/admin/projects/{pro_id}", response_model=schemas.ProjectResponse)
@@ -3316,10 +3343,30 @@ def get_next_client_ref(db: Session = Depends(get_db)):
     return {"next_ref": f"ITS-CLI-{max_num + 1:04d}"}
 
 
-@app.get("/admin/clients", response_model=List[schemas.ClientResponse])
-def get_clients(db: Session = Depends(get_db)):
+@app.get("/admin/clients")
+def get_clients(
+    manager_id: Optional[str] = None,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
     try:
-        clients = db.query(models.CompanyClient).all()
+        query = db.query(models.CompanyClient)
+        
+        if manager_id:
+            # Filtering clients by creator if restricted to own view
+            query = query.filter(models.CompanyClient.created_by == manager_id)
+            
+        if search:
+            search_filter = f"%{search}%"
+            query = query.filter(
+                or_(
+                    models.CompanyClient.client_name.ilike(search_filter),
+                    models.CompanyClient.client_ref_no.ilike(search_filter),
+                    models.CompanyClient.company_name.ilike(search_filter)
+                )
+            )
+            
+        clients = query.order_by(models.CompanyClient.cl_id.desc()).all()
     except Exception as e:
         raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
     res = []
