@@ -586,20 +586,27 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
             except:
                 pass
 
-        is_super_global = any(tr.lower() in role_name.lower() for tr in top_roles)
-        if not is_super_global and user.dom_id:
+        is_domain_top = False
+        if user.dom_id:
             try:
                 if int(str(user.dom_id).strip()) in top_domains:
-                    is_super_global = True
+                    is_domain_top = True
             except:
                 pass
 
+        is_super_global = any(tr.lower() in role_name.lower() for tr in top_roles) or is_domain_top
+
         is_manager = db.query(models.EmpDet).filter(
-            func.lower(func.trim(models.EmpDet.assign_manager)) == user.emp_id.lower().strip()
+            or_(
+                func.lower(func.trim(models.EmpDet.assign_manager)) == user.emp_id.lower().strip(),
+                func.lower(func.trim(models.EmpDet.project_manager)) == user.emp_id.lower().strip()
+            )
         ).first() is not None
 
         role_type = "Admin" if (is_manager or is_super_global) else "Employee"
-        is_global_admin = is_super_global
+        
+        # As per requirement: "show everything" is STRICTLY limited to domain IDs 1, 2, 3, 9
+        is_global_admin = is_domain_top
 
         has_2fa = bool(user.auth_key and user.auth_key.strip())
         print(f" 2FA: {has_2fa}, Role: {role_type}, Global Admin: {is_global_admin}, Role Name: {role_name}")
@@ -760,7 +767,10 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
         except:
             pass
     is_manager = db.query(models.EmpDet).filter(
-        func.lower(func.trim(models.EmpDet.assign_manager)) == user.emp_id.lower().strip()
+        or_(
+            func.lower(func.trim(models.EmpDet.assign_manager)) == user.emp_id.lower().strip(),
+            func.lower(func.trim(models.EmpDet.project_manager)) == user.emp_id.lower().strip()
+        )
     ).first() is not None
     if is_manager and role_type != "Admin":
         role_type = "Admin"
@@ -2887,7 +2897,10 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
             pass
     recent_date_limit = datetime.now() - timedelta(days=7)
     is_manager = db.query(models.EmpDet).filter(
-        func.lower(func.trim(models.EmpDet.assign_manager)) == emp_id.lower()
+        or_(
+            func.lower(func.trim(models.EmpDet.assign_manager)) == emp_id.lower(),
+            func.lower(func.trim(models.EmpDet.project_manager)) == emp_id.lower()
+        )
     ).first() is not None
 
     if is_admin:
