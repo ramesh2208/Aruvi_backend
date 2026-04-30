@@ -1395,9 +1395,10 @@ def get_email_template(receiver_name, title, content_html, sender_name="Aruvi Te
         <p style="margin-top: 0;"><strong>Dear {receiver_name},</strong></p>
         <div>{content_html}</div>
         <p style="margin-top: 40px; margin-bottom: 5px;">Thanks & Regards,</p>
-        <strong>Ilan Tech Solutions Private Limited</strong>
-        <p style="margin-top: 5px; font-size: 14px;">
-            Website: <a href="http://www.ilantechsolutions.com">www.ilantechsolutions.com</a>
+        <strong style="color: #00008B;">{sender_name}</strong><br>
+        Ilan Tech Solutions Pvt. Ltd.,
+        <p style="margin-top: 5px; font-size: 14px; color: #00008B;">
+            Website: <a href="http://www.ilantechsolutions.com" style="color: #0ea5e9;">www.ilantechsolutions.com</a>
         </p>
     </body>
     </html>
@@ -1608,6 +1609,14 @@ async def apply_leave(
                 applied_date_str = datetime.now().strftime("%d-%b-%Y")
                 month_str = req_from.strftime("%b-%y") if req_from else ""
                 
+                pure_days = str(requested_days).rstrip('0').rstrip('.') if '.' in str(requested_days) and str(requested_days).endswith('0') else str(requested_days)
+                if pure_days.endswith('.'): pure_days = pure_days[:-1]
+                
+                if from_date == to_date:
+                    date_display = from_date
+                else:
+                    date_display = f"{from_date} to {to_date}"
+
                 for appr in approvers:
                     if appr["email"]:
                         content = f"""
@@ -1615,27 +1624,23 @@ async def apply_leave(
                         <p>Please find below the details of my leave.</p>
                         <p>Let me know if you require any additional information.</p>
                         <br>
-                        <table style="border-collapse: collapse; width: 100%; max-width: 800px; text-align: center; border: 1px solid #dddddd; font-family: Arial, sans-serif;">
+                        <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif;">
                             <thead>
-                                <tr style="background-color: #dbeafe; color: #1e3a8a;">
-                                    <th style="padding: 10px; border: 1px solid #dddddd;">S.No</th>
-                                    <th style="padding: 10px; border: 1px solid #dddddd;">Month</th>
-                                    <th style="padding: 10px; border: 1px solid #dddddd;">Applied Date</th>
-                                    <th style="padding: 10px; border: 1px solid #dddddd;">From Date</th>
-                                    <th style="padding: 10px; border: 1px solid #dddddd;">To Date</th>
-                                    <th style="padding: 10px; border: 1px solid #dddddd;">No Of Days</th>
-                                    <th style="padding: 10px; border: 1px solid #dddddd;">Reason</th>
+                                <tr style="background-color: #dbeafe; color: #000000; font-weight: bold;">
+                                    <th style="padding: 8px; border: 1px solid #ffffff;">S.No</th>
+                                    <th style="padding: 8px; border: 1px solid #ffffff;">Month</th>
+                                    <th style="padding: 8px; border: 1px solid #ffffff;">Date</th>
+                                    <th style="padding: 8px; border: 1px solid #ffffff;">Days</th>
+                                    <th style="padding: 8px; border: 1px solid #ffffff;">Reason</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                <tr style="background-color: #f9fafb; color: #1f2937;">
-                                    <td style="padding: 10px; border: 1px solid #dddddd;">1</td>
-                                    <td style="padding: 10px; border: 1px solid #dddddd;">{month_str}</td>
-                                    <td style="padding: 10px; border: 1px solid #dddddd;">{applied_date_str}</td>
-                                    <td style="padding: 10px; border: 1px solid #dddddd;">{from_date}</td>
-                                    <td style="padding: 10px; border: 1px solid #dddddd;">{to_date}</td>
-                                    <td style="padding: 10px; border: 1px solid #dddddd;">{summary_msg}</td>
-                                    <td style="padding: 10px; border: 1px solid #dddddd;">{reason}</td>
+                                <tr style="background-color: #27272a; color: #e0f2fe;">
+                                    <td style="padding: 8px; border: 1px solid #ffffff;">1</td>
+                                    <td style="padding: 8px; border: 1px solid #ffffff;">{month_str}</td>
+                                    <td style="padding: 8px; border: 1px solid #ffffff;">{date_display}</td>
+                                    <td style="padding: 8px; border: 1px solid #ffffff;">{pure_days}</td>
+                                    <td style="padding: 8px; border: 1px solid #ffffff;">{reason}</td>
                                 </tr>
                             </tbody>
                         </table>
