@@ -34,26 +34,12 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import models, schemas, database
 from database import engine, SessionLocal
  
-def is_global_admin_strict(user) -> bool:
-    """
-    STRICT definition of Global Admin: ONLY domain IDs 1, 2, 3, 9.
-    """
-    if not user or not user.dom_id:
-        return False
-    try:
-        top_domains = [1, 2, 3, 9]
-        if int(str(user.dom_id).strip()) in top_domains:
-            return True
-    except:
-        pass
-    return False
-
 def safe_dt(d):
     if not d: return None
     s = str(d).strip()
     if "0000-00-00" in s: return None
     return d
-
+ 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PRIVILEGE SYSTEM - COMPLETE FIXED
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2898,7 +2884,17 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
         del event["raw_date"]
 
     notifications = []
-    is_admin = is_global_admin_strict(user)
+    is_admin = False
+    if user.dom_id:
+        try:
+            d_id = int(str(user.dom_id).strip())
+            user_domain = db.query(models.Domain).filter(models.Domain.dom_id == d_id).first()
+            if user_domain:
+                dn = user_domain.domain.lower()
+                if 'admin' in dn or 'management' in dn:
+                    is_admin = True
+        except:
+            pass
     recent_date_limit = datetime.now() - timedelta(days=7)
     is_manager = db.query(models.EmpDet).filter(
         or_(
@@ -2995,7 +2991,25 @@ def get_timesheet_month(emp_id: str, month: Optional[str] = None, year: Optional
     if requester_id and requester_id.strip().lower() != emp_id.strip().lower():
         req_id = requester_id.strip()
         # Check if requester is global admin or manager
-        is_authorized = is_global_admin_strict(requester)
+        is_authorized = False
+        requester = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == req_id.lower()).first()
+        if requester:
+            # Global Admin check
+            top_domains = [1, 2, 3, 9]
+            try:
+                if requester.dom_id and int(str(requester.dom_id).strip()) in top_domains:
+                    is_authorized = True
+            except: pass
+            
+            if not is_authorized and requester.rpd_id:
+                try:
+                    r_id = int(str(requester.rpd_id).strip())
+                    role_priv = db.query(models.RolePrivilege).filter(models.RolePrivilege.rpd_id == r_id).first()
+                    if role_priv and role_priv.role_prv_name:
+                        top_roles = ["Admin", "Management", "Executive", "Project Management"]
+                        if any(tr.lower() in role_priv.role_prv_name.lower() for tr in top_roles):
+                            is_authorized = True
+                except: pass
             
             # Manager check
             if not is_authorized:
@@ -3027,7 +3041,26 @@ def get_timesheet_month(emp_id: str, month: Optional[str] = None, year: Optional
 @app.get("/admin/timesheet-employees")
 def get_admin_timesheet_employees(month: Optional[str] = None, year: Optional[str] = None, requester_id: Optional[str] = None, db: Session = Depends(get_db)):
     # 1. Determine if requester is global admin
-    is_global = is_global_admin_strict(user) if user else False
+    is_global = False
+    if requester_id:
+        requester_id = requester_id.strip()
+        user = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == requester_id.lower()).first()
+        if user:
+            top_domains = [1, 2, 3, 9]
+            try:
+                if user.dom_id and int(str(user.dom_id).strip()) in top_domains:
+                    is_global = True
+            except: pass
+            
+            if not is_global and user.rpd_id:
+                try:
+                    r_id = int(str(user.rpd_id).strip())
+                    role_priv = db.query(models.RolePrivilege).filter(models.RolePrivilege.rpd_id == r_id).first()
+                    if role_priv and role_priv.role_prv_name:
+                        top_roles = ["Admin", "Management", "Executive", "Project Management"]
+                        if any(tr.lower() in role_priv.role_prv_name.lower() for tr in top_roles):
+                            is_global = True
+                except: pass
 
     # 2. Start building employee query
     emp_query = db.query(models.EmpDet).filter((models.EmpDet.end_date == None) | (models.EmpDet.end_date == ""))
@@ -3742,7 +3775,24 @@ def get_team_attendance(requester_id: str, start_date: str, end_date: str, db: S
     try:
         # Check if requester is global admin
         user = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == requester_id.lower()).first()
-        is_global = is_global_admin_strict(user)
+        is_global = False
+        if user:
+            top_domains = [1, 2, 3, 9]
+            try:
+                if user.dom_id and int(str(user.dom_id).strip()) in top_domains:
+                    is_global = True
+            except: pass
+            
+            # Also check role name for "Admin" etc.
+            if not is_global and user.rpd_id:
+                try:
+                    r_id = int(str(user.rpd_id).strip())
+                    role_priv = db.query(models.RolePrivilege).filter(models.RolePrivilege.rpd_id == r_id).first()
+                    if role_priv and role_priv.role_prv_name:
+                        top_roles = ["Admin", "Management", "Executive", "Project Management"]
+                        if any(tr.lower() in role_priv.role_prv_name.lower() for tr in top_roles):
+                            is_global = True
+                except: pass
 
         # Fetch employees
         query = db.query(models.EmpDet).filter((models.EmpDet.end_date == None) | (models.EmpDet.end_date == ""))
