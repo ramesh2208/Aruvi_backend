@@ -1605,14 +1605,41 @@ async def apply_leave(
                 day_text = "Day" if float(requested_days) == 1.0 else "Days"
                 summary_msg = f"{fmt_days(cl_days_to_deduct)} CL / {fmt_days(lop_days_val)} LOP" if lop_days_val > 0 else f"{fmt_days(requested_days)} {day_text}"
                 subject = f"ITS - {emp_name} - {leave_type} Request | {from_date} ({summary_msg})"
+                applied_date_str = datetime.now().strftime("%d-%b-%Y")
+                month_str = req_from.strftime("%b-%y") if req_from else ""
+                
                 for appr in approvers:
                     if appr["email"]:
                         content = f"""
                         <p><strong>Good Day!</strong></p>
-                        <p>I hope this email finds you well.</p>
-                        <p>I am requesting leave from <strong>{from_date}</strong> to <strong>{to_date}</strong>.</p>
-                        <p><strong>No of Days:</strong> {summary_msg}</p>
-                        <p><strong>Reason:</strong> {reason}</p>
+                        <p>Please find below the details of my leave.</p>
+                        <p>Let me know if you require any additional information.</p>
+                        <br>
+                        <table style="border-collapse: collapse; width: 100%; max-width: 800px; text-align: center; border: 1px solid #dddddd; font-family: Arial, sans-serif;">
+                            <thead>
+                                <tr style="background-color: #dbeafe; color: #1e3a8a;">
+                                    <th style="padding: 10px; border: 1px solid #dddddd;">S.No</th>
+                                    <th style="padding: 10px; border: 1px solid #dddddd;">Month</th>
+                                    <th style="padding: 10px; border: 1px solid #dddddd;">Applied Date</th>
+                                    <th style="padding: 10px; border: 1px solid #dddddd;">From Date</th>
+                                    <th style="padding: 10px; border: 1px solid #dddddd;">To Date</th>
+                                    <th style="padding: 10px; border: 1px solid #dddddd;">No Of Days</th>
+                                    <th style="padding: 10px; border: 1px solid #dddddd;">Reason</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr style="background-color: #f9fafb; color: #1f2937;">
+                                    <td style="padding: 10px; border: 1px solid #dddddd;">1</td>
+                                    <td style="padding: 10px; border: 1px solid #dddddd;">{month_str}</td>
+                                    <td style="padding: 10px; border: 1px solid #dddddd;">{applied_date_str}</td>
+                                    <td style="padding: 10px; border: 1px solid #dddddd;">{from_date}</td>
+                                    <td style="padding: 10px; border: 1px solid #dddddd;">{to_date}</td>
+                                    <td style="padding: 10px; border: 1px solid #dddddd;">{summary_msg}</td>
+                                    <td style="padding: 10px; border: 1px solid #dddddd;">{reason}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <br>
                         """
                         body = get_email_template(appr["name"], "Leave Request", content, emp_name)
                         background_tasks.add_task(send_email_notification, appr["email"], subject, body)
