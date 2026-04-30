@@ -116,10 +116,6 @@ MODULE_NAMES = {
     54: "WFH (Global)",
     57: "WFH"
 }
-    33: "OT (Global)",
-    54: "WFH (Global)",
-    57: "WFH"
-}
  
  
 def _build_empty_priv(mod_id_val: int = 0) -> dict:
