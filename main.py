@@ -1535,11 +1535,11 @@ async def apply_leave(
                         <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                             <thead>
                                 <tr style="background-color: darkblue; font-weight: bold;">
-                                    <th style="padding: 8px; border: 1px solid #000; color: black !important;">S.No</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: black !important;">Month</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: black !important; width: 40%;">Date</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: black !important;">Days</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: black !important;">Reason</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Month</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important; width: 40%;">Date</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Days</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Reason</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -1751,15 +1751,18 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
             
             status_content = f"""
             <p>Good Day!</p>
+            <p>Your leave request has been <strong>{request_item.action}</strong>.</p>
+            <br>
+            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
             <p style="color: #666; font-size: 14px;"><strong>Original Request Details:</strong></p>
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
                     <tr style="background-color: darkblue; font-weight: bold;">
-                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">S.No</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">Month</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: black !important; width: 40%;">Date</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">Days</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">Reason</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Month</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important; width: 40%;">Date</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Days</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Reason</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1772,9 +1775,6 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
                     </tr>
                 </tbody>
             </table>
-            <br>
-            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-            <p>Your leave request has been <strong>{request_item.action}</strong>.</p>
             <br>
             """
             body = get_email_template(emp_user.name, f"Leave Request {request_item.action}", status_content, leave.approved_by or "Manager")
@@ -2057,12 +2057,12 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
                     <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                         <thead>
                             <tr style="background-color: darkblue; font-weight: bold;">
-                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">S.No</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">Name</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">Reason</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">In time</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">Out time</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">OT hours(Duration)</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Name</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Reason</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">In time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Out time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">OT hours(Duration)</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -2211,12 +2211,12 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                     <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                         <thead>
                             <tr style="background-color: darkblue; font-weight: bold;">
-                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">S.No</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">Date</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">From time</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">To Time</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">Total Hours</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">Reason</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Date</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">From time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">To Time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Total Hours</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Reason</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -2295,6 +2295,11 @@ def approve_permission(request: schemas.PermissionApprovalAction, background_tas
             subject = f"ITS - Permission Request {new_action} - {perm_date}"
             content = f"""
             <p>Good Day!</p>
+            <p>Your request for <strong>Permission</strong> has been processed.</p>
+            <div style="font-size: 20px; font-weight: 700; color: #1f2937; margin: 20px 0;">{new_action}</div>
+            <br>
+            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+            <p style="color: #666; font-size: 14px;"><strong>Original Request Details:</strong></p>
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
                     <tr style="background-color: darkblue; font-weight: bold;">
@@ -2317,10 +2322,6 @@ def approve_permission(request: schemas.PermissionApprovalAction, background_tas
                     </tr>
                 </tbody>
             </table>
-            <br>
-            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-            <p>Your request for <strong>Permission</strong> has been processed.</p>
-            <div style="font-size: 20px; font-weight: 700; color: #1f2937; margin: 20px 0;">{new_action}</div>
             <br>
             {f'<p><strong>Remarks:</strong> {request.remarks}</p>' if request.remarks else ''}
             """
@@ -2419,6 +2420,11 @@ def approve_ot(request: schemas.OverTimeApprovalAction, background_tasks: Backgr
             subject = f"OT Request {request.action.upper()} - {ot.ot_date}"
             content = f"""
             <p>Good Day!</p>
+            <p>Your request for <strong>Overtime</strong> has been processed.</p>
+            <div style="font-size: 20px; font-weight: 700; color: #1f2937; margin: 20px 0;">{request.action}</div>
+            <br>
+            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+            <p style="color: #666; font-size: 14px;"><strong>Original Request Details:</strong></p>
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
                     <tr style="background-color: darkblue; font-weight: bold;">
@@ -2441,10 +2447,6 @@ def approve_ot(request: schemas.OverTimeApprovalAction, background_tasks: Backgr
                     </tr>
                 </tbody>
             </table>
-            <br>
-            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-            <p>Your request for <strong>Overtime</strong> has been processed.</p>
-            <div style="font-size: 20px; font-weight: 700; color: #1f2937; margin: 20px 0;">{request.action}</div>
             <br>
             <p><strong>Remarks:</strong> {request.remarks or 'No remarks provided.'}</p>
             """
@@ -2533,6 +2535,11 @@ def approve_wfh(request: schemas.WFHApprovalAction, background_tasks: Background
             subject = f"WFH Request {request.action.upper()} - {wfh.from_date}"
             content = f"""
             <p>Good Day!</p>
+            <p>Your request for <strong>Work From Home</strong> has been processed.</p>
+            <div style="font-size: 20px; font-weight: 700; color: #1f2937; margin: 20px 0;">{request.action}</div>
+            <br>
+            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+            <p style="color: #666; font-size: 14px;"><strong>Original Request Details:</strong></p>
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
                     <tr style="background-color: darkblue; font-weight: bold;">
@@ -2555,10 +2562,6 @@ def approve_wfh(request: schemas.WFHApprovalAction, background_tasks: Background
                     </tr>
                 </tbody>
             </table>
-            <br>
-            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-            <p>Your request for <strong>Work From Home</strong> has been processed.</p>
-            <div style="font-size: 20px; font-weight: 700; color: #1f2937; margin: 20px 0;">{request.action}</div>
             <br>
             <p><strong>Remarks:</strong> {request.remarks or 'No remarks provided.'}</p>
             """
