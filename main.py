@@ -1603,9 +1603,13 @@ async def apply_leave(
         try:
             if user:
                 approvers = get_approvers(db, user)
-                day_text = "Day" if float(requested_days) == 1.0 else "Days"
-                summary_msg = f"{fmt_days(cl_days_to_deduct)} CL / {fmt_days(lop_days_val)} LOP" if lop_days_val > 0 else f"{fmt_days(requested_days)} {day_text}"
-                        subject = f"ITS - {emp_name} - {leave_type} Request | {from_date}"
+                month_str = req_from.strftime("%b-%y") if req_from else ""
+                pure_days = fmt_days(requested_days)
+                subject = f"ITS - {emp_name} - {leave_type} Request | {from_date}"
+
+                if approvers:
+                    appr = approvers[0] # Only the first approver
+                    if appr["email"]:
                         content = f"""
                         <p>Good Day!</p>
                         <p>Please find below the details of my leave.</p>
@@ -1635,6 +1639,7 @@ async def apply_leave(
                         """
                         body = get_email_template(appr["name"], "Leave Request", content, emp_name)
                         background_tasks.add_task(send_email_notification, appr["email"], subject, body)
+                    
                     if appr["token"]:
                         background_tasks.add_task(send_expo_push_notification, [appr["token"]],
                             "New Leave Request", f"{emp_name} has requested {leave_type} from {from_date} to {to_date}.")
