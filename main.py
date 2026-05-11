@@ -1660,12 +1660,9 @@ async def apply_leave(
 
 
 @app.post("/send-leave-notification")
-            # Endpoint logic disabled as per user request to prevent redundant notification mail
-            return {"message": "Notification endpoint disabled"}
-        except Exception as e:
-            return {"message": f"Error processing notification: {str(e)}"}
-    except Exception as e:
-        return {"message": f"General error: {str(e)}"}
+def send_leave_notification(notification: dict, db: Session = Depends(get_db)):
+    # Endpoint logic disabled as per user request to prevent redundant notification mail
+    return {"message": "Notification endpoint disabled"}
 
 
 @app.get("/admin/pending-leaves")
