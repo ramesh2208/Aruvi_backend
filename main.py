@@ -1078,49 +1078,49 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
             new_leave = models.EmpLeave(
                 l_det_id=l_det_id_val, emp_id=emp_id, leave_type=actual_leave_type,
                 from_date=today_date.strftime("%d-%b-%Y"), to_date=today_date.strftime("%d-%b-%Y"),
-                        days=str(days_to_deduct), reason=leave_reason, status="Approved",
-                        applied_date=now.strftime("%d-%b-%Y"),
-                        mail_message_id="", hr_action="", hr_approval="", admin_approval="",
-                        lop_days=str(days_to_deduct) if "LOP" in checkin_record.status else "0",
-                        remarks="Auto-generated on check-out", approved_by="System",
-                        reporting_manager="", approver="", revision="0",
-                        attribute_category="AUTO", attribute1=str(days_to_deduct),
-                        attribute2="", attribute3="", attribute4="", attribute5="",
-                        attribute6="", attribute7="", attribute8="", attribute9="",
-                        attribute10="", attribute11="", attribute12="", attribute13="",
-                        attribute14="", file="",
-                        created_by=emp_id, creation_date=now,
-                        last_updated_by=emp_id, last_update_date=now
-                    )
-                    db.add(new_leave)
-                    print(f"✅ Leave history record ({actual_leave_type} - {days_to_deduct} days) created for {emp_id}")
-                else:
-                    checkin_record.status = "P"
-                    print(f"ℹ️ Status remained P (Worked {total_hours_float} hrs) for {emp_id}")
+                days=str(days_to_deduct), reason=leave_reason, status="Approved",
+                applied_date=now.strftime("%d-%b-%Y"),
+                mail_message_id="", hr_action="", hr_approval="", admin_approval="",
+                lop_days=str(days_to_deduct) if "LOP" in checkin_record.status else "0",
+                remarks="Auto-generated on check-out", approved_by="System",
+                reporting_manager="", approver="", revision="0",
+                attribute_category="AUTO", attribute1=str(days_to_deduct),
+                attribute2="", attribute3="", attribute4="", attribute5="",
+                attribute6="", attribute7="", attribute8="", attribute9="",
+                attribute10="", attribute11="", attribute12="", attribute13="",
+                attribute14="", file="",
+                created_by=emp_id, creation_date=now,
+                last_updated_by=emp_id, last_update_date=now
+            )
+            db.add(new_leave)
+            print(f"✅ Leave history record ({actual_leave_type} - {days_to_deduct} days) created for {emp_id}")
+        else:
+            checkin_record.status = "P"
+            print(f"ℹ️ Status remained P (Worked {total_hours_float} hrs) for {emp_id}")
+
+        db.commit()
+        db.refresh(checkin_record)
+        print(f"✅ Successfully committed Total_hours: {checkin_record.Total_hours}")
         
-                    db.commit()
-                    db.refresh(checkin_record)
-                    print(f"✅ Successfully committed Total_hours: {checkin_record.Total_hours}")
-        
-            except Exception as e:
-                db.rollback()
-                print(f"❌ Check-out Error: {str(e)}")
-                try:
-                    checkin_record.out_time = request.out_time
-                    if request.total_hours:
-                        checkin_record.Total_hours = request.total_hours
-                    checkin_record.last_update_date = now
-                    db.add(checkin_record)
-                    db.commit()
-                    print("⚠️ Saved partial check-out data after error.")
-                except:
-                    db.rollback()
-        
-            return {
-                "message"     : "Check-out successful",
-                "total_hours" : checkin_record.Total_hours or "0Hr 0Min",
-                "status"      : checkin_record.status
-            }
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Check-out Error: {str(e)}")
+        try:
+            checkin_record.out_time = request.out_time
+            if request.total_hours:
+                checkin_record.Total_hours = request.total_hours
+            checkin_record.last_update_date = now
+            db.add(checkin_record)
+            db.commit()
+            print("⚠️ Saved partial check-out data after error.")
+        except:
+            db.rollback()
+
+    return {
+        "message"     : "Check-out successful",
+        "total_hours" : checkin_record.Total_hours or "0Hr 0Min",
+        "status"      : checkin_record.status
+    }
 
 
 @app.get("/leave-stats/{emp_id}")
