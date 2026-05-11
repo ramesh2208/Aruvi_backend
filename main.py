@@ -1605,28 +1605,15 @@ async def apply_leave(
                 approvers = get_approvers(db, user)
                 day_text = "Day" if float(requested_days) == 1.0 else "Days"
                 summary_msg = f"{fmt_days(cl_days_to_deduct)} CL / {fmt_days(lop_days_val)} LOP" if lop_days_val > 0 else f"{fmt_days(requested_days)} {day_text}"
-                subject = f"ITS - {emp_name} - {leave_type} Request | {from_date} ({summary_msg})"
-                applied_date_str = datetime.now().strftime("%d-%b-%Y")
-                month_str = req_from.strftime("%b-%y") if req_from else ""
-                
-                pure_days = str(requested_days).rstrip('0').rstrip('.') if '.' in str(requested_days) and str(requested_days).endswith('0') else str(requested_days)
-                if pure_days.endswith('.'): pure_days = pure_days[:-1]
-                
-                if from_date == to_date:
-                    date_display = from_date
-                else:
-                    date_display = f"{from_date} to {to_date}"
-
-                for appr in approvers:
-                    if appr["email"]:
+                        subject = f"ITS - {emp_name} - {leave_type} Request | {from_date}"
                         content = f"""
                         <p>Good Day!</p>
                         <p>Please find below the details of my leave.</p>
                         <p>Let me know if you require any additional information.</p>
                         <br>
-                        <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Arial', sans-serif; border: 1px solid #000;">
+                        <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                             <thead>
-                                <tr style="background-color: #C6D9F1; color: #000; font-weight: bold;">
+                                <tr style="background-color: darkblue; color: #000; font-weight: bold;">
                                     <th style="padding: 8px; border: 1px solid #000;">S.No</th>
                                     <th style="padding: 8px; border: 1px solid #000;">Month</th>
                                     <th style="padding: 8px; border: 1px solid #000; width: 40%;">Date</th>
@@ -1635,7 +1622,7 @@ async def apply_leave(
                                 </tr>
                             </thead>
                             <tbody>
-                                <tr style="color: #000;">
+                                <tr style="color: darkblue; background-color: transparent;">
                                     <td style="padding: 8px; border: 1px solid #000;">1</td>
                                     <td style="padding: 8px; border: 1px solid #000;">{month_str}</td>
                                     <td style="padding: 8px; border: 1px solid #000;">{from_date} to {to_date}</td>
@@ -1854,7 +1841,7 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
             func.lower(func.trim(models.EmpDet.emp_id)) == (leave.emp_id or "").strip().lower()
         ).first()
         if emp_user and emp_user.p_mail:
-            subject = f"RE: ITS-{emp_user.name}-{leave.leave_type} Request on {leave.from_date}"
+            subject = f"ITS - {emp_user.name} - {leave.leave_type} Request | {leave.from_date}"
             
             # Original Table Content to be appended below the status
             month_str = ""
@@ -1871,9 +1858,9 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
             <br>
             <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
             <p style="color: #666; font-size: 14px;"><strong>Original Request Details:</strong></p>
-            <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Arial', sans-serif; border: 1px solid #000;">
+            <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
-                    <tr style="background-color: #C6D9F1; color: #000; font-weight: bold;">
+                    <tr style="background-color: darkblue; color: #000; font-weight: bold;">
                         <th style="padding: 8px; border: 1px solid #000;">S.No</th>
                         <th style="padding: 8px; border: 1px solid #000;">Month</th>
                         <th style="padding: 8px; border: 1px solid #000; width: 40%;">Date</th>
@@ -1882,7 +1869,7 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
                     </tr>
                 </thead>
                 <tbody>
-                    <tr style="color: #000;">
+                    <tr style="color: darkblue; background-color: transparent;">
                         <td style="padding: 8px; border: 1px solid #000;">1</td>
                         <td style="padding: 8px; border: 1px solid #000;">{month_str}</td>
                         <td style="padding: 8px; border: 1px solid #000;">{leave.from_date} to {leave.to_date}</td>
