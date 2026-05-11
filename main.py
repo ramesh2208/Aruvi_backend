@@ -1617,12 +1617,12 @@ async def apply_leave(
                         <br>
                         <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                             <thead>
-                                <tr style="background-color: darkblue; color: #000; font-weight: bold;">
-                                    <th style="padding: 8px; border: 1px solid #000;">S.No</th>
-                                    <th style="padding: 8px; border: 1px solid #000;">Month</th>
-                                    <th style="padding: 8px; border: 1px solid #000; width: 40%;">Date</th>
-                                    <th style="padding: 8px; border: 1px solid #000;">Days</th>
-                                    <th style="padding: 8px; border: 1px solid #000;">Reason</th>
+                                <tr style="background-color: darkblue; font-weight: bold;">
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000 !important;">S.No</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000 !important;">Month</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000 !important; width: 40%;">Date</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000 !important;">Days</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000 !important;">Reason</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -1660,31 +1660,8 @@ async def apply_leave(
 
 
 @app.post("/send-leave-notification")
-def send_leave_notification(notification: dict, db: Session = Depends(get_db)):
-    try:
-        emp_id = notification.get("emp_id", "").strip()
-        emp_name = notification.get("emp_name", "Employee")
-        leave_type = notification.get("leave_type", "Leave")
-        from_date = notification.get("from_date", "")
-        to_date = notification.get("to_date", "")
-        days = notification.get("days", 0)
-        is_half_day = notification.get("is_half_day", False)
-        status = notification.get("status", "Pending")
-        try:
-            user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == emp_id).first()
-            if not user:
-                return {"message": "Employee not found"}
-            approvers = get_approvers(db, user)
-            if not approvers:
-                return {"message": "No approvers found for this employee"}
-            subject = f"Leave Request: {emp_name} - {leave_type} ({from_date} to {to_date})"
-            sent_count = 0
-            for appr in approvers:
-                if appr["email"]:
-                    body = get_email_template(appr["name"] or "Manager", subject, f"<p>{emp_name} applied for {leave_type}.</p>", "Aruvi Leave System")
-                    if send_email_notification(appr["email"], subject, body):
-                        sent_count += 1
-            return {"message": f"Notification sent to {sent_count} approver(s)"}
+            # Endpoint logic disabled as per user request to prevent redundant notification mail
+            return {"message": "Notification endpoint disabled"}
         except Exception as e:
             return {"message": f"Error processing notification: {str(e)}"}
     except Exception as e:
@@ -1865,12 +1842,12 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
             <p style="color: #666; font-size: 14px;"><strong>Original Request Details:</strong></p>
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
-                    <tr style="background-color: darkblue; color: #000; font-weight: bold;">
-                        <th style="padding: 8px; border: 1px solid #000;">S.No</th>
-                        <th style="padding: 8px; border: 1px solid #000;">Month</th>
-                        <th style="padding: 8px; border: 1px solid #000; width: 40%;">Date</th>
-                        <th style="padding: 8px; border: 1px solid #000;">Days</th>
-                        <th style="padding: 8px; border: 1px solid #000;">Reason</th>
+                    <tr style="background-color: darkblue; font-weight: bold;">
+                        <th style="padding: 8px; border: 1px solid #000; color: #000 !important;">S.No</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000 !important;">Month</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000 !important; width: 40%;">Date</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000 !important;">Days</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000 !important;">Reason</th>
                     </tr>
                 </thead>
                 <tbody>
