@@ -1545,12 +1545,12 @@ async def apply_leave(
                         <br>
                         <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                             <thead>
-                                <tr style="background-color: darkblue; font-weight: bold;">
-                                    <th style="padding: 8px; border: 1px solid #000; color: black !important;">S.No</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: black !important;">Month</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: black !important; width: 40%;">Date</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: black !important;">Days</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: black !important;">Reason</th>
+                                <tr style="background-color: #f2f2f2; font-weight: bold;">
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Month</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important; width: 40%;">Date</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Days</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Reason</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -1768,12 +1768,12 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
             <p style="color: #666; font-size: 14px;"><strong>Original Request Details:</strong></p>
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
-                    <tr style="background-color: darkblue; font-weight: bold;">
-                        <th style="padding: 8px; border: 1px solid #000; color: #000 !important;">S.No</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000 !important;">Month</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000 !important; width: 40%;">Date</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000 !important;">Days</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000 !important;">Reason</th>
+                    <tr style="background-color: #f2f2f2; font-weight: bold;">
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Month</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important; width: 40%;">Date</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Days</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Reason</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -2067,13 +2067,13 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
                     <br>
                     <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                         <thead>
-                            <tr style="background-color: darkblue; font-weight: bold;">
-                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">S.No</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">Name</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">Reason</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">In time</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">Out time</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">OT hours(Duration)</th>
+                            <tr style="background-color: #f2f2f2; font-weight: bold;">
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Name</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Reason</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">In time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Out time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">OT hours(Duration)</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -2221,13 +2221,13 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                     <br>
                     <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                         <thead>
-                            <tr style="background-color: darkblue; font-weight: bold;">
-                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">S.No</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">Date</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">From time</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">To Time</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">Total Hours</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">Reason</th>
+                            <tr style="background-color: #f2f2f2; font-weight: bold;">
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Date</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">From time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">To Time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Total Hours</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Reason</th>
                             </tr>
                         </thead>
                         <tbody>
