@@ -2061,7 +2061,34 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
             subject = f"ITS - {user.name} - OT Request | {ot_date_clean} | {request.from_time} to {request.to_time}"
             for appr in approvers:
                 if appr["email"]:
-                    content = f"<p>OT request from {user.name} for {ot_date_clean} ({request.from_time} to {request.to_time}).<br>Reason: {request.reason}</p>"
+                    content = f"""
+                    <p>Good Day!</p>
+                    <p>Please find below the details of my overtime request.</p>
+                    <br>
+                    <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                        <thead>
+                            <tr style="background-color: darkblue; font-weight: bold;">
+                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">Name</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">Reason</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">In time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">Out time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">OT hours(Duration)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="color: darkblue; background-color: transparent;">
+                                <td style="padding: 8px; border: 1px solid #000;">1</td>
+                                <td style="padding: 8px; border: 1px solid #000;">{user.name}</td>
+                                <td style="padding: 8px; border: 1px solid #000;">{request.reason}</td>
+                                <td style="padding: 8px; border: 1px solid #000;">{request.from_time}</td>
+                                <td style="padding: 8px; border: 1px solid #000;">{request.to_time}</td>
+                                <td style="padding: 8px; border: 1px solid #000;">{request.duration}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <br>
+                    """
                     body = get_email_template(appr["name"], "New Overtime Request", content, user.name)
                     background_tasks.add_task(send_email_notification, appr["email"], subject, body)
                 if appr["token"]:
@@ -2188,13 +2215,34 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
             subject = f"ITS - {user.name} - Permission Request | {request.date} | {f_display} to {t_display}"
             for appr in approvers:
                 if appr["email"]:
-                    content = f'''
-                    <p><strong>Good Day!</strong></p>
-                    <p>I would like to request permission on <strong>{request.date}</strong> from <strong>{f_display}</strong> to <strong>{t_display}</strong>.</p>
-                    <p><strong>Approved Hours:</strong> {approved_hrs} hr</p>
-                    {f'<p><strong>LOP Hours:</strong> {round(lop_hrs, 2)} hr</p>' if lop_hrs > 0 else ''}
-                    <p><strong>Reason:</strong> {request.reason}</p>
-                    '''
+                    content = f"""
+                    <p>Good Day!</p>
+                    <p>Please find below the details of my permission request.</p>
+                    <br>
+                    <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                        <thead>
+                            <tr style="background-color: darkblue; font-weight: bold;">
+                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">Date</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">From time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">To Time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">Total Hours</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: black !important;">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="color: darkblue; background-color: transparent;">
+                                <td style="padding: 8px; border: 1px solid #000;">1</td>
+                                <td style="padding: 8px; border: 1px solid #000;">{request.date}</td>
+                                <td style="padding: 8px; border: 1px solid #000;">{f_display}</td>
+                                <td style="padding: 8px; border: 1px solid #000;">{t_display}</td>
+                                <td style="padding: 8px; border: 1px solid #000;">{total_hrs_val:.2f} hrs</td>
+                                <td style="padding: 8px; border: 1px solid #000;">{request.reason}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <br>
+                    """
                     body = get_email_template(appr["name"], "Permission Request", content, user.name)
                     background_tasks.add_task(send_email_notification, appr["email"], subject, body)
                 if appr["token"]:
@@ -2256,12 +2304,38 @@ def approve_permission(request: schemas.PermissionApprovalAction, background_tas
             f_time_str = format_time_safe(perm.f_time)
             t_time_str = format_time_safe(perm.t_time)
             subject = f"ITS - Permission Request {new_action} - {perm_date}"
-            content = f'''
+            content = f"""
+            <p>Good Day!</p>
             <p>Your request for <strong>Permission</strong> has been processed.</p>
             <div style="font-size: 20px; font-weight: 700; color: #1f2937; margin: 20px 0;">{new_action}</div>
-            <p>Permission on <strong>{perm_date}</strong> from <strong>{f_time_str}</strong> to <strong>{t_time_str}</strong> has been <strong>{new_action}</strong>.</p>
+            <br>
+            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+            <p style="color: #666; font-size: 14px;"><strong>Original Request Details:</strong></p>
+            <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                <thead>
+                    <tr style="background-color: darkblue; font-weight: bold;">
+                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">S.No</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">Date</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">From time</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">To Time</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">Total Hours</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">Reason</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr style="color: darkblue; background-color: transparent;">
+                        <td style="padding: 8px; border: 1px solid #000;">1</td>
+                        <td style="padding: 8px; border: 1px solid #000;">{perm_date}</td>
+                        <td style="padding: 8px; border: 1px solid #000;">{f_time_str}</td>
+                        <td style="padding: 8px; border: 1px solid #000;">{t_time_str}</td>
+                        <td style="padding: 8px; border: 1px solid #000;">{perm.total_hours or "0.00"} hrs</td>
+                        <td style="padding: 8px; border: 1px solid #000;">{perm.reason}</td>
+                    </tr>
+                </tbody>
+            </table>
+            <br>
             {f'<p><strong>Remarks:</strong> {request.remarks}</p>' if request.remarks else ''}
-            '''
+            """
             body = get_email_template(emp_user.name, f"Permission Request {new_action}", content, admin_user.name if admin_user else "Manager")
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
             if emp_user.attribute7:
@@ -2356,10 +2430,35 @@ def approve_ot(request: schemas.OverTimeApprovalAction, background_tasks: Backgr
         if emp_user and emp_user.p_mail:
             subject = f"OT Request {request.action.upper()} - {ot.ot_date}"
             content = f"""
+            <p>Good Day!</p>
             <p>Your request for <strong>Overtime</strong> has been processed.</p>
             <div style="font-size: 20px; font-weight: 700; color: #1f2937; margin: 20px 0;">{request.action}</div>
-            <p><strong>Date:</strong> {ot.ot_date}</p>
-            <p><strong>Duration:</strong> {ot.duration}</p>
+            <br>
+            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+            <p style="color: #666; font-size: 14px;"><strong>Original Request Details:</strong></p>
+            <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                <thead>
+                    <tr style="background-color: darkblue; font-weight: bold;">
+                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">S.No</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">Name</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">Reason</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">In time</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">Out time</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">OT hours(Duration)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr style="color: darkblue; background-color: transparent;">
+                        <td style="padding: 8px; border: 1px solid #000;">1</td>
+                        <td style="padding: 8px; border: 1px solid #000;">{emp_user.name}</td>
+                        <td style="padding: 8px; border: 1px solid #000;">{ot.reason or "No reason"}</td>
+                        <td style="padding: 8px; border: 1px solid #000;">{ot.from_time}</td>
+                        <td style="padding: 8px; border: 1px solid #000;">{ot.to_time}</td>
+                        <td style="padding: 8px; border: 1px solid #000;">{ot.duration}</td>
+                    </tr>
+                </tbody>
+            </table>
+            <br>
             <p><strong>Remarks:</strong> {request.remarks or 'No remarks provided.'}</p>
             """
             body = get_email_template(emp_user.name, "OT Request Update", content, "HR Team")
@@ -2446,10 +2545,35 @@ def approve_wfh(request: schemas.WFHApprovalAction, background_tasks: Background
         if emp_user and emp_user.p_mail:
             subject = f"WFH Request {request.action.upper()} - {wfh.from_date}"
             content = f"""
+            <p>Good Day!</p>
             <p>Your request for <strong>Work From Home</strong> has been processed.</p>
             <div style="font-size: 20px; font-weight: 700; color: #1f2937; margin: 20px 0;">{request.action}</div>
-            <p><strong>Duration:</strong> {wfh.from_date} to {wfh.to_date}</p>
-            <p><strong>No of Days:</strong> {fmt_days(wfh.days)} {"Day" if float(wfh.days or 0) == 1.0 else "Days"}</p>
+            <br>
+            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+            <p style="color: #666; font-size: 14px;"><strong>Original Request Details:</strong></p>
+            <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                <thead>
+                    <tr style="background-color: darkblue; font-weight: bold;">
+                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">S.No</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">Name</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">From Date</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">To Date</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">Days</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">Reason</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr style="color: darkblue; background-color: transparent;">
+                        <td style="padding: 8px; border: 1px solid #000;">1</td>
+                        <td style="padding: 8px; border: 1px solid #000;">{emp_user.name}</td>
+                        <td style="padding: 8px; border: 1px solid #000;">{wfh.from_date}</td>
+                        <td style="padding: 8px; border: 1px solid #000;">{wfh.to_date}</td>
+                        <td style="padding: 8px; border: 1px solid #000;">{fmt_days(wfh.days)} {"Day" if float(wfh.days or 0) == 1.0 else "Days"}</td>
+                        <td style="padding: 8px; border: 1px solid #000;">{wfh.reason or "No reason"}</td>
+                    </tr>
+                </tbody>
+            </table>
+            <br>
             <p><strong>Remarks:</strong> {request.remarks or 'No remarks provided.'}</p>
             """
             body = get_email_template(emp_user.name, "WFH Request Update", content, "HR Team")
@@ -2534,7 +2658,34 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
                 subject = f"ITS - {user.name} - WFH | {from_str} to {to_str} ({wfh_days_fmt} {wfh_day_label})"
                 for appr in approvers:
                     if appr["email"]:
-                        content = f"<p>{user.name} requested WFH from {from_str} to {to_str} ({wfh_days_fmt} {wfh_day_label}).<br>Reason: {request.reason}</p>"
+                        content = f"""
+                        <p>Good Day!</p>
+                        <p>Please find below the details of my work from home request.</p>
+                        <br>
+                        <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                            <thead>
+                                <tr style="background-color: darkblue; font-weight: bold;">
+                                    <th style="padding: 8px; border: 1px solid #000; color: black !important;">S.No</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: black !important;">Name</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: black !important;">From Date</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: black !important;">To Date</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: black !important;">Days</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: black !important;">Reason</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr style="color: darkblue; background-color: transparent;">
+                                    <td style="padding: 8px; border: 1px solid #000;">1</td>
+                                    <td style="padding: 8px; border: 1px solid #000;">{user.name}</td>
+                                    <td style="padding: 8px; border: 1px solid #000;">{from_str}</td>
+                                    <td style="padding: 8px; border: 1px solid #000;">{to_str}</td>
+                                    <td style="padding: 8px; border: 1px solid #000;">{wfh_days_fmt} {wfh_day_label}</td>
+                                    <td style="padding: 8px; border: 1px solid #000;">{request.reason}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <br>
+                        """
                         body = get_email_template(appr["name"], "Work From Home Request", content, user.name)
                         background_tasks.add_task(send_email_notification, appr["email"], subject, body)
                     if appr["token"]:
