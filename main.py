@@ -1182,11 +1182,11 @@ def get_leave_history(emp_id: str, db: Session = Depends(get_db)):
     try:
         history = db.query(models.EmpLeave).filter(
             func.lower(func.trim(models.EmpLeave.emp_id)) == emp_id.lower()
-        ).order_by(models.EmpLeave.emp_l_id.desc()).all()
+        ).order_by(models.EmpLeave.l_id.desc()).all()
     except Exception as e:
         handle_db_error(e)
     return [
-        {"l_id": row.emp_l_id, "leaveType": row.leave_type, "leave_type": row.leave_type,
+        {"l_id": row.l_id, "leaveType": row.leave_type, "leave_type": row.leave_type,
         "from_date": row.from_date, "to_date": row.to_date, "days": row.days,
         "reason": row.reason, "status": row.status, "remarks": row.remarks, "revision": row.revision}
         for row in history
@@ -1546,11 +1546,11 @@ async def apply_leave(
                         <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                             <thead>
                                 <tr style="background-color: darkblue; font-weight: bold;">
-                                    <th style="padding: 8px; border: 1px solid #000; color: #000 !important;">S.No</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: #000 !important;">Month</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: #000 !important; width: 40%;">Date</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: #000 !important;">Days</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: #000 !important;">Reason</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: black !important;">S.No</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: black !important;">Month</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: black !important; width: 40%;">Date</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: black !important;">Days</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: black !important;">Reason</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -1598,8 +1598,8 @@ def send_leave_notification(notification: dict, db: Session = Depends(get_db)):
 def get_pending_leaves(manager_id: Optional[str] = None, db: Session = Depends(get_db)):
     try:
         query = db.query(models.EmpLeave, models.EmpDet).join(
-            models.EmpDet, models.EmpLeave.emp_id == models.EmpDet.emp_id
-        ).filter(models.EmpLeave.status == "Pending")
+            models.EmpDet, func.lower(func.trim(models.EmpLeave.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id))
+        ).filter(func.lower(func.trim(models.EmpLeave.status)) == "pending")
         if manager_id:
             query = query.filter(
                 or_(
@@ -1626,7 +1626,7 @@ def get_pending_leaves(manager_id: Optional[str] = None, db: Session = Depends(g
 def get_all_leave_history(manager_id: Optional[str] = None, db: Session = Depends(get_db)):
     try:
         query = db.query(models.EmpLeave, models.EmpDet).join(
-            models.EmpDet, models.EmpLeave.emp_id == models.EmpDet.emp_id
+            models.EmpDet, func.lower(func.trim(models.EmpLeave.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id))
         )
         if manager_id:
             query = query.filter(
@@ -1887,8 +1887,7 @@ def get_notifications(
             q = db.query(models.EmpPermission, models.EmpDet).outerjoin(
                 models.EmpDet, func.lower(func.trim(models.EmpPermission.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id))
             ).filter(
-                func.lower(func.trim(models.EmpPermission.status)) == "pending",
-                cutoff_filter(models.EmpPermission.last_update_date, models.EmpPermission.creation_date)
+                func.lower(func.trim(models.EmpPermission.status)) == "pending"
             )
             q = apply_manager_filter(q, models.EmpDet)
             for perm, emp in q.order_by(standard_order(models.EmpPermission.last_update_date, models.EmpPermission.creation_date)).limit(30).all():
@@ -1911,8 +1910,7 @@ def get_notifications(
             q = db.query(models.EmpLeave, models.EmpDet).outerjoin(
                 models.EmpDet, func.lower(func.trim(models.EmpLeave.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id))
             ).filter(
-                func.lower(func.trim(models.EmpLeave.status)) == "pending",
-                cutoff_filter(models.EmpLeave.last_update_date, models.EmpLeave.creation_date)
+                func.lower(func.trim(models.EmpLeave.status)) == "pending"
             )
             q = apply_manager_filter(q, models.EmpDet)
             for leave, emp in q.order_by(standard_order(models.EmpLeave.last_update_date, models.EmpLeave.creation_date)).limit(30).all():
@@ -1935,8 +1933,7 @@ def get_notifications(
             q = db.query(models.OverTimeDet, models.EmpDet).outerjoin(
                 models.EmpDet, func.lower(func.trim(models.OverTimeDet.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id))
             ).filter(
-                func.lower(func.trim(models.OverTimeDet.status)) == "pending",
-                cutoff_filter(models.OverTimeDet.last_update_date, models.OverTimeDet.creation_date)
+                func.lower(func.trim(models.OverTimeDet.status)) == "pending"
             )
             q = apply_manager_filter(q, models.EmpDet)
             for ot, emp in q.order_by(standard_order(models.OverTimeDet.last_update_date, models.OverTimeDet.creation_date)).limit(30).all():
