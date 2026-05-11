@@ -981,28 +981,6 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         raw_in_time = (checkin_record.in_time or "").strip()
         raw_out_time = (request.out_time or "").strip()
 
-        if not raw_in_time:
-            checkin_record.in_time = raw_out_time
-            raw_in_time = raw_out_time
-
-        t1 = parse_time_str(raw_in_time)
-        t2 = parse_time_str(raw_out_time)
-
-        if not t1 or not t2:
-            raise ValueError(f"Could not parse times: in={raw_in_time}, out={raw_out_time}")
-        
-        # ... and so on ...
-        ).order_by(models.CheckIn.check_in_id.desc()).first()
-    except Exception as e:
-        handle_db_error(e)
-
-    if not checkin_record:
-        raise HTTPException(status_code=404, detail="No check-in found for today")
-
-    try:
-        raw_in_time = (checkin_record.in_time or "").strip()
-        raw_out_time = (request.out_time or "").strip()
-
         print(f"DEBUG in_time from DB : '{raw_in_time}'")
         print(f"DEBUG out_time from request: '{raw_out_time}'")
 
