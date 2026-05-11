@@ -1620,27 +1620,27 @@ async def apply_leave(
                 for appr in approvers:
                     if appr["email"]:
                         content = f"""
-                        <p><strong>Good Day!</strong></p>
+                        <p>Good Day!</p>
                         <p>Please find below the details of my leave.</p>
                         <p>Let me know if you require any additional information.</p>
                         <br>
-                        <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif;">
+                        <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Arial', sans-serif; border: 1px solid #000;">
                             <thead>
-                                <tr style="background-color: #dbeafe; color: #000000; font-weight: bold;">
-                                    <th style="padding: 8px; border: 1px solid #ffffff;">S.No</th>
-                                    <th style="padding: 8px; border: 1px solid #ffffff;">Month</th>
-                                    <th style="padding: 8px; border: 1px solid #ffffff;">Date</th>
-                                    <th style="padding: 8px; border: 1px solid #ffffff;">Days</th>
-                                    <th style="padding: 8px; border: 1px solid #ffffff;">Reason</th>
+                                <tr style="background-color: #C6D9F1; color: #000; font-weight: bold;">
+                                    <th style="padding: 8px; border: 1px solid #000;">S.No</th>
+                                    <th style="padding: 8px; border: 1px solid #000;">Month</th>
+                                    <th style="padding: 8px; border: 1px solid #000; width: 40%;">Date</th>
+                                    <th style="padding: 8px; border: 1px solid #000;">Days</th>
+                                    <th style="padding: 8px; border: 1px solid #000;">Reason</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                <tr style="background-color: #27272a; color: #e0f2fe;">
-                                    <td style="padding: 8px; border: 1px solid #ffffff;">1</td>
-                                    <td style="padding: 8px; border: 1px solid #ffffff;">{month_str}</td>
-                                    <td style="padding: 8px; border: 1px solid #ffffff;">{date_display}</td>
-                                    <td style="padding: 8px; border: 1px solid #ffffff;">{pure_days}</td>
-                                    <td style="padding: 8px; border: 1px solid #ffffff;">{reason}</td>
+                                <tr style="color: #000;">
+                                    <td style="padding: 8px; border: 1px solid #000;">1</td>
+                                    <td style="padding: 8px; border: 1px solid #000;">{month_str}</td>
+                                    <td style="padding: 8px; border: 1px solid #000;">{from_date} to {to_date}</td>
+                                    <td style="padding: 8px; border: 1px solid #000;">{pure_days}</td>
+                                    <td style="padding: 8px; border: 1px solid #000;">{reason}</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -1855,14 +1855,45 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
         ).first()
         if emp_user and emp_user.p_mail:
             subject = f"RE: ITS-{emp_user.name}-{leave.leave_type} Request on {leave.from_date}"
-            content = f"""
-            <p>Your request for <strong>{leave.leave_type}</strong> has been processed.</p>
-            <div style="font-size: 20px; font-weight: 700; color: #1f2937; margin: 20px 0;">{request_item.action}</div>
-            <p><strong>Dates:</strong> {leave.from_date} to {leave.to_date}</p>
-            <p><strong>No of Days:</strong> {fmt_days(leave.days)} {"Day" if float(leave.days or 0) == 1.0 else "Days"}</p>
-            <p><strong>Remarks:</strong> {request_item.remarks or 'No remarks provided.'}</p>
+            
+            # Original Table Content to be appended below the status
+            month_str = ""
+            try:
+                from_dt = parse_date(leave.from_date)
+                if from_dt: month_str = from_dt.strftime("%b-%y")
+            except: pass
+            
+            pure_days = fmt_days(leave.days)
+            
+            status_content = f"""
+            <p>Good Day!</p>
+            <p>Your leave request has been <strong>{request_item.action}</strong>.</p>
+            <br>
+            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+            <p style="color: #666; font-size: 14px;"><strong>Original Request Details:</strong></p>
+            <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Arial', sans-serif; border: 1px solid #000;">
+                <thead>
+                    <tr style="background-color: #C6D9F1; color: #000; font-weight: bold;">
+                        <th style="padding: 8px; border: 1px solid #000;">S.No</th>
+                        <th style="padding: 8px; border: 1px solid #000;">Month</th>
+                        <th style="padding: 8px; border: 1px solid #000; width: 40%;">Date</th>
+                        <th style="padding: 8px; border: 1px solid #000;">Days</th>
+                        <th style="padding: 8px; border: 1px solid #000;">Reason</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr style="color: #000;">
+                        <td style="padding: 8px; border: 1px solid #000;">1</td>
+                        <td style="padding: 8px; border: 1px solid #000;">{month_str}</td>
+                        <td style="padding: 8px; border: 1px solid #000;">{leave.from_date} to {leave.to_date}</td>
+                        <td style="padding: 8px; border: 1px solid #000;">{pure_days}</td>
+                        <td style="padding: 8px; border: 1px solid #000;">{leave.reason}</td>
+                    </tr>
+                </tbody>
+            </table>
+            <br>
             """
-            body = get_email_template(emp_user.name, f"Leave Request {request_item.action}", content, leave.approved_by or "Manager")
+            body = get_email_template(emp_user.name, f"Leave Request {request_item.action}", status_content, leave.approved_by or "Manager")
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
             if emp_user.attribute7:
                 background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7],
