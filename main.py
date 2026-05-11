@@ -1,3 +1,4 @@
+from fastapi.openapi import constants
 from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
@@ -30,16 +31,16 @@ import sqlalchemy
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
- 
+
 import models, schemas, database
 from database import engine, SessionLocal
- 
+
 def safe_dt(d):
     if not d: return None
     s = str(d).strip()
     if "0000-00-00" in s: return None
     return d
- 
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # PRIVILEGE SYSTEM - COMPLETE FIXED
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -76,7 +77,7 @@ def safe_dt(d):
 #   view_prv= 5  → global/HR view (see all employees)
 #   0 = no privilege
 # ═══════════════════════════════════════════════════════════════════════════════
- 
+
 MASTER_MOD_IDS = [
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
     11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
@@ -102,8 +103,8 @@ MODULE_NAMES = {
     54: "WFH (Global)",
     57: "WFH"
 }
- 
- 
+
+
 def _build_empty_priv(mod_id_val: int = 0) -> dict:
     """Return a zero-filled privilege dict for a given mod_id."""
     return {
@@ -118,8 +119,8 @@ def _build_empty_priv(mod_id_val: int = 0) -> dict:
         "hr_prv":      0,
         "permissions": None,
     }
- 
- 
+
+
 def parse_privilege_array(s):
     """Split a comma-separated privilege string into list of stripped strings."""
     if not s or not isinstance(s, str):
@@ -128,8 +129,8 @@ def parse_privilege_array(s):
     if s.startswith('[') and s.endswith(']'):
         s = s[1:-1]
     return [x.strip() for x in s.split(',')]
- 
- 
+
+
 def _safe_int(arr, idx):
     """Return arr[idx] as int, or 0 on any failure."""
     try:
@@ -138,8 +139,8 @@ def _safe_int(arr, idx):
     except Exception:
         pass
     return 0
- 
- 
+
+
 def _build_privileges_from_arrays(source_obj) -> list:
     """
     Unified logic to build privileges from any object (EmpDet or RolePrivilege)
@@ -202,21 +203,21 @@ def _build_role_based_privileges(priv_rows) -> list:
     
     # In 'array type' logic, the first matching row contains the full arrays
     return _build_privileges_from_arrays(priv_rows[0])
- 
- 
+
+
 def get_user_privileges(user, db) -> list:
     """
     Single entry-point: return privilege list for any EmpDet user.
     Always returns list aligned to MASTER_MOD_IDS (same length, same order).
     """
     emp_role_type = (getattr(user, 'role_type', '') or '').strip().lower()
- 
+
     if emp_role_type in ('module based', 'module_based'):
         print(f"[PRIV] module-based → {user.emp_id}")
         privs = _build_module_based_privileges(user)
         print(f"[PRIV] → {len(privs)} entries returned")
         return privs
- 
+
     if getattr(user, 'rpd_id', None):
         try:
             print(f"[PRIV] role-based → {user.emp_id} (rpd_id={user.rpd_id})")
@@ -232,16 +233,16 @@ def get_user_privileges(user, db) -> list:
             return privs
         except Exception as e:
             print(f"[PRIV] Error fetching role privileges: {e}")
- 
+
     print(f"[PRIV] No privileges found for {user.emp_id}, returning zeros")
     return [_build_empty_priv(m) for m in MASTER_MOD_IDS]
- 
+
 # ═══════════════════════════════════════════════════════════════════════════════
- 
+
 SECRET_KEY = "your-secret-key-here-change-in-production"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 1440
- 
+
 def create_access_token(data: dict):
     try:
         to_encode = data.copy()
@@ -252,7 +253,7 @@ def create_access_token(data: dict):
     except Exception as e:
         print(f"JWT Token creation error: {e}")
         return f"fallback_token_{datetime.utcnow().timestamp()}"
- 
+
 def handle_db_error(e: Exception):
     err_msg = str(e)
     print(f"❌ DATABASE ERROR: {err_msg}")
@@ -277,10 +278,10 @@ def handle_db_error(e: Exception):
         status_code=503,
         detail="Database unavailable. The server may be waking up - please wait 30 seconds and try again."
     )
- 
- 
+
+
 app = FastAPI()
- 
+
 def run_migrations_with_retry(max_retries: int = 3, delay: int = 5):
     for attempt in range(1, max_retries + 1):
         try:
@@ -303,7 +304,7 @@ def run_migrations_with_retry(max_retries: int = 3, delay: int = 5):
             print(f"❌ Migration failed: {e}")
             time.sleep(delay)
     return False
- 
+
 def create_tables_with_retry(max_retries: int = 5, delay: int = 5):
     for attempt in range(1, max_retries + 1):
         try:
@@ -325,7 +326,7 @@ def create_tables_with_retry(max_retries: int = 5, delay: int = 5):
             else:
                 print("❌ CRITICAL: Could not connect to database after all retries. App will start anyway.")
                 return False
- 
+
 @app.on_event("startup")
 def startup_event():
     import threading
@@ -335,9 +336,9 @@ def startup_event():
     thread = threading.Thread(target=init_db)
     thread.setDaemon(True)
     thread.start()
- 
+
 otp_store = {}
- 
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -345,13 +346,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
- 
- 
+
+
 @app.get("/")
 def read_root():
     return {"status": "online", "message": "Aruvi Backend is active"}
- 
- 
+
+
 @app.get("/health")
 def health_check():
     try:
@@ -361,8 +362,8 @@ def health_check():
         return {"status": "healthy", "db": "connected"}
     except Exception as e:
         return {"status": "degraded", "db": "disconnected", "error": str(e)}
- 
- 
+
+
 @app.get("/diag/ip")
 def get_diag_ip():
     try:
@@ -370,8 +371,8 @@ def get_diag_ip():
         return {"ip": response.json().get("ip"), "note": "Add this IP to GoDaddy Remote MySQL host list."}
     except Exception as e:
         return {"error": str(e)}
- 
- 
+
+
 def get_db():
     db = database.SessionLocal()
     try:
@@ -387,8 +388,8 @@ def get_db():
             db.close()
     else:
         db.close()
- 
- 
+        
+        
 def parse_date(d):
     if not d:
         return None
@@ -417,8 +418,8 @@ def parse_date(d):
         except:
             continue
     return None
- 
- 
+
+
 def parse_time_str(t_str: str):
     if not t_str:
         return None
@@ -443,8 +444,8 @@ def parse_time_str(t_str: str):
         except ValueError:
             return None
     return None
- 
- 
+
+
 def format_time_safe(t):
     if not t:
         return ""
@@ -463,8 +464,8 @@ def format_time_safe(t):
     except:
         pass
     return str(t)
- 
- 
+
+
 def auto_calculate_total_hours(emp_id: str, db: Session):
     try:
         today = datetime.now().date()
@@ -490,16 +491,16 @@ def auto_calculate_total_hours(emp_id: str, db: Session):
     except Exception as e:
         print(f"❌ Auto-calculation error: {str(e)}")
         return {"error": str(e)}
- 
+
 @app.post("/auto-calculate-hours")
 def auto_calculate_hours_endpoint(request: schemas.AutoCalculateHoursRequest, db: Session = Depends(get_db)):
     emp_id = request.emp_id.strip()
     result = auto_calculate_total_hours(emp_id, db)
     return result
- 
- 
+
+
 # ─── LOGIN ────────────────────────────────────────────────────────────────────
- 
+
 @app.post("/login", response_model=schemas.Token)
 def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
     try:
@@ -633,8 +634,8 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
     except Exception as e:
         print(f" LOGIN ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error during login")
- 
- 
+
+
 @app.post("/forgot-password")
 def forgot_password(request: schemas.ForgotPasswordRequest, background_tasks: BackgroundTasks,
                     db: Session = Depends(get_db)):
@@ -649,19 +650,9 @@ def forgot_password(request: schemas.ForgotPasswordRequest, background_tasks: Ba
     otp = ''.join(random.choices(string.digits, k=6))
     otp_store[email] = {"otp": otp, "expires_at": datetime.now() + timedelta(minutes=5)}
     print(f" Generated OTP: {otp}")
-    content = f"""
-    <p>We received a request to change the password for your account.</p>
-    <p>To complete this process, please use the One-Time Password (OTP) provided below:</p>
-    <div style="font-size: 24px; font-weight: 700; color: #4f46e5; margin: 20px 0; letter-spacing: 4px;">{otp}</div>
-    <p>This OTP is valid for <strong>3 minutes</strong> and can only be used once.</p>
-    <p style="margin-top: 25px; font-size: 13px; color: #64748b;">If you did not request a password change, please contact our support team immediately at <a href="mailto:info@ilantechsolutions.com" style="color: #4f46e5;">info@ilantechsolutions.com</a>.</p>
-    """
-    body = get_email_template(user.name or 'User', "Password Reset OTP", content, "Security Team")
-    background_tasks.add_task(send_email_notification, email, "ITS - Password Reset Mail", body)
-    return {"message": "OTP sent successfully"}
- 
- 
+
 @app.post("/verify-otp")
+
 def verify_otp(request: schemas.VerifyOtpRequest):
     email = request.email.strip().lower()
     otp = request.otp.strip()
@@ -673,11 +664,11 @@ def verify_otp(request: schemas.VerifyOtpRequest):
             else:
                 raise HTTPException(status_code=400, detail="OTP expired")
     raise HTTPException(status_code=400, detail="Invalid OTP")
- 
- 
+
+
 FERNET_KEY = "8wXVu4azfUZx6g0yJOC4FFXG7O5WzFn1WyVTxmEtHQ0="
- 
- 
+
+
 def decrypt_auth_key_fernet(encrypted_auth_key: str) -> str:
     try:
         fernet = Fernet(FERNET_KEY.encode())
@@ -686,18 +677,18 @@ def decrypt_auth_key_fernet(encrypted_auth_key: str) -> str:
     except Exception as e:
         print(f" Fernet decryption error: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to decrypt 2FA secret")
- 
- 
+
+
 class GetAuthKeyRequest(BaseModel):
     p_mail: str
- 
- 
+
+
 class GetAuthKeyResponse(BaseModel):
     auth_key: str
     auth_timer: int
     p_mail: str
- 
- 
+
+
 @app.post("/get-user-auth-key", response_model=GetAuthKeyResponse)
 def get_user_auth_key(request: GetAuthKeyRequest, db: Session = Depends(get_db)):
     p_mail = request.p_mail.strip().lower()
@@ -712,8 +703,8 @@ def get_user_auth_key(request: GetAuthKeyRequest, db: Session = Depends(get_db))
     if not user.auth_key:
         raise HTTPException(status_code=400, detail="2FA not configured for this user")
     return GetAuthKeyResponse(auth_key=user.auth_key, auth_timer=user.auth_timer or 30, p_mail=user.p_mail)
- 
- 
+
+
 def verify_authenticator_otp_for_user(user, otp_input: str) -> bool:
     try:
         encrypted_key = user.auth_key
@@ -732,8 +723,8 @@ def verify_authenticator_otp_for_user(user, otp_input: str) -> bool:
     except Exception as e:
         print(f" OTP verify error: {str(e)}")
         return False
- 
- 
+
+
 @app.post("/verify-2fa")
 def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db)):
     print("\n" + "=" * 60)
@@ -753,7 +744,7 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
     if not ok:
         raise HTTPException(status_code=401, detail="Invalid Authenticator code")
     print(" 2FA SUCCESS")
- 
+
     is_global_admin = False
     role_type = "Employee"
     if user.dom_id:
@@ -774,12 +765,12 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
     ).first() is not None
     if is_manager and role_type != "Admin":
         role_type = "Admin"
- 
+
     # ── Get privileges (works for BOTH module-based AND role-based) ──────────
     privileges = get_user_privileges(user, db)
     print(f" Privileges: {len(privileges)} modules loaded")
     print("=" * 60)
- 
+
     return {
         "access_token": "REAL_TOKEN_HERE",
         "token_type": "bearer",
@@ -791,8 +782,8 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
         "requires_2fa": False,
         "privileges": privileges
     }
- 
- 
+
+
 @app.post("/reset-password")
 def reset_password(request: schemas.ResetPasswordRequest, db: Session = Depends(get_db)):
     email = request.email.strip().lower()
@@ -821,9 +812,9 @@ def reset_password(request: schemas.ResetPasswordRequest, db: Session = Depends(
     db.commit()
     otp_store.pop(email, None)
     return {"message": "Password reset successfully"}
- 
- 
-# ─── SYNC PRIVILEGES ──────────────────────────────────────────────────────────
+
+
+# ─── SYNC PRIVILEGE ──────────────────────────────────────────────────────────
 @app.get("/sync-privileges/{emp_id}")
 def sync_privileges(emp_id: str, db: Session = Depends(get_db)):
     """
@@ -840,16 +831,16 @@ def sync_privileges(emp_id: str, db: Session = Depends(get_db)):
         )
         if not user:
             raise HTTPException(status_code=404, detail="Employee not found")
- 
+
         privileges = get_user_privileges(user, db)
         return {"privileges": privileges}
- 
+
     except HTTPException:
         raise
     except Exception as e:
         handle_db_error(e)
- 
- 
+
+
 @app.get("/admin/employees")
 def get_employees(manager_id: Optional[str] = None, db: Session = Depends(get_db)):
     try:
@@ -888,8 +879,10 @@ def get_employees(manager_id: Optional[str] = None, db: Session = Depends(get_db
             "address": emp.address or ""
         })
     return results
- 
- 
+
+
+        
+        
 @app.get("/employee-profile/{emp_id}", response_model=schemas.EmployeeProfileResponse)
 def get_employee_profile(emp_id: str, db: Session = Depends(get_db)):
     emp_id = emp_id.strip()
@@ -929,8 +922,8 @@ def get_employee_profile(emp_id: str, db: Session = Depends(get_db)):
         "pan_no": user.pan_no,
         "passport_no": user.passport_no
     }
- 
- 
+
+
 @app.get("/admin/attendance-logs")
 def get_attendance_logs(manager_id: Optional[str] = None, db: Session = Depends(get_db)):
     today = datetime.now().date()
@@ -964,41 +957,14 @@ def get_attendance_logs(manager_id: Optional[str] = None, db: Session = Depends(
             "status": log.status if log and log.status else "Absent"
         })
     return results
- 
- 
-@app.post("/check-in")
-def check_in(request: schemas.CheckInRequest, db: Session = Depends(get_db)):
-    emp_id = request.emp_id.strip()
-    now = datetime.now()
-    today_date = now.date()
-    try:
-        existing = db.query(models.CheckIn).filter(
-            models.CheckIn.emp_id == emp_id,
-            models.CheckIn.t_date == today_date
-        ).first()
-        if existing:
-            return {"message": "Already checked in today", "id": existing.check_in_id}
-        new_checkin = models.CheckIn(
-            emp_id=emp_id, in_time=request.in_time, t_date=today_date,
-            t_day=now.strftime("%A"), month=now.strftime("%B"), status="P",
-            Total_hours="0Hr 0Min", created_by=emp_id, creation_date=now,
-            last_updated_by=emp_id, last_update_date=now
-        )
-        db.add(new_checkin)
-        db.commit()
-        db.refresh(new_checkin)
-        return {"message": "Check-in successful", "id": new_checkin.check_in_id}
-    except Exception as e:
-        db.rollback()
-        handle_db_error(e)
- 
- 
+
+
 @app.post("/check-out")
 def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
     emp_id = request.emp_id.strip()
     now = datetime.now()
     today_date = now.date()
- 
+
     try:
         checkin_record = db.query(models.CheckIn).filter(
             models.CheckIn.emp_id == emp_id,
@@ -1006,48 +972,70 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         ).order_by(models.CheckIn.check_in_id.desc()).first()
     except Exception as e:
         handle_db_error(e)
- 
+
     if not checkin_record:
         raise HTTPException(status_code=404, detail="No check-in found for today")
- 
+
     try:
         raw_in_time = (checkin_record.in_time or "").strip()
         raw_out_time = (request.out_time or "").strip()
- 
-        print(f"DEBUG in_time from DB : '{raw_in_time}'")
-        print(f"DEBUG out_time from request: '{raw_out_time}'")
- 
+
         if not raw_in_time:
             checkin_record.in_time = raw_out_time
             raw_in_time = raw_out_time
- 
+
         t1 = parse_time_str(raw_in_time)
         t2 = parse_time_str(raw_out_time)
- 
+
         if not t1 or not t2:
             raise ValueError(f"Could not parse times: in={raw_in_time}, out={raw_out_time}")
- 
+        
+        # ... and so on ...
+        ).order_by(models.CheckIn.check_in_id.desc()).first()
+    except Exception as e:
+        handle_db_error(e)
+
+    if not checkin_record:
+        raise HTTPException(status_code=404, detail="No check-in found for today")
+
+    try:
+        raw_in_time = (checkin_record.in_time or "").strip()
+        raw_out_time = (request.out_time or "").strip()
+
+        print(f"DEBUG in_time from DB : '{raw_in_time}'")
+        print(f"DEBUG out_time from request: '{raw_out_time}'")
+
+        if not raw_in_time:
+            checkin_record.in_time = raw_out_time
+            raw_in_time = raw_out_time
+
+        t1 = parse_time_str(raw_in_time)
+        t2 = parse_time_str(raw_out_time)
+
+        if not t1 or not t2:
+            raise ValueError(f"Could not parse times: in={raw_in_time}, out={raw_out_time}")
+
         grace_start_time = parse_time_str("09:30:00")
         grace_end_time   = parse_time_str("10:00:00")
         checkout_grace_start = parse_time_str("18:30:00")
         checkout_grace_end   = parse_time_str("19:00:00")
- 
+
         if grace_start_time and grace_end_time and grace_start_time <= t1 <= grace_end_time:
             t1 = grace_start_time
             checkin_record.in_time = "09:30:00"
- 
+
         if checkout_grace_start and checkout_grace_end and checkout_grace_start <= t2 <= checkout_grace_end:
             t2 = checkout_grace_end
             checkin_record.out_time = "19:00:00"
         else:
             checkin_record.out_time = raw_out_time
- 
+
         delta = t2 - t1
         total_seconds = int(delta.total_seconds())
         if total_seconds < 0: total_seconds += 24 * 3600
         hours   = total_seconds // 3600
         minutes = (total_seconds % 3600) // 60
- 
+
         if request.total_hours and request.total_hours not in ["0Hr 0Min", "0Hr 00Min"]:
             calculated_total_hours = request.total_hours
             try:
@@ -1059,17 +1047,17 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         else:
             calculated_total_hours = f"{hours}Hr {minutes:02d}Min"
             total_hours_float = hours + (minutes / 60)
- 
+
         checkin_record.Total_hours      = calculated_total_hours
         checkin_record.last_update_date = now
         checkin_record.last_updated_by  = emp_id
         db.add(checkin_record)
         print(f"DEBUG: Processing {emp_id} - {calculated_total_hours} (float: {total_hours_float})")
- 
+
         days_to_deduct = 0.0
         new_status = "P"
         leave_reason = ""
- 
+
         if total_hours_float < 4.0:
             days_to_deduct = 1.0
             new_status = "CL"
@@ -1081,7 +1069,7 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
         else:
             new_status = "P"
             days_to_deduct = 0.0
- 
+
         if days_to_deduct > 0:
             cl_balance = db.query(models.LeaveDet).filter(
                 models.LeaveDet.emp_id == emp_id,
@@ -1090,10 +1078,10 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
                     func.lower(models.LeaveDet.leave_type) == "cl"
                 )
             ).first()
- 
+
             actual_leave_type = "Casual Leave"
             l_det_id_val = None
- 
+
             if cl_balance and float(cl_balance.available_leave or 0) >= days_to_deduct:
                 cl_balance.available_leave = float(cl_balance.available_leave) - days_to_deduct
                 cl_balance.availed_leave   = float(cl_balance.availed_leave or 0) + days_to_deduct
@@ -1107,94 +1095,55 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
                 checkin_record.status = "LOP" if days_to_deduct == 1.0 else "0.5LOP"
                 actual_leave_type = "Loss of Pay"
                 print(f"⚠️ Status updated to {checkin_record.status} (No CL balance) for {emp_id}")
- 
+
             new_leave = models.EmpLeave(
                 l_det_id=l_det_id_val, emp_id=emp_id, leave_type=actual_leave_type,
                 from_date=today_date.strftime("%d-%b-%Y"), to_date=today_date.strftime("%d-%b-%Y"),
-                days=str(days_to_deduct), reason=leave_reason, status="Approved",
-                applied_date=now.strftime("%d-%b-%Y"),
-                mail_message_id="", hr_action="", hr_approval="", admin_approval="",
-                lop_days=str(days_to_deduct) if "LOP" in checkin_record.status else "0",
-                remarks="Auto-generated on check-out", approved_by="System",
-                reporting_manager="", approver="", revision="0",
-                attribute_category="AUTO", attribute1=str(days_to_deduct),
-                attribute2="", attribute3="", attribute4="", attribute5="",
-                attribute6="", attribute7="", attribute8="", attribute9="",
-                attribute10="", attribute11="", attribute12="", attribute13="",
-                attribute14="", file="",
-                created_by=emp_id, creation_date=now,
-                last_updated_by=emp_id, last_update_date=now
-            )
-            db.add(new_leave)
-            print(f"✅ Leave history record ({actual_leave_type} - {days_to_deduct} days) created for {emp_id}")
-        else:
-            checkin_record.status = "P"
-            print(f"ℹ️ Status remained P (Worked {total_hours_float} hrs) for {emp_id}")
- 
-        db.commit()
-        db.refresh(checkin_record)
-        print(f"✅ Successfully committed Total_hours: {checkin_record.Total_hours}")
- 
-    except Exception as e:
-        db.rollback()
-        print(f"❌ Check-out Error: {str(e)}")
-        try:
-            checkin_record.out_time = request.out_time
-            if request.total_hours:
-                checkin_record.Total_hours = request.total_hours
-            checkin_record.last_update_date = now
-            db.add(checkin_record)
-            db.commit()
-            print("⚠️ Saved partial check-out data after error.")
-        except:
-            db.rollback()
- 
-    return {
-        "message"     : "Check-out successful",
-        "total_hours" : checkin_record.Total_hours or "0Hr 0Min",
-        "status"      : checkin_record.status
-    }
- 
- 
-@app.get("/check-status/{emp_id}")
-def get_check_status(emp_id: str, db: Session = Depends(get_db)):
-    emp_id = emp_id.strip()
-    today_date = datetime.now().date()
-    try:
-        record = db.query(models.CheckIn).filter(
-            models.CheckIn.emp_id == emp_id,
-            models.CheckIn.t_date == today_date
-        ).order_by(models.CheckIn.check_in_id.desc()).first()
-    except Exception as e:
-        handle_db_error(e)
-    if record:
-        return {
-            "checked_in"  : True,
-            "in_time"     : record.in_time,
-            "out_time"    : record.out_time,
-            "total_hours" : record.Total_hours or "0Hr 0Min"
-        }
-    return {"checked_in": False}
- 
- 
-@app.get("/attendance-month/{emp_id}")
-def get_attendance_month(emp_id: str, month: int, year: int, db: Session = Depends(get_db)):
-    emp_id = emp_id.strip()
-    try:
-        logs = db.query(models.CheckIn).filter(
-            func.lower(func.trim(models.CheckIn.emp_id)) == emp_id.lower(),
-            extract('month', models.CheckIn.t_date) == month,
-            extract('year', models.CheckIn.t_date) == year
-        ).all()
-    except Exception as e:
-        handle_db_error(e)
-    for log in logs:
-        if hasattr(log, 't_date') and log.t_date:
-            if not isinstance(log.t_date, str):
-                log.t_date = log.t_date.strftime("%Y-%m-%d")
-    return logs
- 
- 
+                        days=str(days_to_deduct), reason=leave_reason, status="Approved",
+                        applied_date=now.strftime("%d-%b-%Y"),
+                        mail_message_id="", hr_action="", hr_approval="", admin_approval="",
+                        lop_days=str(days_to_deduct) if "LOP" in checkin_record.status else "0",
+                        remarks="Auto-generated on check-out", approved_by="System",
+                        reporting_manager="", approver="", revision="0",
+                        attribute_category="AUTO", attribute1=str(days_to_deduct),
+                        attribute2="", attribute3="", attribute4="", attribute5="",
+                        attribute6="", attribute7="", attribute8="", attribute9="",
+                        attribute10="", attribute11="", attribute12="", attribute13="",
+                        attribute14="", file="",
+                        created_by=emp_id, creation_date=now,
+                        last_updated_by=emp_id, last_update_date=now
+                    )
+                    db.add(new_leave)
+                    print(f"✅ Leave history record ({actual_leave_type} - {days_to_deduct} days) created for {emp_id}")
+                else:
+                    checkin_record.status = "P"
+                    print(f"ℹ️ Status remained P (Worked {total_hours_float} hrs) for {emp_id}")
+        
+                    db.commit()
+                    db.refresh(checkin_record)
+                    print(f"✅ Successfully committed Total_hours: {checkin_record.Total_hours}")
+        
+            except Exception as e:
+                db.rollback()
+                print(f"❌ Check-out Error: {str(e)}")
+                try:
+                    checkin_record.out_time = request.out_time
+                    if request.total_hours:
+                        checkin_record.Total_hours = request.total_hours
+                    checkin_record.last_update_date = now
+                    db.add(checkin_record)
+                    db.commit()
+                    print("⚠️ Saved partial check-out data after error.")
+                except:
+                    db.rollback()
+        
+            return {
+                "message"     : "Check-out successful",
+                "total_hours" : checkin_record.Total_hours or "0Hr 0Min",
+                "status"      : checkin_record.status
+            }
+
+
 @app.get("/leave-stats/{emp_id}")
 def get_leave_stats(emp_id: str, db: Session = Depends(get_db)):
     emp_id = emp_id.strip()
@@ -1227,11 +1176,11 @@ def get_leave_stats(emp_id: str, db: Session = Depends(get_db)):
     stats["casualLeave"] = {"total": cl_total, "availed": cl_availed}
     stats["sickLeave"] = {"total": sl_total, "availed": sl_availed}
     stats["maternityPaternity"] = {"total": mp_total, "availed": mp_availed}
-    stats["total"] = cl_total + sl_total + mp_total
+    stats["total"] = cl_total + sl_total + mp_total + 5
     stats["availed"] = cl_availed + sl_availed + mp_availed
     return {**stats, "has_record": len(leave_rows) > 0}
- 
- 
+
+
 @app.get("/wfh-history/{emp_id}")
 def get_wfh_history(emp_id: str, db: Session = Depends(get_db)):
     emp_id = emp_id.strip()
@@ -1243,28 +1192,28 @@ def get_wfh_history(emp_id: str, db: Session = Depends(get_db)):
         handle_db_error(e)
     return [
         {"wfh_id": row.wfh_id, "from_date": row.from_date, "to_date": row.to_date,
-         "days": row.days, "reason": row.reason, "status": row.status}
+        "days": row.days, "reason": row.reason, "status": row.status}
         for row in history
     ]
- 
- 
+
+
 @app.get("/leave-history/{emp_id}")
 def get_leave_history(emp_id: str, db: Session = Depends(get_db)):
     emp_id = emp_id.strip()
     try:
         history = db.query(models.EmpLeave).filter(
             func.lower(func.trim(models.EmpLeave.emp_id)) == emp_id.lower()
-        ).order_by(models.EmpLeave.l_id.desc()).all()
+        ).order_by(models.EmpLeave.emp_l_id.desc()).all()
     except Exception as e:
         handle_db_error(e)
     return [
-        {"l_id": row.l_id, "leaveType": row.leave_type, "leave_type": row.leave_type,
-         "from_date": row.from_date, "to_date": row.to_date, "days": row.days,
-         "reason": row.reason, "status": row.status, "remarks": row.remarks, "revision": row.revision}
+        {"l_id": row.emp_l_id, "leaveType": row.leave_type, "leave_type": row.leave_type,
+        "from_date": row.from_date, "to_date": row.to_date, "days": row.days,
+        "reason": row.reason, "status": row.status, "remarks": row.remarks, "revision": row.revision}
         for row in history
     ]
- 
- 
+
+
 def send_email_notification(to_email: str, subject: str, body_html: str):
     if not to_email:
         print(" Email_id notification skipped: No recipient email provided")
@@ -1284,8 +1233,8 @@ def send_email_notification(to_email: str, subject: str, body_html: str):
     except Exception as e:
         print(f" ERROR calling email API for {to_email}: {str(e)}")
         return False
- 
- 
+
+
 def send_expo_push_notification(tokens, title, message, data=None):
     url = "https://exp.host/--/api/v2/push/send"
     print(f"\n🔔 [EXPO PUSH] PREPARING TO SEND:")
@@ -1307,8 +1256,8 @@ def send_expo_push_notification(tokens, title, message, data=None):
             print(f"   ❌ [EXPO PUSH] FAILED: {response.text}")
     except Exception as e:
         print(f"   ❌ [EXPO PUSH] ERROR: {str(e)}")
- 
- 
+
+
 @app.post("/register-push-token")
 def register_push_token(req: schemas.PushTokenRegisterRequest, db: Session = Depends(get_db)):
     emp_id = req.user_id.strip().upper()
@@ -1330,14 +1279,14 @@ def register_push_token(req: schemas.PushTokenRegisterRequest, db: Session = Dep
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail="Failed to save token to database")
- 
- 
+
+
 @app.post("/test-push")
 def test_push(req: schemas.PushTokenRegisterRequest, db: Session = Depends(get_db)):
     send_expo_push_notification([req.push_token], "Aruvi Test Notification", "If you see this, push notifications are working perfectly!")
     return {"message": "Test push triggered"}
- 
- 
+
+
 def get_approvers(db: Session, user: models.EmpDet):
     approvers = []
     approver_ids = set()
@@ -1369,8 +1318,8 @@ def get_approvers(db: Session, user: models.EmpDet):
     except Exception as e:
         print(f" Error fetching management users for notification: {e}")
     return approvers
- 
- 
+
+
 def fmt_days(d):
     try:
         val = float(d)
@@ -1379,8 +1328,8 @@ def fmt_days(d):
         return f"{val:.2f}".rstrip('0').rstrip('.')
     except (ValueError, TypeError):
         return str(d)
- 
- 
+
+
 def get_email_template(receiver_name, title, content_html, sender_name="Aruvi Team"):
     return f"""
     <html>
@@ -1659,6 +1608,7 @@ async def apply_leave(
         raise HTTPException(status_code=500, detail=f"Leave application failed: {str(e)}")
 
 
+
 @app.post("/send-leave-notification")
 def send_leave_notification(notification: dict, db: Session = Depends(get_db)):
     # Endpoint logic disabled as per user request to prevent redundant notification mail
@@ -1723,7 +1673,7 @@ def get_all_leave_history(manager_id: Optional[str] = None, db: Session = Depend
 
 @app.post("/admin/approve-leave")
 def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: BackgroundTasks,
-                  db: Session = Depends(get_db)):
+                db: Session = Depends(get_db)):
     try:
         leave = db.query(models.EmpLeave).filter(models.EmpLeave.l_id == request_item.l_id).first()
     except Exception as e:
@@ -1869,14 +1819,6 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
         print(f" Email_id notification failed: {e}")
     return {"message": f"Leave request {request_item.action.lower()} successfully", "approved_by": leave.approved_by}
 
-
-from datetime import datetime, timedelta
-from typing import Optional
-import traceback
-
-router = APIRouter()
-
-
 def _status_type(s: str) -> str:
     s = (s or '').lower().strip()
     if s == 'pending':  return 'pending'
@@ -1993,206 +1935,232 @@ def get_notifications(
             for leave, emp in q.order_by(standard_order(models.EmpLeave.last_update_date, models.EmpLeave.creation_date)).limit(30).all():
                 emp_name = (emp.name if emp else None) or "Unknown"
                 st = (leave.status or 'Pending').strip()
-                update_time = leave.last_update_date or leave.creation_date or leave.applied_date
+                update_time = leave.last_update_date or leave.creation_date
                 notifications.append({
                     "id": f"admin_leave_{leave.l_id}", "record_id": leave.l_id,
                     "type": _status_type(st), "notification_type": "leave",
                     "title": f"Leave Request – {emp_name}",
-                    "message": f"{_status_label(st)} | {leave.leave_type}: {leave.from_date} to {leave.to_date} ({fmt_days(leave.days)} {'Day' if float(leave.days or 0) == 1.0 else 'Days'})",
+                    "message": f"{_status_label(st)} | {_fmt_date(leave.from_date)} to {_fmt_date(leave.to_date)}",
                     "time": str(update_time or "Recently"), "icon": _status_icon(st),
                     "screen": f"/AdminLeave?tab=myApproval&l_id={leave.l_id}"
                 })
         except Exception as e:
             print(f"  ❌ Admin leaves error: {e}")
+                        })
+                except Exception as e:
+                    print(f"  ❌ Admin permissions error: {e}")
 
-        try:
-            q = (
-                db.query(models.OverTimeDet, models.EmpDet)
-                .outerjoin(models.EmpDet, func.lower(func.trim(models.OverTimeDet.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id)))
-                .filter(func.lower(func.trim(models.OverTimeDet.status)) == "pending")
-                .filter(cutoff_filter(models.OverTimeDet.last_update_date, models.OverTimeDet.creation_date))
-            )
-            q = apply_manager_filter(q, models.EmpDet)
-            for ot, emp in q.order_by(standard_order(models.OverTimeDet.last_update_date, models.OverTimeDet.creation_date)).limit(30).all():
-                emp_name = (emp.name if emp else None) or "Unknown"
-                st = (ot.status or 'Pending').strip()
-                update_time = ot.last_update_date or ot.creation_date
-                notifications.append({
-                    "id": f"admin_ot_{ot.ot_id}", "record_id": ot.ot_id,
-                    "type": _status_type(st), "notification_type": "ot",
-                    "title": f"OT Request – {emp_name}",
-                    "message": f"{_status_label(st)} | {ot.ot_date}: {ot.duration} hrs",
-                    "time": str(update_time or "Recently"), "icon": _status_icon(st),
-                    "screen": f"/AdminOt?tab=myApproval&ot_id={ot.ot_id}"
-                })
-        except Exception as e:
-            print(f"  ❌ Admin OT error: {e}")
+                try:
+                    q = (
+                        db.query(models.EmpLeave, models.EmpDet)
+                        .outerjoin(models.EmpDet, func.lower(func.trim(models.EmpLeave.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id)))
+                        .filter(func.lower(func.trim(models.EmpLeave.status)) == "pending")
+                        .filter(cutoff_filter(models.EmpLeave.last_update_date, models.EmpLeave.creation_date))
+                    )
+                    q = apply_manager_filter(q, models.EmpDet)
+                    for leave, emp in q.order_by(standard_order(models.EmpLeave.last_update_date, models.EmpLeave.creation_date)).limit(30).all():
+                        emp_name = (emp.name if emp else None) or "Unknown"
+                        st = (leave.status or 'Pending').strip()
+                        update_time = leave.last_update_date or leave.creation_date or leave.applied_date
+                        notifications.append({
+                            "id": f"admin_leave_{leave.l_id}", "record_id": leave.l_id,
+                            "type": _status_type(st), "notification_type": "leave",
+                            "title": f"Leave Request – {emp_name}",
+                            "message": f"{_status_label(st)} | {leave.leave_type}: {leave.from_date} to {leave.to_date} ({fmt_days(leave.days)} {'Day' if float(leave.days or 0) == 1.0 else 'Days'})",
+                            "time": str(update_time or "Recently"), "icon": _status_icon(st),
+                            "screen": f"/AdminLeave?tab=myApproval&l_id={leave.l_id}"
+                        })
+                except Exception as e:
+                    print(f"  ❌ Admin leaves error: {e}")
 
-        try:
-            q = (
-                db.query(models.WFHDet, models.EmpDet)
-                .outerjoin(models.EmpDet, func.lower(func.trim(models.WFHDet.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id)))
-                .filter(func.lower(func.trim(models.WFHDet.status)) == "pending")
-                .filter(cutoff_filter(models.WFHDet.last_update_date, models.WFHDet.creation_date))
-            )
-            q = apply_manager_filter(q, models.EmpDet)
-            for wfh, emp in q.order_by(standard_order(models.WFHDet.last_update_date, models.WFHDet.creation_date)).limit(30).all():
-                emp_name = (emp.name if emp else None) or "Unknown"
-                st = (wfh.status or 'Pending').strip()
-                update_time = wfh.last_update_date or wfh.creation_date
-                notifications.append({
-                    "id": f"admin_wfh_{wfh.wfh_id}", "record_id": wfh.wfh_id,
-                    "type": _status_type(st), "notification_type": "wfh",
-                    "title": f"WFH Request – {emp_name}",
-                    "message": f"{_status_label(st)} | {wfh.from_date} to {wfh.to_date}",
-                    "time": str(update_time or "Recently"), "icon": _status_icon(st),
-                    "screen": f"/AdminWfh?tab=myApproval&wfh_id={wfh.wfh_id}"
-                })
-        except Exception as e:
-            print(f"  ❌ Admin WFH error: {e}")
+                try:
+                    q = (
+                        db.query(models.OverTimeDet, models.EmpDet)
+                        .outerjoin(models.EmpDet, func.lower(func.trim(models.OverTimeDet.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id)))
+                        .filter(func.lower(func.trim(models.OverTimeDet.status)) == "pending")
+                        .filter(cutoff_filter(models.OverTimeDet.last_update_date, models.OverTimeDet.creation_date))
+                    )
+                    q = apply_manager_filter(q, models.EmpDet)
+                    for ot, emp in q.order_by(standard_order(models.OverTimeDet.last_update_date, models.OverTimeDet.creation_date)).limit(30).all():
+                        emp_name = (emp.name if emp else None) or "Unknown"
+                        st = (ot.status or 'Pending').strip()
+                        update_time = ot.last_update_date or ot.creation_date
+                        notifications.append({
+                            "id": f"admin_ot_{ot.ot_id}", "record_id": ot.ot_id,
+                            "type": _status_type(st), "notification_type": "ot",
+                            "title": f"OT Request – {emp_name}",
+                            "message": f"{_status_label(st)} | {ot.ot_date}: {ot.duration} hrs",
+                            "time": str(update_time or "Recently"), "icon": _status_icon(st),
+                            "screen": f"/AdminOt?tab=myApproval&ot_id={ot.ot_id}"
+                        })
+                except Exception as e:
+                    print(f"  ❌ Admin OT error: {e}")
 
-        try:
-            q = (
-                db.query(models.TimesheetDet, models.EmpDet)
-                .outerjoin(models.EmpDet, func.lower(func.trim(models.TimesheetDet.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id)))
-                .filter(func.lower(func.trim(models.TimesheetDet.status)) == "pending")
-                .filter(cutoff_filter(models.TimesheetDet.last_update_date, models.TimesheetDet.creation_date))
-            )
-            q = apply_manager_filter(q, models.EmpDet)
-            for ts, emp in q.order_by(standard_order(models.TimesheetDet.last_update_date, models.TimesheetDet.creation_date)).limit(30).all():
-                emp_name = (emp.name if emp else None) or "Unknown"
-                st = (ts.status or 'Pending').strip()
-                update_time = ts.last_update_date or ts.creation_date
-                notifications.append({
-                    "id": f"admin_timesheet_{ts.t_id}", "record_id": ts.t_id,
-                    "type": _status_type(st), "notification_type": "timesheet",
-                    "title": f"Timesheet – {emp_name}",
-                    "message": f"{_status_label(st)} | {ts.date} – {ts.project or 'N/A'}",
-                    "time": str(update_time or "Recently"), "icon": _status_icon(st),
-                    "screen": "/AdminTimesheet"
-                })
-        except Exception as e:
-            print(f"  ❌ Admin Timesheet error: {e}")
+                try:
+                    q = (
+                        db.query(models.WFHDet, models.EmpDet)
+                        .outerjoin(models.EmpDet, func.lower(func.trim(models.WFHDet.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id)))
+                        .filter(func.lower(func.trim(models.WFHDet.status)) == "pending")
+                        .filter(cutoff_filter(models.WFHDet.last_update_date, models.WFHDet.creation_date))
+                    )
+                    q = apply_manager_filter(q, models.EmpDet)
+                    for wfh, emp in q.order_by(standard_order(models.WFHDet.last_update_date, models.WFHDet.creation_date)).limit(30).all():
+                        emp_name = (emp.name if emp else None) or "Unknown"
+                        st = (wfh.status or 'Pending').strip()
+                        update_time = wfh.last_update_date or wfh.creation_date
+                        notifications.append({
+                            "id": f"admin_wfh_{wfh.wfh_id}", "record_id": wfh.wfh_id,
+                            "type": _status_type(st), "notification_type": "wfh",
+                            "title": f"WFH Request – {emp_name}",
+                            "message": f"{_status_label(st)} | {wfh.from_date} to {wfh.to_date}",
+                            "time": str(update_time or "Recently"), "icon": _status_icon(st),
+                            "screen": f"/AdminWfh?tab=myApproval&wfh_id={wfh.wfh_id}"
+                        })
+                except Exception as e:
+                    print(f"  ❌ Admin WFH error: {e}")
 
-    try:
-        for leave in (
-            db.query(models.EmpLeave)
-            .filter(
-                func.lower(func.trim(models.EmpLeave.emp_id)) == user_id,
-                func.lower(func.trim(models.EmpLeave.status)).in_(["approved", "rejected"]),
-                cutoff_filter(models.EmpLeave.last_update_date, models.EmpLeave.creation_date)
-            )
-            .order_by(func.coalesce(models.EmpLeave.last_update_date, models.EmpLeave.creation_date).desc())
-            .limit(30).all()
-        ):
-            st = (leave.status or 'Pending').strip()
-            update_time = leave.last_update_date or leave.creation_date
-            notifications.append({
-                "id": f"emp_leave_{leave.l_id}", "record_id": leave.l_id,
-                "type": _status_type(st), "notification_type": "leave",
-                "title": f"Leave {_status_label(st)}",
-                "message": f"{leave.leave_type}: {leave.from_date} to {leave.to_date} ({fmt_days(leave.days)} {'Day' if float(leave.days or 0) == 1.0 else 'Days'})",
-                "time": str(update_time or "Recently"), "icon": _status_icon(st),
-                "screen": f"/EmployeeLeave?tab=history&id={leave.l_id}"
-            })
-    except Exception as e:
-        print(f"  ❌ Employee leaves error: {e}")
+                try:
+                    q = (
+                        db.query(models.TimesheetDet, models.EmpDet)
+                        .outerjoin(models.EmpDet, func.lower(func.trim(models.TimesheetDet.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id)))
+                        .filter(func.lower(func.trim(models.TimesheetDet.status)) == "pending")
+                        .filter(cutoff_filter(models.TimesheetDet.last_update_date, models.TimesheetDet.creation_date))
+                    )
+                    q = apply_manager_filter(q, models.EmpDet)
+                    for ts, emp in q.order_by(standard_order(models.TimesheetDet.last_update_date, models.TimesheetDet.creation_date)).limit(30).all():
+                        emp_name = (emp.name if emp else None) or "Unknown"
+                        st = (ts.status or 'Pending').strip()
+                        update_time = ts.last_update_date or ts.creation_date
+                        notifications.append({
+                            "id": f"admin_timesheet_{ts.t_id}", "record_id": ts.t_id,
+                            "type": _status_type(st), "notification_type": "timesheet",
+                            "title": f"Timesheet – {emp_name}",
+                            "message": f"{_status_label(st)} | {ts.date} – {ts.project or 'N/A'}",
+                            "time": str(update_time or "Recently"), "icon": _status_icon(st),
+                            "screen": "/AdminTimesheet"
+                        })
+                except Exception as e:
+                    print(f"  ❌ Admin Timesheet error: {e}")
 
-    try:
-        for perm in (
-            db.query(models.EmpPermission)
-            .filter(
-                func.lower(func.trim(models.EmpPermission.emp_id)) == user_id,
-                func.lower(func.trim(models.EmpPermission.status)).in_(["approved", "rejected"]),
-                cutoff_filter(models.EmpPermission.last_update_date, models.EmpPermission.creation_date)
-            )
-            .order_by(func.coalesce(models.EmpPermission.last_update_date, models.EmpPermission.creation_date).desc())
-            .limit(30).all()
-        ):
-            st = (perm.status or 'Pending').strip()
-            update_time = perm.last_update_date or perm.creation_date
-            notifications.append({
-                "id": f"emp_permission_{perm.p_id}", "record_id": perm.p_id,
-                "type": _status_type(st), "notification_type": "permission",
-                "title": f"Permission {_status_label(st)}",
-                "message": f"Permission on {_fmt_date(perm.date)}",
-                "time": str(update_time or "Recently"), "icon": _status_icon(st),
-                "screen": f"/EmployeePermission?tab=history&id={perm.p_id}"
-            })
-    except Exception as e:
-        print(f"  ❌ Employee permissions error: {e}")
+            try:
+                for leave in (
+                    db.query(models.EmpLeave)
+                    .filter(
+                        func.lower(func.trim(models.EmpLeave.emp_id)) == user_id,
+                        func.lower(func.trim(models.EmpLeave.status)).in_(["approved", "rejected"]),
+                        cutoff_filter(models.EmpLeave.last_update_date, models.EmpLeave.creation_date)
+                    )
+                    .order_by(func.coalesce(models.EmpLeave.last_update_date, models.EmpLeave.creation_date).desc())
+                    .limit(30).all()
+                ):
+                    st = (leave.status or 'Pending').strip()
+                    update_time = leave.last_update_date or leave.creation_date
+                    notifications.append({
+                        "id": f"emp_leave_{leave.l_id}", "record_id": leave.l_id,
+                        "type": _status_type(st), "notification_type": "leave",
+                        "title": f"Leave {_status_label(st)}",
+                        "message": f"{leave.leave_type}: {leave.from_date} to {leave.to_date} ({fmt_days(leave.days)} {'Day' if float(leave.days or 0) == 1.0 else 'Days'})",
+                        "time": str(update_time or "Recently"), "icon": _status_icon(st),
+                        "screen": f"/EmployeeLeave?tab=history&id={leave.l_id}"
+                    })
+            except Exception as e:
+                print(f"  ❌ Employee leaves error: {e}")
 
-    try:
-        for ot in (
-            db.query(models.OverTimeDet)
-            .filter(
-                func.lower(func.trim(models.OverTimeDet.emp_id)) == user_id,
-                func.lower(func.trim(models.OverTimeDet.status)).in_(["pending", "approved", "rejected"]),
-                cutoff_filter(models.OverTimeDet.last_update_date, models.OverTimeDet.creation_date)
-            )
-            .order_by(func.coalesce(models.OverTimeDet.last_update_date, models.OverTimeDet.creation_date).desc())
-            .limit(30).all()
-        ):
-            st = (ot.status or 'Pending').strip()
-            update_time = ot.last_update_date or ot.creation_date
-            notifications.append({
-                "id": f"emp_ot_{ot.ot_id}", "record_id": ot.ot_id,
-                "type": _status_type(st), "notification_type": "ot",
-                "title": f"OT {_status_label(st)}",
-                "message": f"OT on {ot.ot_date}: {ot.duration} hrs",
-                "time": str(update_time or "Recently"), "icon": _status_icon(st),
-                "screen": f"/EmployeeOt?tab=history&id={ot.ot_id}"
-            })
-    except Exception as e:
-        print(f"  ❌ Employee OT error: {e}")
+            try:
+                for perm in (
+                    db.query(models.EmpPermission)
+                    .filter(
+                        func.lower(func.trim(models.EmpPermission.emp_id)) == user_id,
+                        func.lower(func.trim(models.EmpPermission.status)).in_(["approved", "rejected"]),
+                        cutoff_filter(models.EmpPermission.last_update_date, models.EmpPermission.creation_date)
+                    )
+                    .order_by(func.coalesce(models.EmpPermission.last_update_date, models.EmpPermission.creation_date).desc())
+                    .limit(30).all()
+                ):
+                    st = (perm.status or 'Pending').strip()
+                    update_time = perm.last_update_date or perm.creation_date
+                    notifications.append({
+                        "id": f"emp_permission_{perm.p_id}", "record_id": perm.p_id,
+                        "type": _status_type(st), "notification_type": "permission",
+                        "title": f"Permission {_status_label(st)}",
+                        "message": f"Permission on {_fmt_date(perm.date)}",
+                        "time": str(update_time or "Recently"), "icon": _status_icon(st),
+                        "screen": f"/EmployeePermission?tab=history&id={perm.p_id}"
+                    })
+            except Exception as e:
+                print(f"  ❌ Employee permissions error: {e}")
 
-    try:
-        for wfh in (
-            db.query(models.WFHDet)
-            .filter(
-                func.lower(func.trim(models.WFHDet.emp_id)) == user_id,
-                func.lower(func.trim(models.WFHDet.status)).in_(["pending", "approved", "rejected"]),
-                cutoff_filter(models.WFHDet.last_update_date, models.WFHDet.creation_date)
-            )
-            .order_by(func.coalesce(models.WFHDet.last_update_date, models.WFHDet.creation_date).desc())
-            .limit(30).all()
-        ):
-            st = (wfh.status or 'Pending').strip()
-            update_time = wfh.last_update_date or wfh.creation_date
-            notifications.append({
-                "id": f"emp_wfh_{wfh.wfh_id}", "record_id": wfh.wfh_id,
-                "type": _status_type(st), "notification_type": "wfh",
-                "title": f"WFH {_status_label(st)}",
-                "message": f"WFH: {wfh.from_date} to {wfh.to_date}",
-                "time": str(update_time or "Recently"), "icon": _status_icon(st),
-                "screen": f"/EmployeeWfh?tab=history&id={wfh.wfh_id}"
-            })
-    except Exception as e:
-        print(f"  ❌ Employee WFH error: {e}")
+            try:
+                for ot in (
+                    db.query(models.OverTimeDet)
+                    .filter(
+                        func.lower(func.trim(models.OverTimeDet.emp_id)) == user_id,
+                        func.lower(func.trim(models.OverTimeDet.status)).in_(["pending", "approved", "rejected"]),
+                        cutoff_filter(models.OverTimeDet.last_update_date, models.OverTimeDet.creation_date)
+                    )
+                    .order_by(func.coalesce(models.OverTimeDet.last_update_date, models.OverTimeDet.creation_date).desc())
+                    .limit(30).all()
+                ):
+                    st = (ot.status or 'Pending').strip()
+                    update_time = ot.last_update_date or ot.creation_date
+                    notifications.append({
+                        "id": f"emp_ot_{ot.ot_id}", "record_id": ot.ot_id,
+                        "type": _status_type(st), "notification_type": "ot",
+                        "title": f"OT {_status_label(st)}",
+                        "message": f"OT on {ot.ot_date}: {ot.duration} hrs",
+                        "time": str(update_time or "Recently"), "icon": _status_icon(st),
+                        "screen": f"/EmployeeOt?tab=history&id={ot.ot_id}"
+                    })
+            except Exception as e:
+                print(f"  ❌ Employee OT error: {e}")
 
-    try:
-        for ts in (
-            db.query(models.TimesheetDet)
-            .filter(
-                func.lower(func.trim(models.TimesheetDet.emp_id)) == user_id,
-                func.lower(func.trim(models.TimesheetDet.status)).in_(["pending", "approved", "rejected"]),
-                cutoff_filter(models.TimesheetDet.last_update_date, models.TimesheetDet.creation_date)
-            )
-            .order_by(func.coalesce(models.TimesheetDet.last_update_date, models.TimesheetDet.creation_date).desc())
-            .limit(30).all()
-        ):
-            st = (ts.status or 'Pending').strip()
-            update_time = ts.last_update_date or ts.creation_date
-            notifications.append({
-                "id": f"emp_timesheet_{ts.t_id}", "record_id": ts.t_id,
-                "type": _status_type(st), "notification_type": "timesheet",
-                "title": f"Timesheet {_status_label(st)}",
-                "message": f"Timesheet: {ts.date} – {ts.project or 'N/A'}",
-                "time": str(update_time or "Recently"), "icon": _status_icon(st),
-                "screen": "/EmployeeTimesheet"
-            })
-    except Exception as e:
-        print(f"  ❌ Employee Timesheet error: {e}")
+            try:
+                for wfh in (
+                    db.query(models.WFHDet)
+                    .filter(
+                        func.lower(func.trim(models.WFHDet.emp_id)) == user_id,
+                        func.lower(func.trim(models.WFHDet.status)).in_(["pending", "approved", "rejected"]),
+                        cutoff_filter(models.WFHDet.last_update_date, models.WFHDet.creation_date)
+                    )
+                    .order_by(func.coalesce(models.WFHDet.last_update_date, models.WFHDet.creation_date).desc())
+                    .limit(30).all()
+                ):
+                    st = (wfh.status or 'Pending').strip()
+                    update_time = wfh.last_update_date or wfh.creation_date
+                    notifications.append({
+                        "id": f"emp_wfh_{wfh.wfh_id}", "record_id": wfh.wfh_id,
+                        "type": _status_type(st), "notification_type": "wfh",
+                        "title": f"WFH {_status_label(st)}",
+                        "message": f"WFH: {wfh.from_date} to {wfh.to_date}",
+                        "time": str(update_time or "Recently"), "icon": _status_icon(st),
+                        "screen": f"/EmployeeWfh?tab=history&id={wfh.wfh_id}"
+                    })
+            except Exception as e:
+                print(f"  ❌ Employee WFH error: {e}")
+
+            try:
+                for ts in (
+                    db.query(models.TimesheetDet)
+                    .filter(
+                        func.lower(func.trim(models.TimesheetDet.emp_id)) == user_id,
+                        func.lower(func.trim(models.TimesheetDet.status)).in_(["pending", "approved", "rejected"]),
+                        cutoff_filter(models.TimesheetDet.last_update_date, models.TimesheetDet.creation_date)
+                    )
+                    .order_by(func.coalesce(models.TimesheetDet.last_update_date, models.TimesheetDet.creation_date).desc())
+                    .limit(30).all()
+                ):
+                    st = (ts.status or 'Pending').strip()
+                    update_time = ts.last_update_date or ts.creation_date
+                    notifications.append({
+                        "id": f"emp_timesheet_{ts.t_id}", "record_id": ts.t_id,
+                        "type": _status_type(st), "notification_type": "timesheet",
+                        "title": f"Timesheet {_status_label(st)}",
+                        "message": f"Timesheet: {ts.date} – {ts.project or 'N/A'}",
+                        "time": str(update_time or "Recently"), "icon": _status_icon(st),
+                        "screen": "/EmployeeTimesheet"
+                    })
+            except Exception as e:
+                print(f"  ❌ Employee Timesheet error: {e}")
 
     print(f"✅ Returning {len(notifications)} notifications for {user_id} (role={role})")
     return notifications
@@ -2217,7 +2185,7 @@ def clear_all_notifications(user_id: str, db: Session = Depends(get_db)):
 
 @app.post("/apply-ot")
 def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: BackgroundTasks,
-             db: Session = Depends(get_db)):
+            db: Session = Depends(get_db)):
     try:
         user = db.query(models.EmpDet).filter(func.trim(models.EmpDet.emp_id) == request.emp_id.strip()).first()
         if not user:
@@ -2266,45 +2234,6 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
 
 
 @app.get("/admin/pending-permissions")
-def get_pending_permissions(manager_id: Optional[str] = None, db: Session = Depends(get_db)):
-    try:
-        query = db.query(models.EmpPermission, models.EmpDet).join(
-            models.EmpDet,
-            func.lower(func.trim(models.EmpPermission.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id))
-        ).filter(func.lower(func.trim(models.EmpPermission.status)) == "pending")
-        if manager_id:
-            query = query.filter(
-                or_(
-                    func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower(),
-                    func.lower(func.trim(models.EmpDet.project_manager)) == manager_id.strip().lower()
-                )
-            )
-        pending = query.order_by(models.EmpPermission.creation_date.desc()).all()
-    except Exception as e:
-        handle_db_error(e)
-    results = []
-    for perm, emp in pending:
-        try:
-            date_str = perm.date.strftime("%d-%b-%Y") if perm.date else ""
-        except Exception:
-            date_str = str(perm.date) if perm.date else ""
-        f_time_str = format_time_safe(perm.f_time)
-        t_time_str = format_time_safe(perm.t_time)
-        results.append({
-            "p_id": perm.p_id, "emp_name": emp.name or "Unknown", "emp_id": emp.emp_id or "N/A",
-            "date": date_str, "time": f"{f_time_str} to {t_time_str}",
-            "fromTime": f_time_str, "toTime": t_time_str, "f_time": f_time_str, "t_time": t_time_str,
-            "total_hours": str(perm.total_hours or "0"), "dis_total_hours": str(perm.dis_total_hours or "0"),
-            "permitted_hours": str(perm.permitted_permission or "0"), "lop_hours": str(perm.lop_hours or "0"),
-            "reason": perm.reason or "No reason", "remarks": perm.remarks or "",
-            "status": perm.status or "Pending",
-            "applied_date": str(perm.applied_date) if perm.applied_date else "",
-            "creation_date": str(perm.creation_date) if perm.creation_date else "",
-        })
-    return results
-
-
-@app.get("/admin/all-permission-history")
 def get_all_permission_history(manager_id: Optional[str] = None, db: Session = Depends(get_db)):
     try:
         query = db.query(models.EmpPermission, models.EmpDet).join(
@@ -2872,7 +2801,7 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
             if h_date:
                 h_date_flat = h_date.replace(hour=0, minute=0, second=0, microsecond=0)
                 show_h = (h_date_flat.month == today.month and h_date_flat.year == today.year) or \
-                         (0 <= (h_date_flat - today_flat).days <= 90)
+                        (0 <= (h_date_flat - today_flat).days <= 90)
                 if show_h:
                     upcoming_events.append({
                         "id": f"holiday_{h.holiday_id}", "name": h.Holiday_Name, "type": "holiday",
@@ -3019,11 +2948,9 @@ def get_timesheet_month(emp_id: str, month: Optional[str] = None, year: Optional
     # 1. Authorization check
     if requester_id and requester_id.strip().lower() != emp_id.strip().lower():
         req_id = requester_id.strip()
-        # Check if requester is global admin or manager
         is_authorized = False
         requester = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == req_id.lower()).first()
         if requester:
-            # Global Admin check
             top_domains = [1, 2, 3, 9]
             try:
                 if requester.dom_id and int(str(requester.dom_id).strip()) in top_domains:
@@ -3039,24 +2966,22 @@ def get_timesheet_month(emp_id: str, month: Optional[str] = None, year: Optional
                         if any(tr.lower() in role_priv.role_prv_name.lower() for tr in top_roles):
                             is_authorized = True
                 except: pass
-            
-            # Manager check
-            if not is_authorized:
-                target_emp = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()).first()
-                if target_emp:
-                    if (target_emp.assign_manager and target_emp.assign_manager.strip().lower() == req_id.lower()) or \
-                       (target_emp.project_manager and target_emp.project_manager.strip().lower() == req_id.lower()):
-                        is_authorized = True
         
         if not is_authorized:
-             raise HTTPException(status_code=403, detail="Not authorized to view this timesheet")
+            # Check if requester is the assigned manager or project manager
+            target_emp = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.strip().lower()).first()
+            if target_emp:
+                if (target_emp.assign_manager and target_emp.assign_manager.strip().lower() == req_id.lower()) or \
+                   (target_emp.project_manager and target_emp.project_manager.strip().lower() == req_id.lower()):
+                    is_authorized = True
+            
+        if not is_authorized:
+            raise HTTPException(status_code=403, detail="Not authorized to view this timesheet")
 
-    query = db.query(models.TimesheetDet).filter(
-        or_(models.TimesheetDet.emp_id == emp_id, func.replace(models.TimesheetDet.emp_id, " ", "") == clean_id)
-    )
+    query = db.query(models.TimesheetDet).filter(func.lower(func.trim(models.TimesheetDet.emp_id)) == clean_id.lower())
     if month:
         month_map = {"January": "01", "February": "02", "March": "03", "April": "04", "May": "05", "June": "06",
-                     "July": "07", "August": "08", "September": "09", "October": "10", "November": "11", "December": "12"}
+                    "July": "07", "August": "08", "September": "09", "October": "10", "November": "11", "December": "12"}
         m_num = month_map.get(month)
         if m_num:
             query = query.filter(or_(models.TimesheetDet.month.ilike(f"%{month}%"), models.TimesheetDet.month.ilike(f"%{m_num}%"), models.TimesheetDet.date.ilike(f"%-{month[:3]}-%")))
@@ -3112,7 +3037,7 @@ def get_admin_timesheet_employees(month: Optional[str] = None, year: Optional[st
     month_filter = None
     if month:
         month_map = {"January": "01", "February": "02", "March": "03", "April": "04", "May": "05", "June": "06",
-                     "July": "07", "August": "08", "September": "09", "October": "10", "November": "11", "December": "12"}
+                    "July": "07", "August": "08", "September": "09", "October": "10", "November": "11", "December": "12"}
         m_num = month_map.get(month)
         if m_num:
             month_filter = or_(models.TimesheetDet.month.ilike(f"%{month}%"), models.TimesheetDet.month.ilike(f"%{m_num}%"), models.TimesheetDet.date.ilike(f"%-{month[:3]}-%"))
@@ -3633,25 +3558,7 @@ def create_client(client_req: schemas.ClientApplyRequest, db: Session = Depends(
             else:
                 client_req.client_ref_no = f"{ref_no}-1"
     try:
-        new_client = models.CompanyClient(
-            client_ref_no=client_req.client_ref_no, client_name=client_req.client_name,
-            company_name=client_req.company_name, country_code="",
-            mobile_no=client_req.mobile_no or "", gst=client_req.gst_available or "No",
-            gst_value="", gst_no=client_req.gst or "", website=client_req.website or "",
-            email=client_req.email_id or "", msme=client_req.msme_available or "No",
-            msme_no=client_req.msme or "", pan=client_req.pan_no or "",
-            short_code=client_req.short_code or "", currency=client_req.currency or "INR",
-            address=client_req.address or "", status=client_req.status or "Active",
-            attribute_category="",
-            attribute1="", attribute2="", attribute3="", attribute4="", attribute5="",
-            attribute6="", attribute7="", attribute8="", attribute9="", attribute10="",
-            attribute11="", attribute12="", attribute13="", attribute14="",
-            creation_date=now, last_update_date=now,
-            created_by="Admin", last_updated_by="Admin", last_update_login="Admin"
-        )
-        db.add(new_client)
-        db.flush()
-        if client_req.sites:
+        new_client = models.CompanyC        if client_req.sites:
             for sub_req in client_req.sites:
                 new_sub = models.SubClient(
                     sub_client_name=sub_req.sub_client_name, client_ref_no=new_client.client_ref_no,
@@ -3802,7 +3709,6 @@ def get_team_attendance(requester_id: str, start_date: str, end_date: str, db: S
         raise HTTPException(status_code=400, detail="Invalid date format")
     
     try:
-        # Check if requester is global admin
         user = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == requester_id.lower()).first()
         is_global = False
         if user:
@@ -3812,7 +3718,6 @@ def get_team_attendance(requester_id: str, start_date: str, end_date: str, db: S
                     is_global = True
             except: pass
             
-            # Also check role name for "Admin" etc.
             if not is_global and user.rpd_id:
                 try:
                     r_id = int(str(user.rpd_id).strip())
@@ -3823,7 +3728,6 @@ def get_team_attendance(requester_id: str, start_date: str, end_date: str, db: S
                             is_global = True
                 except: pass
 
-        # Fetch employees
         query = db.query(models.EmpDet).filter((models.EmpDet.end_date == None) | (models.EmpDet.end_date == ""))
         if not is_global:
             query = query.filter(
@@ -3873,29 +3777,22 @@ def get_team_attendance(requester_id: str, start_date: str, end_date: str, db: S
 
 @app.get("/module-privileges/{user_id}")
 def get_module_privileges(user_id: str, db: Session = Depends(get_db)):
-    """Get module privileges for a user with proper privilege mapping"""
     try:
-        # Get user privileges
         user = db.query(models.User).filter(models.User.user_id == user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         
-        # Module IDs and their corresponding privilege arrays
         mod_id = [1, 2, 3, 4, 11, 12, 13, 14, 15, 16, 17, 33, 54, 57]
-        
-        # Initialize privilege arrays (0 = no privilege, actual number = has privilege)
         create_prv = [0] * len(mod_id)
         read_prv = [0] * len(mod_id)
         update_prv = [0] * len(mod_id)
         delete_prv = [0] * len(mod_id)
         view_prv = [0] * len(mod_id)
         
-        # Get user's actual privileges from database
         user_privileges = db.query(models.UserPrivilege).filter(
             models.UserPrivilege.user_id == user_id
         ).all()
         
-        # Map privileges to arrays
         for priv in user_privileges:
             try:
                 mod_index = mod_id.index(priv.mod_id)
@@ -3905,9 +3802,8 @@ def get_module_privileges(user_id: str, db: Session = Depends(get_db)):
                 delete_prv[mod_index] = 4 if priv.delete_prv else 0
                 view_prv[mod_index] = 5 if priv.view_prv else 0
             except ValueError:
-                continue  # Skip if module ID not in our list
+                continue
         
-        # Build result array
         result = []
         for i in range(len(mod_id)):
             data = {
@@ -3925,7 +3821,6 @@ def get_module_privileges(user_id: str, db: Session = Depends(get_db)):
             "privileges": result,
             "total_modules": len(result)
         }
-        
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
@@ -3933,21 +3828,17 @@ def get_module_privileges(user_id: str, db: Session = Depends(get_db)):
 
 @app.get("/filtered-data/{user_id}")
 def get_filtered_data_by_modules(user_id: str, db: Session = Depends(get_db)):
-    """Get data filtered by user's module privileges"""
     try:
-        # Get user's module privileges
         privileges_response = get_module_privileges(user_id, db)
         privileges = privileges_response["privileges"]
         
-        # Helper function to check if user has access to a module
         def has_module_access(mod_id: int) -> bool:
             for priv in privileges:
                 if priv["mod_id"] == mod_id:
                     return (priv["create"] > 0 or priv["read"] > 0 or 
-                           priv["update"] > 0 or priv["delete"] > 0 or priv["view"] > 0)
+                        priv["update"] > 0 or priv["delete"] > 0 or priv["view"] > 0)
             return False
         
-        # Helper function to check specific privilege
         def has_privilege(mod_id: int, privilege_type: str) -> bool:
             for priv in privileges:
                 if priv["mod_id"] == mod_id:
@@ -3960,22 +3851,10 @@ def get_filtered_data_by_modules(user_id: str, db: Session = Depends(get_db)):
             "data": {}
         }
         
-        # Check each module and add data if user has access
         module_mapping = {
             1: "attendance",
-            2: "leave", 
-            3: "timesheet",
-            4: "permission",
-            11: "employee",
-            12: "leave_admin",
-            13: "timesheet_admin", 
-            14: "permission_admin",
-            15: "attendance_admin",
-            16: "client",
-            17: "project",
-            33: "overtime",
-            54: "wfh_admin",
-            57: "wfh"
+            2: "leave",
+            4: "permission"
         }
         
         for mod_id, module_name in module_mapping.items():
@@ -3990,9 +3869,7 @@ def get_filtered_data_by_modules(user_id: str, db: Session = Depends(get_db)):
                     "can_view": has_privilege(mod_id, "view")
                 })
                 
-                # Add specific data based on module
                 if module_name == "attendance" and has_privilege(mod_id, "read"):
-                    # Get user's attendance data
                     attendance_data = db.query(models.CheckIn).filter(
                         models.CheckIn.emp_id == user_id
                     ).limit(10).all()
@@ -4007,9 +3884,8 @@ def get_filtered_data_by_modules(user_id: str, db: Session = Depends(get_db)):
                     ]
                 
                 elif module_name == "leave" and has_privilege(mod_id, "read"):
-                    # Get user's leave data
-                    leave_data = db.query(models.LeaveRequest).filter(
-                        models.LeaveRequest.emp_id == user_id
+                    leave_data = db.query(models.EmpLeave).filter(
+                        models.EmpLeave.emp_id == user_id
                     ).limit(10).all()
                     filtered_data["data"]["leave"] = [
                         {
@@ -4024,16 +3900,15 @@ def get_filtered_data_by_modules(user_id: str, db: Session = Depends(get_db)):
                     ]
                 
                 elif module_name == "permission" and has_privilege(mod_id, "read"):
-                    # Get user's permission data
-                    permission_data = db.query(models.PermissionRequest).filter(
-                        models.PermissionRequest.emp_id == user_id
+                    permission_data = db.query(models.EmpPermission).filter(
+                        models.EmpPermission.emp_id == user_id
                     ).limit(10).all()
                     filtered_data["data"]["permission"] = [
                         {
                             "permission_id": record.p_id,
-                            "date": record.date,
-                            "from_time": record.f_time,
-                            "to_time": record.t_time,
+                            "date": str(record.date),
+                            "from_time": format_time_safe(record.f_time),
+                            "to_time": format_time_safe(record.t_time),
                             "total_hours": record.total_hours,
                             "status": record.status,
                             "reason": record.reason
@@ -4041,10 +3916,8 @@ def get_filtered_data_by_modules(user_id: str, db: Session = Depends(get_db)):
                     ]
         
         return filtered_data
-        
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
-
 
 app.include_router(router)
