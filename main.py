@@ -3406,7 +3406,33 @@ def create_client(client_req: schemas.ClientApplyRequest, db: Session = Depends(
             else:
                 client_req.client_ref_no = f"{ref_no}-1"
     try:
-        new_client = models.CompanyC        if client_req.sites:
+        new_client = models.CompanyClient(
+            client_ref_no=client_req.client_ref_no.strip(),
+            client_name=client_req.client_name,
+            company_name=client_req.company_name,
+            mobile_no=client_req.mobile_no,
+            country_code=client_req.country_code,
+            email=client_req.email_id,
+            gst=client_req.gst_available,
+            gst_no=client_req.gst,
+            msme=client_req.msme_available,
+            msme_no=client_req.msme,
+            pan=client_req.pan_no,
+            address=client_req.address,
+            status=client_req.status or "Active",
+            website=client_req.website,
+            short_code=client_req.short_code,
+            currency=client_req.currency,
+            creation_date=now,
+            last_update_date=now,
+            created_by="Admin",
+            last_updated_by="Admin",
+            last_update_login="Admin"
+        )
+        db.add(new_client)
+        db.flush()
+
+        if client_req.sites:
             for sub_req in client_req.sites:
                 new_sub = models.SubClient(
                     sub_client_name=sub_req.sub_client_name, client_ref_no=new_client.client_ref_no,
