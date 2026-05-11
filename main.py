@@ -1269,33 +1269,22 @@ def test_push(req: schemas.PushTokenRegisterRequest, db: Session = Depends(get_d
 def get_approvers(db: Session, user: models.EmpDet):
     approvers = []
     approver_ids = set()
+    
+    # 1. Direct Assign Manager (Primary)
     if user.assign_manager:
         m = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == user.assign_manager.strip().lower()).first()
         if m and m.emp_id not in approver_ids:
             approvers.append({"email": m.p_mail, "name": m.name, "token": m.attribute7})
             approver_ids.add(m.emp_id)
+            
+    # 2. Project Manager (Secondary)
     if user.project_manager:
         pm = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == user.project_manager.strip().lower()).first()
         if pm and pm.emp_id not in approver_ids:
             approvers.append({"email": pm.p_mail, "name": pm.name, "token": pm.attribute7})
             approver_ids.add(pm.emp_id)
-    try:
-        all_doms = db.query(models.Domain).filter(
-            or_(
-                func.lower(models.Domain.domain).contains("admin"),
-                func.lower(models.Domain.domain).contains("executive"),
-                func.lower(models.Domain.domain).contains("management")
-            )
-        ).all()
-        dom_ids = [str(d.dom_id) for d in all_doms]
-        if dom_ids:
-            management_users = db.query(models.EmpDet).filter(models.EmpDet.dom_id.in_(dom_ids)).all()
-            for m_user in management_users:
-                if m_user.emp_id not in approver_ids:
-                    approvers.append({"email": m_user.p_mail, "name": m_user.name, "token": m_user.attribute7})
-                    approver_ids.add(m_user.emp_id)
-    except Exception as e:
-        print(f" Error fetching management users for notification: {e}")
+            
+    # Management/Admin auto-inclusion removed as per user request
     return approvers
 
 
