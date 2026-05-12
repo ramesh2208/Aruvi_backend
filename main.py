@@ -2071,13 +2071,14 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
                     <br>
                     <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                         <thead>
-                            <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
-                                <th style="padding: 8px; border: 1px solid #000; color: #000;">S.No</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: #000;">Month</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: #000; width: 40%;">Date</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: #000;">Days</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: #000;">Reason</th>
-                            </tr>
+                                <tr style="background-color: #00008B; background: #00008B; font-weight: bold; color: #ffffff;">
+                                    <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Name</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">In time</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Out time</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">OT Hours(Duration)</th>
+                                </tr>
                         </thead>
                         <tbody>
                             <tr style="background-color: transparent;">
