@@ -1318,18 +1318,18 @@ def get_email_template(receiver_name, title, content_html, sender_name="Aruvi Te
     <html>
     <head>
         <style>
-            body {{ font-family: 'Times New Roman', Times, serif; line-height: 1.6; color: #000000; margin: 0; padding: 15px; }}
+            body {{ font-family: 'Times New Roman', Times, serif; line-height: 1.6; color: #00008B; margin: 0; padding: 15px; }}
             a {{ color: #0ea5e9; text-decoration: none; }}
             a:hover {{ text-decoration: underline; }}
         </style>
     </head>
-    <body style="font-family: 'Times New Roman', Times, serif; color: #000000; padding: 15px;">
+    <body style="font-family: 'Times New Roman', Times, serif; color: #00008B; padding: 15px;">
         <p style="margin-top: 0;"><strong>Dear {receiver_name},</strong></p>
         <div>{content_html}</div>
         <p style="margin-top: 40px; margin-bottom: 5px;">Thanks & Regards,</p>
-        <strong style="color: #000000;">{sender_name}</strong><br>
+        <strong style="color: #00008B;">{sender_name}</strong><br>
         Ilan Tech Solutions Pvt. Ltd.,
-        <p style="margin-top: 5px; font-size: 14px; color: #000000;">
+        <p style="margin-top: 5px; font-size: 14px; color: #00008B;">
             Website: <a href="http://www.ilantechsolutions.com" style="color: #0ea5e9;">www.ilantechsolutions.com</a>
         </p>
     </body>
@@ -1769,7 +1769,7 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
             <p>Your leave request has been <strong>{request_item.action}</strong>.</p>
             <br>
             <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-            <p style="color: #666; font-size: 14px;"><strong>Original Request Details:</strong></p>
+            <p style="color: #00008B; font-size: 14px;"><strong>Original Request Details:</strong></p>
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
                     <tr style="background-color: #00008B; font-weight: bold;">
@@ -2311,10 +2311,10 @@ def approve_permission(request: schemas.PermissionApprovalAction, background_tas
             content = f"""
             <p>Good Day!</p>
             <p>Your request for <strong>Permission</strong> has been processed.</p>
-            <div style="font-size: 20px; font-weight: 700; color: #1f2937; margin: 20px 0;">{new_action}</div>
+            <div style="font-size: 20px; font-weight: 700; color: #00008B; margin: 20px 0;">{new_action}</div>
             <br>
             <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-            <p style="color: #666; font-size: 14px;"><strong>Original Request Details:</strong></p>
+            <p style="color: #00008B; font-size: 14px;"><strong>Original Request Details:</strong></p>
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
                     <tr style="background-color: #00008B; font-weight: bold;">
@@ -2436,10 +2436,10 @@ def approve_ot(request: schemas.OverTimeApprovalAction, background_tasks: Backgr
             content = f"""
             <p>Good Day!</p>
             <p>Your request for <strong>Overtime</strong> has been processed.</p>
-            <div style="font-size: 20px; font-weight: 700; color: #1f2937; margin: 20px 0;">{request.action}</div>
+            <div style="font-size: 20px; font-weight: 700; color: #00008B; margin: 20px 0;">{request.action}</div>
             <br>
             <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-            <p style="color: #666; font-size: 14px;"><strong>Original Request Details:</strong></p>
+            <p style="color: #00008B; font-size: 14px;"><strong>Original Request Details:</strong></p>
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
                     <tr style="background-color: #00008B; font-weight: bold;">
@@ -2551,10 +2551,10 @@ def approve_wfh(request: schemas.WFHApprovalAction, background_tasks: Background
             content = f"""
             <p>Good Day!</p>
             <p>Your request for <strong>Work From Home</strong> has been processed.</p>
-            <div style="font-size: 20px; font-weight: 700; color: #1f2937; margin: 20px 0;">{request.action}</div>
+            <div style="font-size: 20px; font-weight: 700; color: #00008B; margin: 20px 0;">{request.action}</div>
             <br>
             <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-            <p style="color: #666; font-size: 14px;"><strong>Original Request Details:</strong></p>
+            <p style="color: #00008B; font-size: 14px;"><strong>Original Request Details:</strong></p>
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
                     <tr style="background-color: #00008B; font-weight: bold;">
@@ -3119,7 +3119,7 @@ def timesheet_action(action_req: schemas.TimesheetApprovalAction, background_tas
             admin_user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == action_req.admin_id.strip()).first()
             manager_name = admin_user.name if admin_user else "Manager"
             subject = f"Timesheet {action_req.action.upper()} - {ts.date}"
-            body = f"""<html><body style="font-family: 'Times New Roman', Times, serif; color: #000000;">
+            body = f"""<html><body style="font-family: 'Times New Roman', Times, serif; color: #00008B;">
                 <p>Dear {emp_user.name},</p>
                 <p>Your Timesheet for <strong>{ts.date}</strong> ({ts.project or 'N/A'}) has been <strong>{action_req.action.upper()}</strong>.</p>
                 <p><strong>Remarks:</strong> {action_req.remarks or 'N/A'}</p>
