@@ -36,7 +36,7 @@ import requests
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import models, schemas, database
-from database import engine, SessionLocal
+from database import engine, SessionLocal, test_db_connection
 
 def safe_dt(d):
     if not d: return None
@@ -287,7 +287,11 @@ def handle_db_error(e: Exception):
 
 
 app = FastAPI()
+
 router = APIRouter()
+
+test_db_connection()
+
 
 @app.get("/test-db")
 def test_db():
@@ -298,6 +302,8 @@ def test_db():
         return {"render_ip": my_ip, "mysql_port": "OPEN ✅"}
     except Exception as e:
         return {"render_ip": my_ip, "mysql_port": f"BLOCKED ❌ - {str(e)}"}
+
+
 def run_migrations_with_retry(max_retries: int = 3, delay: int = 5):
     for attempt in range(1, max_retries + 1):
         try:
