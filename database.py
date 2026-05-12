@@ -20,13 +20,11 @@ SQLALCHEMY_DATABASE_URL = f"mysql+mysqlconnector://{USERNAME}:{encoded_password}
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
     pool_pre_ping=True,
-    pool_recycle=60,      # Faster recycle for GoDaddy
-    pool_size=10,
-    max_overflow=20,
-    pool_use_lifo=True,
+    pool_recycle=300,
+    pool_size=3,
+    max_overflow=5,
     connect_args={
-        "connection_timeout": 30,
-        "consume_results": True
+        "connection_timeout": 60
     }
 )
 
