@@ -281,9 +281,9 @@ def handle_db_error(e: Exception):
             detail="Database connection timeout. The server/database is taking too long to respond. Please try again in 30 seconds."
         )
     raise HTTPException(
-        status_code=503,
-        detail="Database unavailable. The server may be waking up - please wait 30 seconds and try again."
-    )
+    status_code=503,
+    detail=f"REAL DB ERROR: {err_msg}"
+)
 
 
 app = FastAPI()
