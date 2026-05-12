@@ -3,25 +3,30 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from urllib.parse import quote_plus
 
-USERNAME = "aruvitest"
-PASSWORD = "Ti*&#V*&urAtEst"
-HOST = "82.119.168.184.host.secureserver.net"
-PORT = "3306"
-DATABASE = "aruvi_test"
+import os
+
+# Use environment variables from Render, falling back to your verified IP
+USERNAME = os.getenv("DB_USER", "aruvitest")
+PASSWORD = os.getenv("DB_PASSWORD", "Ti*&#V*&urAtEst")
+HOST = os.getenv("DB_HOST", "184.168.119.82")
+PORT = os.getenv("DB_PORT", "3306")
+DATABASE = os.getenv("DB_NAME", "aruvi_test")
 
 encoded_password = quote_plus(PASSWORD)
 
-# Connecting to GoDaddy MySQL with increased timeout
-SQLALCHEMY_DATABASE_URL = f"mysql+pymysql://{USERNAME}:{encoded_password}@{HOST}:{PORT}/{DATABASE}"
+# Switching to official mysqlconnector for better remote connectivity
+SQLALCHEMY_DATABASE_URL = f"mysql+mysqlconnector://{USERNAME}:{encoded_password}@{HOST}:{PORT}/{DATABASE}"
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
-    pool_recycle=120,    # Reduced recycle to handle GoDaddy's aggressive connection closing
-    pool_pre_ping=True,   # Heartbeat to check if connection is alive
+    pool_pre_ping=True,
+    pool_recycle=60,      # Faster recycle for GoDaddy
+    pool_size=10,
+    max_overflow=20,
+    pool_use_lifo=True,
     connect_args={
-        "connect_timeout": 60,   # High timeout for cloud latency
-        "read_timeout": 60,
-        "write_timeout": 60
+        "connection_timeout": 30,
+        "consume_results": True
     }
 )
 
