@@ -293,15 +293,15 @@ router = APIRouter()
 test_db_connection()
 
 
-@app.get("/test-db")
-def test_db():
-    my_ip = requests.get("https://api.ipify.org").text
-    try:
-        sock = socket.create_connection(("184.168.119.82", 3306), timeout=5)
-        sock.close()
-        return {"render_ip": my_ip, "mysql_port": "OPEN ✅"}
-    except Exception as e:
-        return {"render_ip": my_ip, "mysql_port": f"BLOCKED ❌ - {str(e)}"}
+# @app.get("/test-db")
+# def test_db():
+#     my_ip = requests.get("https://api.ipify.org").text
+#     try:
+#         sock = socket.create_connection(("184.168.119.82", 3306), timeout=5)
+#         sock.close()
+#         return {"render_ip": my_ip, "mysql_port": "OPEN ✅"}
+#     except Exception as e:
+#         return {"render_ip": my_ip, "mysql_port": f"BLOCKED ❌ - {str(e)}"}
 
 
 def run_migrations_with_retry(max_retries: int = 3, delay: int = 5):
