@@ -319,10 +319,10 @@ def create_tables_with_retry(max_retries: int = 5, delay: int = 5):
         except Exception as e:
             err_msg = str(e)
             print(f"❌ DB connection failed (attempt {attempt}): {err_msg}")
-            if "is not allowed to connect" in err_msg or "1130" in err_msg:
+            if any(term in err_msg for term in ["is not allowed to connect", "1130", "timed out", "2003"]):
                 try:
                     current_ip = requests.get("https://api.ipify.org?format=json", timeout=2).json().get("ip")
-                    print(f"⚠️  IP RESTRICTION DETECTED: Please add '{current_ip}' to GoDaddy Remote MySQL whitelists.")
+                    print(f"⚠️  CONNECTION BLOCKED OR TIMED OUT: Please ensure '{current_ip}' is whitelisted in GoDaddy Remote MySQL.")
                 except: pass
             if attempt < max_retries:
                 print(f"   Retrying in {delay}s...")
