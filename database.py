@@ -17,16 +17,19 @@ encoded_password = quote_plus(PASSWORD)
 # Switching to official mysqlconnector for better remote connectivity
 SQLALCHEMY_DATABASE_URL = f"mysql+mysqlconnector://{USERNAME}:{encoded_password}@{HOST}:{PORT}/{DATABASE}"
 
+
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
     pool_pre_ping=True,
-    pool_recycle=60,      # Faster recycle for GoDaddy
-    pool_size=10,
-    max_overflow=20,
-    pool_use_lifo=True,
+    pool_recycle=60,
+    pool_size=3,
+    max_overflow=5,
+    pool_timeout=30,
     connect_args={
-        "connection_timeout": 30,
-        "consume_results": True
+        "connect_timeout": 30,
+        "read_timeout":    30,
+        "write_timeout":   30,
+        "charset":         "utf8mb4"
     }
 )
 
