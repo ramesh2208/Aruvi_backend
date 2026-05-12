@@ -1303,18 +1303,18 @@ def get_email_template(receiver_name, title, content_html, sender_name="Aruvi Te
     <html>
     <head>
         <style>
-            body {{ font-family: 'Times New Roman', Times, serif; line-height: 1.6; color: #00008B; margin: 0; padding: 15px; }}
+            body {{ font-family: 'Times New Roman', Times, serif; line-height: 1.6; color: #000000; margin: 0; padding: 15px; }}
             a {{ color: #0ea5e9; text-decoration: none; }}
             a:hover {{ text-decoration: underline; }}
         </style>
     </head>
-    <body style="font-family: 'Times New Roman', Times, serif; color: #00008B; padding: 15px;">
+    <body style="font-family: 'Times New Roman', Times, serif; color: #000000; padding: 15px;">
         <p style="margin-top: 0;"><strong>Dear {receiver_name},</strong></p>
         <div>{content_html}</div>
         <p style="margin-top: 40px; margin-bottom: 5px;">Thanks & Regards,</p>
-        <strong style="color: #00008B;">{sender_name}</strong><br>
+        <strong style="color: #000000;">{sender_name}</strong><br>
         Ilan Tech Solutions Pvt. Ltd.,
-        <p style="margin-top: 5px; font-size: 14px; color: #00008B;">
+        <p style="margin-top: 5px; font-size: 14px; color: #000000;">
             Website: <a href="http://www.ilantechsolutions.com" style="color: #0ea5e9;">www.ilantechsolutions.com</a>
         </p>
     </body>
@@ -1525,41 +1525,41 @@ async def apply_leave(
                 subject = f"ITS - {emp_name} - {leave_type} Request | {from_date}"
 
                 if approvers:
-                    appr = approvers[0] # Only the first approver
-                    if appr["email"]:
-                        content = f"""
-                        <p>Good Day!</p>
-                        <p>Please find below the details of my leave.</p>
-                        <p>Let me know if you require any additional information.</p>
-                        <br>
-                        <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
-                            <thead>
-                                <tr style="background-color: darkblue; font-weight: bold;">
-                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Month</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important; width: 40%;">Date</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Days</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Reason</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <tr style="color: darkblue; background-color: transparent;">
-                                    <td style="padding: 8px; border: 1px solid #000;">1</td>
-                                    <td style="padding: 8px; border: 1px solid #000;">{month_str}</td>
-                                    <td style="padding: 8px; border: 1px solid #000;">{from_date} to {to_date}</td>
-                                    <td style="padding: 8px; border: 1px solid #000;">{pure_days}</td>
-                                    <td style="padding: 8px; border: 1px solid #000;">{reason}</td>
-                                </tr>
-                            </tbody>
-                        </table>
-                        <br>
-                        """
-                        body = get_email_template(appr["name"], "Leave Request", content, emp_name)
-                        background_tasks.add_task(send_email_notification, appr["email"], subject, body)
-                    
-                    if appr["token"]:
-                        background_tasks.add_task(send_expo_push_notification, [appr["token"]],
-                            "New Leave Request", f"{emp_name} has requested {leave_type} from {from_date} to {to_date}.")
+                    for appr in approvers:
+                        if appr["email"]:
+                            content = f"""
+                            <p>Good Day!</p>
+                            <p>Please find below the details of my leave.</p>
+                            <p>Let me know if you require any additional information.</p>
+                            <br>
+                            <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                                <thead>
+                                    <tr style="background-color: #eeeeee; font-weight: bold;">
+                                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
+                                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Month</th>
+                                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important; width: 40%;">Date</th>
+                                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Days</th>
+                                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Reason</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr style="color: #000000; background-color: transparent;">
+                                        <td style="padding: 8px; border: 1px solid #000;">1</td>
+                                        <td style="padding: 8px; border: 1px solid #000;">{month_str}</td>
+                                        <td style="padding: 8px; border: 1px solid #000;">{from_date} to {to_date}</td>
+                                        <td style="padding: 8px; border: 1px solid #000;">{pure_days}</td>
+                                        <td style="padding: 8px; border: 1px solid #000;">{reason}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                            <br>
+                            """
+                            body = get_email_template(appr["name"], "Leave Request", content, emp_name)
+                            background_tasks.add_task(send_email_notification, appr["email"], subject, body)
+                        
+                        if appr["token"]:
+                            background_tasks.add_task(send_expo_push_notification, [appr["token"]],
+                                "New Leave Request", f"{emp_name} has requested {leave_type} from {from_date} to {to_date}.")
         except Exception as mail_err:
             print(f"❌ Error sending notifications: {mail_err}")
 
@@ -1757,7 +1757,7 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
             <p style="color: #666; font-size: 14px;"><strong>Original Request Details:</strong></p>
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
-                    <tr style="background-color: darkblue; font-weight: bold;">
+                    <tr style="background-color: #eeeeee; font-weight: bold;">
                         <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
                         <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Month</th>
                         <th style="padding: 8px; border: 1px solid #000; color: #000000 !important; width: 40%;">Date</th>
@@ -1766,7 +1766,7 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
                     </tr>
                 </thead>
                 <tbody>
-                    <tr style="color: darkblue; background-color: transparent;">
+                    <tr style="color: #000000; background-color: transparent;">
                         <td style="padding: 8px; border: 1px solid #000;">1</td>
                         <td style="padding: 8px; border: 1px solid #000;">{month_str}</td>
                         <td style="padding: 8px; border: 1px solid #000;">{leave.from_date} to {leave.to_date}</td>
@@ -2056,7 +2056,7 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
                     <br>
                     <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                         <thead>
-                            <tr style="background-color: darkblue; font-weight: bold;">
+                            <tr style="background-color: #eeeeee; font-weight: bold;">
                                 <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
                                 <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Name</th>
                                 <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Reason</th>
@@ -2066,7 +2066,7 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
                             </tr>
                         </thead>
                         <tbody>
-                            <tr style="color: darkblue; background-color: transparent;">
+                            <tr style="color: #000000; background-color: transparent;">
                                 <td style="padding: 8px; border: 1px solid #000;">1</td>
                                 <td style="padding: 8px; border: 1px solid #000;">{user.name}</td>
                                 <td style="padding: 8px; border: 1px solid #000;">{request.reason}</td>
@@ -2210,7 +2210,7 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                     <br>
                     <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                         <thead>
-                            <tr style="background-color: darkblue; font-weight: bold;">
+                            <tr style="background-color: #eeeeee; font-weight: bold;">
                                 <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
                                 <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Date</th>
                                 <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">From time</th>
@@ -2220,7 +2220,7 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                             </tr>
                         </thead>
                         <tbody>
-                            <tr style="color: darkblue; background-color: transparent;">
+                            <tr style="color: #000000; background-color: transparent;">
                                 <td style="padding: 8px; border: 1px solid #000;">1</td>
                                 <td style="padding: 8px; border: 1px solid #000;">{request.date}</td>
                                 <td style="padding: 8px; border: 1px solid #000;">{f_display}</td>
@@ -2302,17 +2302,17 @@ def approve_permission(request: schemas.PermissionApprovalAction, background_tas
             <p style="color: #666; font-size: 14px;"><strong>Original Request Details:</strong></p>
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
-                    <tr style="background-color: darkblue; font-weight: bold;">
-                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">S.No</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">Date</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">From time</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">To Time</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">Total Hours</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">Reason</th>
+                    <tr style="background-color: #eeeeee; font-weight: bold;">
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Date</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">From time</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">To Time</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Total Hours</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Reason</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <tr style="color: darkblue; background-color: transparent;">
+                    <tr style="color: #000000; background-color: transparent;">
                         <td style="padding: 8px; border: 1px solid #000;">1</td>
                         <td style="padding: 8px; border: 1px solid #000;">{perm_date}</td>
                         <td style="padding: 8px; border: 1px solid #000;">{f_time_str}</td>
@@ -2427,17 +2427,17 @@ def approve_ot(request: schemas.OverTimeApprovalAction, background_tasks: Backgr
             <p style="color: #666; font-size: 14px;"><strong>Original Request Details:</strong></p>
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
-                    <tr style="background-color: darkblue; font-weight: bold;">
-                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">S.No</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">Name</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">Reason</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">In time</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">Out time</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">OT hours(Duration)</th>
+                    <tr style="background-color: #eeeeee; font-weight: bold;">
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Name</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Reason</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">In time</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Out time</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">OT hours(Duration)</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <tr style="color: darkblue; background-color: transparent;">
+                    <tr style="color: #000000; background-color: transparent;">
                         <td style="padding: 8px; border: 1px solid #000;">1</td>
                         <td style="padding: 8px; border: 1px solid #000;">{emp_user.name}</td>
                         <td style="padding: 8px; border: 1px solid #000;">{ot.reason or "No reason"}</td>
@@ -2542,17 +2542,17 @@ def approve_wfh(request: schemas.WFHApprovalAction, background_tasks: Background
             <p style="color: #666; font-size: 14px;"><strong>Original Request Details:</strong></p>
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
-                    <tr style="background-color: darkblue; font-weight: bold;">
-                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">S.No</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">Name</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">From Date</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">To Date</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">Days</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: black !important;">Reason</th>
+                    <tr style="background-color: #eeeeee; font-weight: bold;">
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Name</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">From Date</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">To Date</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Days</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Reason</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <tr style="color: darkblue; background-color: transparent;">
+                    <tr style="color: #000000; background-color: transparent;">
                         <td style="padding: 8px; border: 1px solid #000;">1</td>
                         <td style="padding: 8px; border: 1px solid #000;">{emp_user.name}</td>
                         <td style="padding: 8px; border: 1px solid #000;">{wfh.from_date}</td>
@@ -2653,17 +2653,17 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
                         <br>
                         <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                             <thead>
-                                <tr style="background-color: darkblue; font-weight: bold;">
-                                    <th style="padding: 8px; border: 1px solid #000; color: black !important;">S.No</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: black !important;">Name</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: black !important;">From Date</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: black !important;">To Date</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: black !important;">Days</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: black !important;">Reason</th>
+                                <tr style="background-color: #eeeeee; font-weight: bold;">
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Name</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">From Date</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">To Date</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Days</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Reason</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                <tr style="color: darkblue; background-color: transparent;">
+                                <tr style="color: #000000; background-color: transparent;">
                                     <td style="padding: 8px; border: 1px solid #000;">1</td>
                                     <td style="padding: 8px; border: 1px solid #000;">{user.name}</td>
                                     <td style="padding: 8px; border: 1px solid #000;">{from_str}</td>
@@ -3104,7 +3104,7 @@ def timesheet_action(action_req: schemas.TimesheetApprovalAction, background_tas
             admin_user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == action_req.admin_id.strip()).first()
             manager_name = admin_user.name if admin_user else "Manager"
             subject = f"Timesheet {action_req.action.upper()} - {ts.date}"
-            body = f"""<html><body style="font-family: 'Times New Roman', Times, serif; color: #00008B;">
+            body = f"""<html><body style="font-family: 'Times New Roman', Times, serif; color: #000000;">
                 <p>Dear {emp_user.name},</p>
                 <p>Your Timesheet for <strong>{ts.date}</strong> ({ts.project or 'N/A'}) has been <strong>{action_req.action.upper()}</strong>.</p>
                 <p><strong>Remarks:</strong> {action_req.remarks or 'N/A'}</p>
