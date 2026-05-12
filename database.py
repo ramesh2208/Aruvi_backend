@@ -5,10 +5,10 @@ from urllib.parse import quote_plus
 
 import os
 
-# Use environment variables from Render, falling back to local defaults
+# Use environment variables from Render, falling back to your verified IP
 USERNAME = os.getenv("DB_USER", "aruvitest")
 PASSWORD = os.getenv("DB_PASSWORD", "Ti*&#V*&urAtEst")
-HOST = os.getenv("DB_HOST", "82.119.168.184.host.secureserver.net")
+HOST = os.getenv("DB_HOST", "184.168.119.82")
 PORT = os.getenv("DB_PORT", "3306")
 DATABASE = os.getenv("DB_NAME", "aruvi_test")
 
