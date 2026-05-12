@@ -1549,21 +1549,21 @@ async def apply_leave(
                             <br>
                             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                                 <thead>
-                                    <tr style="background-color: #00008B; font-weight: bold;">
-                                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
-                                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Month</th>
-                                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important; width: 40%;">Date</th>
-                                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Days</th>
-                                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Reason</th>
+                                    <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">S.No</th>
+                                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Month</th>
+                                        <th style="padding: 8px; border: 1px solid #000; color: #000000; width: 40%;">Date</th>
+                                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Days</th>
+                                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Reason</th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <tr style="color: #00008B; background-color: transparent;">
-                                        <td style="padding: 8px; border: 1px solid #000;">1</td>
-                                        <td style="padding: 8px; border: 1px solid #000;">{month_str}</td>
-                                        <td style="padding: 8px; border: 1px solid #000;">{from_date} to {to_date}</td>
-                                        <td style="padding: 8px; border: 1px solid #000;">{pure_days}</td>
-                                        <td style="padding: 8px; border: 1px solid #000;">{reason}</td>
+                                    <tr style="background-color: transparent;">
+                                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{month_str}</td>
+                                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{from_date} to {to_date}</td>
+                                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{pure_days}</td>
+                                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{reason}</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -1772,21 +1772,21 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
             <p style="color: #00008B; font-size: 14px;"><strong>Original Request Details:</strong></p>
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
-                    <tr style="background-color: #00008B; font-weight: bold;">
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Month</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important; width: 40%;">Date</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Days</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Reason</th>
+                    <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">S.No</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Month</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000; width: 40%;">Date</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Days</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Reason</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <tr style="color: #00008B; background-color: transparent;">
-                        <td style="padding: 8px; border: 1px solid #000;">1</td>
-                        <td style="padding: 8px; border: 1px solid #000;">{month_str}</td>
-                        <td style="padding: 8px; border: 1px solid #000;">{leave.from_date} to {leave.to_date}</td>
-                        <td style="padding: 8px; border: 1px solid #000;">{pure_days}</td>
-                        <td style="padding: 8px; border: 1px solid #000;">{leave.reason}</td>
+                    <tr style="background-color: transparent;">
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{month_str}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{leave.from_date} to {leave.to_date}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{pure_days}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{leave.reason}</td>
                     </tr>
                 </tbody>
             </table>
@@ -2071,23 +2071,23 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
                     <br>
                     <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                         <thead>
-                            <tr style="background-color: #00008B; font-weight: bold;">
-                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Name</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Reason</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">In time</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Out time</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">OT hours(Duration)</th>
+                            <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000;">Name</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000;">Reason</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000;">In time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000;">Out time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000;">OT Hours(Duration)</th>
                             </tr>
                         </thead>
                         <tbody>
-                            <tr style="color: #00008B; background-color: transparent;">
-                                <td style="padding: 8px; border: 1px solid #000;">1</td>
-                                <td style="padding: 8px; border: 1px solid #000;">{user.name}</td>
-                                <td style="padding: 8px; border: 1px solid #000;">{request.reason}</td>
-                                <td style="padding: 8px; border: 1px solid #000;">{request.from_time}</td>
-                                <td style="padding: 8px; border: 1px solid #000;">{request.to_time}</td>
-                                <td style="padding: 8px; border: 1px solid #000;">{request.duration}</td>
+                            <tr style="background-color: transparent;">
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{user.name}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.reason}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.from_time}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.to_time}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.duration}</td>
                             </tr>
                         </tbody>
                     </table>
@@ -2225,23 +2225,23 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                     <br>
                     <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                         <thead>
-                            <tr style="background-color: #00008B; font-weight: bold;">
-                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Date</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">From time</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">To Time</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Total Hours</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Reason</th>
+                            <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000;">Date</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000;">From time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000;">To Time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000;">Total Hours</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #000000;">Reason</th>
                             </tr>
                         </thead>
                         <tbody>
-                            <tr style="color: #00008B; background-color: transparent;">
-                                <td style="padding: 8px; border: 1px solid #000;">1</td>
-                                <td style="padding: 8px; border: 1px solid #000;">{request.date}</td>
-                                <td style="padding: 8px; border: 1px solid #000;">{f_display}</td>
-                                <td style="padding: 8px; border: 1px solid #000;">{t_display}</td>
-                                <td style="padding: 8px; border: 1px solid #000;">{total_hrs_val:.2f} hrs</td>
-                                <td style="padding: 8px; border: 1px solid #000;">{request.reason}</td>
+                            <tr style="background-color: transparent;">
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.date}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{f_display}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{t_display}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{total_hrs_val:.2f} hrs</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.reason}</td>
                             </tr>
                         </tbody>
                     </table>
@@ -2317,23 +2317,23 @@ def approve_permission(request: schemas.PermissionApprovalAction, background_tas
             <p style="color: #00008B; font-size: 14px;"><strong>Original Request Details:</strong></p>
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
-                    <tr style="background-color: #00008B; font-weight: bold;">
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Date</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">From time</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">To Time</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Total Hours</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Reason</th>
+                    <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">S.No</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Date</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">From time</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">To Time</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Total Hours</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Reason</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <tr style="color: #00008B; background-color: transparent;">
-                        <td style="padding: 8px; border: 1px solid #000;">1</td>
-                        <td style="padding: 8px; border: 1px solid #000;">{perm_date}</td>
-                        <td style="padding: 8px; border: 1px solid #000;">{f_time_str}</td>
-                        <td style="padding: 8px; border: 1px solid #000;">{t_time_str}</td>
-                        <td style="padding: 8px; border: 1px solid #000;">{perm.total_hours or "0.00"} hrs</td>
-                        <td style="padding: 8px; border: 1px solid #000;">{perm.reason}</td>
+                    <tr style="background-color: transparent;">
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{perm_date}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{f_time_str}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{t_time_str}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{perm.total_hours or "0.00"} hrs</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{perm.reason}</td>
                     </tr>
                 </tbody>
             </table>
@@ -2442,23 +2442,23 @@ def approve_ot(request: schemas.OverTimeApprovalAction, background_tasks: Backgr
             <p style="color: #00008B; font-size: 14px;"><strong>Original Request Details:</strong></p>
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
-                    <tr style="background-color: #00008B; font-weight: bold;">
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Name</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Reason</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">In time</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Out time</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">OT hours(Duration)</th>
+                    <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">S.No</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Name</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Reason</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">In time</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Out time</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">OT Hours(Duration)</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <tr style="color: #00008B; background-color: transparent;">
-                        <td style="padding: 8px; border: 1px solid #000;">1</td>
-                        <td style="padding: 8px; border: 1px solid #000;">{emp_user.name}</td>
-                        <td style="padding: 8px; border: 1px solid #000;">{ot.reason or "No reason"}</td>
-                        <td style="padding: 8px; border: 1px solid #000;">{ot.from_time}</td>
-                        <td style="padding: 8px; border: 1px solid #000;">{ot.to_time}</td>
-                        <td style="padding: 8px; border: 1px solid #000;">{ot.duration}</td>
+                    <tr style="background-color: transparent;">
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{emp_user.name}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{ot.reason or "No reason"}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{ot.from_time}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{ot.to_time}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{ot.duration}</td>
                     </tr>
                 </tbody>
             </table>
@@ -2557,23 +2557,23 @@ def approve_wfh(request: schemas.WFHApprovalAction, background_tasks: Background
             <p style="color: #00008B; font-size: 14px;"><strong>Original Request Details:</strong></p>
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
-                    <tr style="background-color: #00008B; font-weight: bold;">
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Name</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">From Date</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">To Date</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Days</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Reason</th>
+                    <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">S.No</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Name</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">From Date</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">To Date</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Days</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Reason</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <tr style="color: #00008B; background-color: transparent;">
-                        <td style="padding: 8px; border: 1px solid #000;">1</td>
-                        <td style="padding: 8px; border: 1px solid #000;">{emp_user.name}</td>
-                        <td style="padding: 8px; border: 1px solid #000;">{wfh.from_date}</td>
-                        <td style="padding: 8px; border: 1px solid #000;">{wfh.to_date}</td>
-                        <td style="padding: 8px; border: 1px solid #000;">{fmt_days(wfh.days)} {"Day" if float(wfh.days or 0) == 1.0 else "Days"}</td>
-                        <td style="padding: 8px; border: 1px solid #000;">{wfh.reason or "No reason"}</td>
+                    <tr style="background-color: transparent;">
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{emp_user.name}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{wfh.from_date}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{wfh.to_date}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{fmt_days(wfh.days)} {"Day" if float(wfh.days or 0) == 1.0 else "Days"}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{wfh.reason or "No reason"}</td>
                     </tr>
                 </tbody>
             </table>
@@ -2668,23 +2668,23 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
                         <br>
                         <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                             <thead>
-                                <tr style="background-color: #00008B; font-weight: bold;">
-                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">S.No</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Name</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">From Date</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">To Date</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Days</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: #000000 !important;">Reason</th>
+                                <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000000;">S.No</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000000;">Name</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000000;">From Date</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000000;">To Date</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000000;">Days</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #000000;">Reason</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                <tr style="color: #00008B; background-color: transparent;">
-                                    <td style="padding: 8px; border: 1px solid #000;">1</td>
-                                    <td style="padding: 8px; border: 1px solid #000;">{user.name}</td>
-                                    <td style="padding: 8px; border: 1px solid #000;">{from_str}</td>
-                                    <td style="padding: 8px; border: 1px solid #000;">{to_str}</td>
-                                    <td style="padding: 8px; border: 1px solid #000;">{wfh_days_fmt} {wfh_day_label}</td>
-                                    <td style="padding: 8px; border: 1px solid #000;">{request.reason}</td>
+                                <tr style="background-color: transparent;">
+                                    <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                                    <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{user.name}</td>
+                                    <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{from_str}</td>
+                                    <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{to_str}</td>
+                                    <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{wfh_days_fmt} {wfh_day_label}</td>
+                                    <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.reason}</td>
                                 </tr>
                             </tbody>
                         </table>
