@@ -5,8 +5,8 @@ from urllib.parse import quote_plus
 
 USERNAME = "aruvitest"
 PASSWORD = "Ti*&#V*&urAtEst"
-HOST = "184.168.119.82"
-# HOST = "82.119.168.184.host.secureserver.net"
+# HOST = "184.168.119.82"
+HOST = "82.119.168.184.host.secureserver.net"
 PORT = "3306"
 DATABASE = "aruvi_test"
 
