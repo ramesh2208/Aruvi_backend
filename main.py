@@ -205,7 +205,7 @@ def _build_role_based_privileges(priv_rows) -> list:
     return _build_privileges_from_arrays(priv_rows[0])
 
 
-def get_user_privileges(user, db) -> list:
+def get_user_privileges(user, db, role_priv=None) -> list:
     """
     Single entry-point: return privilege list for any EmpDet user.
     Always returns list aligned to MASTER_MOD_IDS (same length, same order).
@@ -221,15 +221,18 @@ def get_user_privileges(user, db) -> list:
     if getattr(user, 'rpd_id', None):
         try:
             print(f"[PRIV] role-based → {user.emp_id} (rpd_id={user.rpd_id})")
-            # Convert rpd_id to int as it's the primary key in RolePrivilege
-            r_id = int(str(user.rpd_id).strip())
-            priv_rows = (
-                db.query(models.RolePrivilege)
-                .filter(models.RolePrivilege.rpd_id == r_id)
-                .all()
-            )
-            privs = _build_role_based_privileges(priv_rows)
-            print(f"[PRIV] → {len(privs)} entries, {len(priv_rows)} DB rows")
+            if role_priv:
+                privs = _build_role_based_privileges([role_priv])
+            else:
+                # Convert rpd_id to int as it's the primary key in RolePrivilege
+                r_id = int(str(user.rpd_id).strip())
+                priv_rows = (
+                    db.query(models.RolePrivilege)
+                    .filter(models.RolePrivilege.rpd_id == r_id)
+                    .all()
+                )
+                privs = _build_role_based_privileges(priv_rows)
+            print(f"[PRIV] → {len(privs)} entries returned")
             return privs
         except Exception as e:
             print(f"[PRIV] Error fetching role privileges: {e}")
@@ -377,17 +380,8 @@ def get_diag_ip():
 def get_db():
     db = database.SessionLocal()
     try:
-        db.execute(__import__("sqlalchemy").text("SELECT 1"))
         yield db
-    except Exception:
-        db.rollback()
-        db.close()
-        db = database.SessionLocal()
-        try:
-            yield db
-        finally:
-            db.close()
-    else:
+    finally:
         db.close()
         
         
@@ -516,11 +510,13 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
             raise HTTPException(status_code=500, detail="Database connection failed")
 
         try:
+            # Optimize user lookup: Try direct matches first to leverage potential indexes
             user = db.query(models.EmpDet).filter(
                 or_(
+                    models.EmpDet.p_mail == username_input,
+                    models.EmpDet.emp_id == username_input,
                     func.lower(func.trim(models.EmpDet.p_mail)) == username_input,
-                    func.lower(func.trim(models.EmpDet.emp_id)) == username_input,
-                    func.lower(func.replace(func.trim(models.EmpDet.emp_id), " ", "")) == username_input.replace(" ", "")
+                    func.lower(func.trim(models.EmpDet.emp_id)) == username_input
                 )
             ).first()
         except Exception as db_err:
@@ -596,12 +592,15 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
             except:
                 pass
 
-        is_super_global = any(tr.lower() in role_name.lower() for tr in top_roles) or is_domain_top
+        is_super_global = any(tr.lower() in role_name.lower() for tr in top_roles) if role_name else False
+        is_super_global = is_super_global or is_domain_top
 
+        # Faster manager check: direct column comparison
+        clean_emp_id = user.emp_id.strip()
         is_manager = db.query(models.EmpDet).filter(
             or_(
-                func.lower(func.trim(models.EmpDet.assign_manager)) == user.emp_id.lower().strip(),
-                func.lower(func.trim(models.EmpDet.project_manager)) == user.emp_id.lower().strip()
+                models.EmpDet.assign_manager == clean_emp_id,
+                models.EmpDet.project_manager == clean_emp_id
             )
         ).first() is not None
 
@@ -611,9 +610,7 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         is_global_admin = is_domain_top
 
         has_2fa = bool(user.auth_key and user.auth_key.strip())
-        print(f" 2FA: {has_2fa}, Role: {role_type}, Global Admin: {is_global_admin}, Role Name: {role_name}")
-
-        privileges = get_user_privileges(user, db)
+        privileges = get_user_privileges(user, db, role_priv=role_priv)
         print(f" Privileges: {len(privileges)} modules loaded")
         print("=" * 60)
 
