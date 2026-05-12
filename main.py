@@ -120,7 +120,34 @@ def _build_empty_priv(mod_id_val: int = 0) -> dict:
         "permissions": None,
     }
 
-
+@app.get("/diag/db-test")
+def test_db_connectivity():
+    import socket
+    import requests
+    
+    results = {}
+    
+    # 1. Get current outbound IP
+    try:
+        results["render_ip"] = requests.get(
+            "https://api.ipify.org?format=json", timeout=5
+        ).json().get("ip")
+    except:
+        results["render_ip"] = "failed to fetch"
+    
+    # 2. Test raw TCP port 3306
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5)
+        result = sock.connect_ex(("184.168.119.82", 3306))
+        sock.close()
+        results["port_3306_open"] = result == 0
+        results["port_3306_code"] = result
+    except Exception as e:
+        results["port_3306_open"] = False
+        results["port_3306_error"] = str(e)
+    
+    return results
 def parse_privilege_array(s):
     """Split a comma-separated privilege string into list of stripped strings."""
     if not s or not isinstance(s, str):
