@@ -32,6 +32,7 @@ import sys
 import os
 import socket
 import requests
+
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import models, schemas, database
@@ -287,6 +288,7 @@ def handle_db_error(e: Exception):
 
 app = FastAPI()
 router = APIRouter()
+
 @app.get("/test-db")
 def test_db():
     my_ip = requests.get("https://api.ipify.org").text
@@ -332,7 +334,7 @@ def create_tables_with_retry(max_retries: int = 5, delay: int = 5):
             if any(term in err_msg for term in ["is not allowed to connect", "1130", "timed out", "2003"]):
                 try:
                     current_ip = requests.get("https://api.ipify.org?format=json", timeout=2).json().get("ip")
-                    print(f"⚠️  CONNECTION BLOCKED OR TIMED OUT: Please ensure '{current_ip}' is whitelisted in GoDaddy Remote MySQL.")
+                    # print(f"⚠️  CONNECTION BLOCKED OR TIMED OUT: Please ensure '{current_ip}' is whitelisted in GoDaddy Remote MySQL.")
                 except: pass
             if attempt < max_retries:
                 print(f"   Retrying in {delay}s...")
