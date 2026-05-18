@@ -135,6 +135,8 @@ class EmpLeave(Base):
     approved_by = Column(String(240))
     reporting_manager = Column(String(240))
     approver = Column(String(240))
+    half_date = Column(String(240))
+    half_day_session = Column(String(240))
     revision = Column(String(240), default="0")
     attribute_category = Column(String(240))
     attribute1 = Column(String(240))
@@ -593,19 +595,36 @@ class DailyAttendanceReport(Base):
     last_update_login = Column(String(255))
 
 
-class BMS(Base):
-    __tablename__ = "xxits_bms_t"
+class Module(Base):
+    __tablename__ = "xxits_aruvi_modules_t"
 
-    bms_id = Column(Integer, primary_key=True, autoincrement=True)
-    emp_id = Column(String(50))
-    min_in = Column(String(20))
-    max_out = Column(String(20))
-    attendance_date = Column(Date)
+    mod_id = Column(Integer, primary_key=True, autoincrement=True)
+    module_ref_no = Column(String(250))
+    module = Column(String(100))
+    description = Column(String(100))
+    crud = Column(String(240))
+    status = Column(String(250))
+    attribute = Column(String(255))
+    attribute1 = Column(String(255))
+    attribute2 = Column(String(255))
+    attribute3 = Column(String(255))
+    attribute4 = Column(String(255))
+    attribute5 = Column(String(255))
+    attribute6 = Column(String(255))
+    attribute7 = Column(String(255))
+    attribute8 = Column(String(255))
+    attribute9 = Column(String(255))
+    attribute10 = Column(String(255))
+    attribute11 = Column(String(255))
+    attribute12 = Column(String(255))
+    attribute13 = Column(String(255))
+    attribute14 = Column(String(255))
+    attribute15 = Column(String(255))
     created_by = Column(String(100))
     creation_date = Column(DateTime)
     last_updated_by = Column(String(100))
     last_update_date = Column(DateTime)
-    last_update_login = Column(String(255))
+    last_update_login = Column(String(100))
 
 
 class RolePrivilege(Base):
