@@ -741,15 +741,31 @@ def encrypt_device_id(device_id: str) -> str:
         print(f" Encryption error: {str(e)}")
         return device_id
 
+def decrypt_device_id_raw(encrypted_device_id: str) -> Optional[str]:
+    try:
+        if not encrypted_device_id or not encrypted_device_id.strip():
+            return None
+        val = encrypted_device_id.strip()
+        if not val.startswith("gAAAAA"):
+            return None
+        fernet = Fernet(FERNET_KEY.encode())
+        return fernet.decrypt(val.encode()).decode()
+    except Exception as e:
+        print(f" Decryption error during raw check: {str(e)}")
+        return None
+
 def decrypt_device_id(encrypted_device_id: str) -> str:
     try:
         if not encrypted_device_id or not encrypted_device_id.strip():
             return ""
+        val = encrypted_device_id.strip()
+        if not val.startswith("gAAAAA"):
+            return ""
         fernet = Fernet(FERNET_KEY.encode())
-        return fernet.decrypt(encrypted_device_id.strip().encode()).decode()
+        return fernet.decrypt(val.encode()).decode()
     except Exception as e:
         print(f" Decryption error: {str(e)}")
-        return encrypted_device_id
+        return ""
 
 def check_and_register_device(user, device_id: Optional[str], db: Session, should_register: bool = False):
     if not device_id or not str(device_id).strip():
@@ -765,8 +781,8 @@ def check_and_register_device(user, device_id: Optional[str], db: Session, shoul
     ).all()
     
     for other_user in all_users_with_devices:
-        decrypted_other = decrypt_device_id(str(other_user.attribute8).strip())
-        if decrypted_other == clean_device_id:
+        decrypted_other = decrypt_device_id_raw(str(other_user.attribute8).strip())
+        if decrypted_other is not None and decrypted_other == clean_device_id:
             raise HTTPException(
                 status_code=400, 
                 detail="Invalid device: This device is already registered to another user."
@@ -774,12 +790,19 @@ def check_and_register_device(user, device_id: Optional[str], db: Session, shoul
         
     # 2. Check if the current user already has a registered device ID
     if user.attribute8 and str(user.attribute8).strip():
-        decrypted_mine = decrypt_device_id(str(user.attribute8).strip())
-        if decrypted_mine != clean_device_id:
-            raise HTTPException(
-                status_code=400, 
-                detail="Invalid device: This account is locked to a different device."
-            )
+        decrypted_mine = decrypt_device_id_raw(str(user.attribute8).strip())
+        if decrypted_mine is not None:
+            if decrypted_mine != clean_device_id:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Invalid device: This account is locked to a different device."
+                )
+        else:
+            # Legacy value found! We can register the new device ID!
+            if should_register:
+                user.attribute8 = encrypt_device_id(clean_device_id)
+                db.commit()
+                print(f" [DEVICE LOCK] Overwrote legacy value in attribute8 with device ID '{clean_device_id}' for user '{user.emp_id}'")
     else:
         # If user has no registered device ID and we are at the successful OTP/login step, register it!
         if should_register:
