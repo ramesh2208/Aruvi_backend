@@ -660,6 +660,10 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         is_global_admin = is_domain_top
 
         has_2fa = bool(user.auth_key and user.auth_key.strip())
+        
+        # Check and enforce device lock
+        check_and_register_device(user, request.device_id, db, should_register=not has_2fa)
+        
         privileges = get_user_privileges(user, db, role_priv=role_priv)
         print(f" Privileges: {len(privileges)} modules loaded")
         print("=" * 60)
@@ -727,6 +731,112 @@ def decrypt_auth_key_fernet(encrypted_auth_key: str) -> str:
         raise HTTPException(status_code=500, detail="Failed to decrypt 2FA secret")
 
 
+def encrypt_device_id(device_id: str) -> str:
+    try:
+        if not device_id or not device_id.strip():
+            return ""
+        fernet = Fernet(FERNET_KEY.encode())
+        return fernet.encrypt(device_id.strip().encode()).decode()
+    except Exception as e:
+        print(f" Encryption error: {str(e)}")
+        return device_id
+
+def decrypt_device_id(encrypted_device_id: str) -> str:
+    try:
+        if not encrypted_device_id or not encrypted_device_id.strip():
+            return ""
+        fernet = Fernet(FERNET_KEY.encode())
+        return fernet.decrypt(encrypted_device_id.strip().encode()).decode()
+    except Exception as e:
+        print(f" Decryption error: {str(e)}")
+        return encrypted_device_id
+
+def check_and_register_device(user, device_id: Optional[str], db: Session, should_register: bool = False):
+    if not device_id or not str(device_id).strip():
+        return
+    
+    clean_device_id = str(device_id).strip()
+    
+    # 1. Check if this device is already assigned to another employee
+    all_users_with_devices = db.query(models.EmpDet).filter(
+        models.EmpDet.attribute8 != None,
+        models.EmpDet.attribute8 != "",
+        models.EmpDet.emp_id != user.emp_id
+    ).all()
+    
+    for other_user in all_users_with_devices:
+        decrypted_other = decrypt_device_id(str(other_user.attribute8).strip())
+        if decrypted_other == clean_device_id:
+            raise HTTPException(
+                status_code=400, 
+                detail="Invalid device: This device is already registered to another user."
+            )
+        
+    # 2. Check if the current user already has a registered device ID
+    if user.attribute8 and str(user.attribute8).strip():
+        decrypted_mine = decrypt_device_id(str(user.attribute8).strip())
+        if decrypted_mine != clean_device_id:
+            raise HTTPException(
+                status_code=400, 
+                detail="Invalid device: This account is locked to a different device."
+            )
+    else:
+        # If user has no registered device ID and we are at the successful OTP/login step, register it!
+        if should_register:
+            user.attribute8 = encrypt_device_id(clean_device_id)
+            db.commit()
+            print(f" [DEVICE LOCK] Registered device ID '{clean_device_id}' for user '{user.emp_id}'")
+
+
+@app.get("/active-employees-devices")
+def get_active_employees_devices(db: Session = Depends(get_db)):
+    try:
+        employees = db.query(models.EmpDet).filter(
+            or_(
+                models.EmpDet.end_date == None,
+                models.EmpDet.end_date == "",
+                func.trim(models.EmpDet.end_date) == ""
+            )
+        ).order_by(models.EmpDet.name.asc()).all()
+        
+        result = []
+        for emp in employees:
+            raw_device_id = ""
+            if emp.attribute8 and str(emp.attribute8).strip():
+                raw_device_id = decrypt_device_id(str(emp.attribute8).strip())
+            
+            result.append({
+                "emp_id": emp.emp_id,
+                "name": emp.name or emp.emp_id,
+                "device_id": raw_device_id
+            })
+        return result
+    except Exception as e:
+        print(f" ERROR fetching active employees devices: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.post("/reset-employee-device/{emp_id}")
+def reset_employee_device(emp_id: str, db: Session = Depends(get_db)):
+    emp_id = emp_id.strip()
+    try:
+        emp = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()
+        ).first()
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        
+        emp.attribute8 = None
+        db.commit()
+        print(f" [DEVICE LOCK] Device ID reset successfully for employee {emp_id}")
+        return {"message": "Device ID reset successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f" ERROR resetting device for employee {emp_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to reset device ID")
+
+
 class GetAuthKeyRequest(BaseModel):
     p_mail: str
 
@@ -792,6 +902,9 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
     if not ok:
         raise HTTPException(status_code=401, detail="Invalid Authenticator code")
     print(" 2FA SUCCESS")
+
+    # Enforce and register device lock on successful 2FA validation
+    check_and_register_device(user, request.device_id, db, should_register=True)
 
     is_global_admin = False
     role_type = "Employee"
@@ -1888,17 +2001,7 @@ def get_notifications(
     except Exception as e:
         handle_db_error(e)
 
-    last_clear_date: Optional[datetime] = None
-    if user and user.attribute8 and str(user.attribute8).strip():
-        raw = str(user.attribute8).strip()
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
-            try:
-                last_clear_date = datetime.strptime(raw, fmt)
-                break
-            except ValueError:
-                continue
-
-    effective_cutoff: datetime = last_clear_date if last_clear_date else (datetime.now() - timedelta(days=30))
+    effective_cutoff: datetime = datetime.now() - timedelta(days=30)
 
     def cutoff_filter(date_col, creation_col):
         return func.coalesce(date_col, creation_col) > effective_cutoff
@@ -2049,18 +2152,7 @@ def get_notifications(
 
 @router.post("/notifications/clear-all/{user_id}")
 def clear_all_notifications(user_id: str, db: Session = Depends(get_db)):
-    user_id = user_id.strip().lower()
-    try:
-        user = db.query(models.EmpDet).filter(
-            func.lower(func.trim(models.EmpDet.emp_id)) == user_id
-        ).first()
-    except Exception as e:
-        handle_db_error(e)
-    if not user:
-        raise HTTPException(status_code=404, detail=f"User '{user_id}' not found")
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    user.attribute8 = now_str
-    db.commit()
     return {"message": "All notifications cleared", "cleared_at": now_str}
 
 
