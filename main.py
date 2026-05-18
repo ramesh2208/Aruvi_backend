@@ -411,21 +411,53 @@ def parse_date(d):
     if isinstance(d, date):
         return datetime.combine(d, datetime.min.time())
     d_str = str(d).strip()
+    if not d_str:
+        return None
     months_map = {
         'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
         'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12
     }
-    parts = d_str.split('-')
-    if len(parts) == 3:
-        try:
-            day = int(parts[0])
-            month_str = parts[1].lower()[:3]
-            year = int(parts[2])
-            if month_str in months_map:
-                return datetime(year, months_map[month_str], day)
-        except:
-            pass
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+    for delim in ('-', '/', '.', ' '):
+        parts = d_str.split(delim)
+        if len(parts) == 3:
+            try:
+                p0 = parts[0].strip()
+                p1 = parts[1].strip()
+                p2 = parts[2].strip()
+                if p1.lower()[:3] in months_map:
+                    month = months_map[p1.lower()[:3]]
+                    day = int(p0)
+                    year = int(p2)
+                elif p0.lower()[:3] in months_map:
+                    month = months_map[p0.lower()[:3]]
+                    day = int(p1)
+                    year = int(p2)
+                else:
+                    if len(p0) == 4:
+                        year = int(p0)
+                        month = int(p1)
+                        day = int(p2)
+                    else:
+                        day = int(p0)
+                        month = int(p1)
+                        year = int(p2)
+                if year < 100:
+                    if year > 50:
+                        year += 1900
+                    else:
+                        year += 2000
+                if 1 <= month <= 12 and 1 <= day <= 31:
+                    return datetime(year, month, day)
+            except:
+                pass
+    formats = (
+        "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", 
+        "%Y/%m/%d", "%d.%m.%Y", "%Y.%m.%d",
+        "%d-%b-%Y", "%d/%b/%Y", "%d %b %Y",
+        "%d-%b-%y", "%d/%b/%y", "%d %b %y",
+        "%d-%m-%y", "%d/%m/%y"
+    )
+    for fmt in formats:
         try:
             return datetime.strptime(d_str, fmt)
         except:
@@ -1550,11 +1582,11 @@ async def apply_leave(
                             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                                 <thead>
                                     <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
-                                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">S.No</th>
-                                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Month</th>
-                                        <th style="padding: 8px; border: 1px solid #000; color: #000000; width: 40%;">Date</th>
-                                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Days</th>
-                                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Reason</th>
+                                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Month</th>
+                                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff; width: 40%;">Date</th>
+                                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Days</th>
+                                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -1773,11 +1805,11 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
                     <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
-                        <th style="padding: 8px; border: 1px solid #000; color: #000;">S.No</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000;">Month</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000; width: 40%;">Date</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000;">Days</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000;">Reason</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Month</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff; width: 40%;">Date</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Days</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -2226,12 +2258,12 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                     <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                         <thead>
                             <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
-                                <th style="padding: 8px; border: 1px solid #000; color: #000000;">S.No</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: #000000;">Date</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: #000000;">From time</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: #000000;">To Time</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: #000000;">Total Hours</th>
-                                <th style="padding: 8px; border: 1px solid #000; color: #000000;">Reason</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Date</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">From time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">To Time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Total Hours</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -2318,12 +2350,12 @@ def approve_permission(request: schemas.PermissionApprovalAction, background_tas
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
                     <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">S.No</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Date</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">From time</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">To Time</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Total Hours</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Reason</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Date</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">From time</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">To Time</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Total Hours</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -2443,12 +2475,12 @@ def approve_ot(request: schemas.OverTimeApprovalAction, background_tasks: Backgr
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
                     <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">S.No</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Name</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Reason</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">In time</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Out time</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">OT Hours(Duration)</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Name</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">In time</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Out time</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">OT Hours(Duration)</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -2558,12 +2590,12 @@ def approve_wfh(request: schemas.WFHApprovalAction, background_tasks: Background
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
                     <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">S.No</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Name</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">From Date</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">To Date</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Days</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #000000;">Reason</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Name</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">From Date</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">To Date</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Days</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -2669,12 +2701,12 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
                         <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                             <thead>
                                 <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
-                                    <th style="padding: 8px; border: 1px solid #000; color: #000000;">S.No</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: #000000;">Name</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: #000000;">From Date</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: #000000;">To Date</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: #000000;">Days</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: #000000;">Reason</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Name</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">From Date</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">To Date</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Days</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -2927,17 +2959,22 @@ def get_birthdays_this_month(db: Session = Depends(get_db)):
         all_emps = db.query(models.EmpDet).all()
         birthdays = []
         for emp in all_emps:
-            is_active = not emp.end_date or str(emp.end_date).strip() in ("", "none", "None")
-            if is_active and emp.dob and emp.name:
-                dob = parse_date(emp.dob)
-                if dob and dob.month == current_month:
-                    display_date = f"{dob.day:02d}-{dob.strftime('%b')}-{current_year}"
-                    birthdays.append({"emp_id": emp.emp_id, "name": emp.name, "display_dob": display_date, "original_dob": str(emp.dob), "day": dob.day})
+            try:
+                is_active = not emp.end_date or str(emp.end_date).strip() in ("", "none", "None", "0000-00-00", "0000-00-00 00:00:00")
+                if is_active and emp.dob and emp.name:
+                    dob = parse_date(emp.dob)
+                    if dob and dob.month == current_month:
+                        display_date = f"{dob.day:02d}-{dob.strftime('%b')}-{current_year}"
+                        birthdays.append({"emp_id": emp.emp_id, "name": emp.name, "display_dob": display_date, "original_dob": str(emp.dob), "day": dob.day})
+            except Exception as inner_e:
+                print(f"Error processing employee birthday {getattr(emp, 'emp_id', 'unknown')}: {inner_e}")
+                traceback.print_exc()
+                continue
         birthdays.sort(key=lambda x: x["day"])
         return birthdays
     except Exception as e:
         traceback.print_exc()
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        raise HTTPException(status_code=503, detail=f"Database error or format mismatch. Error: {str(e)}")
 
 
 @app.get("/timesheet-month/{emp_id}", response_model=List[schemas.TimesheetResponse])
