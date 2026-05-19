@@ -661,8 +661,20 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
 
         has_2fa = bool(user.auth_key and user.auth_key.strip())
         
+        otp_verified = False
+        if has_2fa and request.authOtp and request.authOtp.strip():
+            ok = verify_authenticator_otp_for_user(user, request.authOtp.strip())
+            if not ok:
+                raise HTTPException(status_code=401, detail="Invalid OTP code")
+            otp_verified = True
+            print(f" [LOGIN 2FA] OTP verified successfully for user '{user.emp_id}'")
+            
+        # Register the device signature either if there's no 2FA (registers on password login),
+        # or if 2FA was successfully verified in this call (registers on Step 2).
+        should_register = (not has_2fa) or otp_verified
+        
         # Check and enforce device lock
-        check_and_register_device(user, request.device_id, db, should_register=not has_2fa)
+        check_and_register_device(user, request.device_id, db, should_register=should_register)
         
         privileges = get_user_privileges(user, db, role_priv=role_priv)
         print(f" Privileges: {len(privileges)} modules loaded")
@@ -677,7 +689,7 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
             "role_name": role_name,
             "user_id": user.emp_id or "",
             "name": user.name or "User",
-            "requires_2fa": has_2fa,
+            "requires_2fa": has_2fa and not otp_verified,
             "privileges": privileges
         }
 
