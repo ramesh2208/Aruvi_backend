@@ -401,8 +401,32 @@ def get_db():
         yield db
     finally:
         db.close()
-        
-        
+
+
+def create_notification(db: Session, emp_id: str, module: str, title: str, message: str, created_by: str):
+    if not emp_id:
+        return
+    try:
+        notif = models.AruviNotification(
+            emp_id=emp_id.strip(),
+            module=module,
+            title=title,
+            message=message,
+            link="",
+            is_read=0,
+            created_by=created_by.strip(),
+            creation_date=datetime.now(),
+            last_updated_by=created_by.strip(),
+            last_update_date=datetime.now()
+        )
+        db.add(notif)
+        db.commit()
+        print(f"✅ Notification created: '{message}' -> to {emp_id}")
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Error creating notification: {e}")
+
+
 def parse_date(d):
     if not d:
         return None
@@ -1881,6 +1905,17 @@ async def apply_leave(
         except Exception as mail_err:
             print(f"❌ Error sending notifications: {mail_err}")
 
+        # Create notification for reporting manager
+        if user and user.assign_manager:
+            create_notification(
+                db=db,
+                emp_id=user.assign_manager,
+                module="Leave",
+                title="Leave",
+                message=f"Leave Request has been raised by {emp_name}",
+                created_by=emp_id
+            )
+
         print(f"✅ Leave request submitted successfully for {emp_id}")
         return {"message": "Leave request submitted successfully", "leave_id": new_leave.l_id}
 
@@ -2101,6 +2136,17 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
                 background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7],
                     f"Leave Request {request_item.action}",
                     f"Your {leave.leave_type} request has been {request_item.action.lower()} by {leave.approved_by or 'Manager'}.")
+        # Create notification for employee (who it goes to)
+        if emp_user:
+            approver_name = leave.approved_by or "Manager"
+            create_notification(
+                db=db,
+                emp_id=emp_user.emp_id,
+                module="Leave",
+                title="Leave",
+                message=f"Leave Request has been {request_item.action.capitalize()} by {approver_name}",
+                created_by=request_item.admin_id
+            )
     except Exception as e:
         print(f" Email_id notification failed: {e}")
     return {"message": f"Leave request {request_item.action.lower()} successfully", "approved_by": leave.approved_by}
@@ -2380,8 +2426,17 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
                 if appr["token"]:
                     background_tasks.add_task(send_expo_push_notification, [appr["token"]],
                         "New OT Request", f"{user.name} requested OT for {ot_date_clean} ({request.duration}).")
-        except Exception as mail_err:
-            print(f" Non-critical OT notification error: {mail_err}")
+        # Create notification for reporting manager
+        if user.assign_manager:
+            create_notification(
+                db=db,
+                emp_id=user.assign_manager,
+                module="OT",
+                title="OT",
+                message=f"OT Request has been raised by {user.name}",
+                created_by=request.emp_id.strip()
+            )
+
         return {"message": "OT request submitted successfully", "ot_id": new_ot.ot_id}
     except HTTPException:
         db.rollback(); raise
@@ -2535,8 +2590,17 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                 if appr["token"]:
                     background_tasks.add_task(send_expo_push_notification, [appr["token"]],
                         "New Permission Request", f"{user.name} requested permission for {request.date} ({f_display} to {t_display}).")
-        except Exception as mail_err:
-            print(f"   Non-critical email error: {mail_err}")
+        # Create notification for reporting manager
+        if user.assign_manager:
+            create_notification(
+                db=db,
+                emp_id=user.assign_manager,
+                module="Permission",
+                title="Permission",
+                message=f"Permission Request has been raised by {user.name}",
+                created_by=user.emp_id
+            )
+
         return {"message": "Permission applied successfully", "p_id": new_perm.p_id, "approved_hrs": approved_hrs, "lop_hrs": round(lop_hrs, 2)}
     except HTTPException:
         db.rollback(); raise
@@ -2628,6 +2692,17 @@ def approve_permission(request: schemas.PermissionApprovalAction, background_tas
             if emp_user.attribute7:
                 background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7],
                     f"Permission Request {new_action}", f"Your permission request for {perm_date} has been {new_action.lower()}.")
+        # Create notification for employee (who it goes to)
+        if emp_user:
+            approver_name = admin_user.name if admin_user else "Manager"
+            create_notification(
+                db=db,
+                emp_id=emp_user.emp_id,
+                module="Permission",
+                title="Permission",
+                message=f"Permission Request has been {new_action.capitalize()} by {approver_name}",
+                created_by=request.admin_id
+            )
     except Exception as e:
         print(f"Email_id notification failed: {e}")
     return {"message": f"Permission {new_action.lower()} successfully"}
@@ -2753,6 +2828,17 @@ def approve_ot(request: schemas.OverTimeApprovalAction, background_tasks: Backgr
             if emp_user.attribute7:
                 background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7],
                     f"OT Request {request.action.upper()}", f"Your OT request for {ot.ot_date} has been {request.action.lower()}.")
+        # Create notification for employee (who it goes to)
+        if emp_user:
+            approver_name = admin_user.name if admin_user else "Manager"
+            create_notification(
+                db=db,
+                emp_id=emp_user.emp_id,
+                module="OT",
+                title="OT",
+                message=f"OT Request has been {request.action.capitalize()} by {approver_name}",
+                created_by=request.admin_id
+            )
     except Exception as e:
         print(f" Email_id notification failed: {e}")
     return {"message": f"OT request {request.action.lower()} successfully"}
@@ -2868,6 +2954,17 @@ def approve_wfh(request: schemas.WFHApprovalAction, background_tasks: Background
             if emp_user.attribute7:
                 background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7],
                     f"WFH Request {request.action.upper()}", f"Your WFH request for {wfh.from_date} has been {request.action.lower()}.")
+        # Create notification for employee (who it goes to)
+        if emp_user:
+            approver_name = admin_user.name if admin_user else "Manager"
+            create_notification(
+                db=db,
+                emp_id=emp_user.emp_id,
+                module="WFH",
+                title="WFH",
+                message=f"WFH Request has been {request.action.capitalize()} by {approver_name}",
+                created_by=request.admin_id
+            )
     except Exception as e:
         print(f" Email_id notification failed: {e}")
     return {"message": f"WFH request {request.action.lower()} successfully"}
@@ -2978,8 +3075,17 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
                     if appr["token"]:
                         background_tasks.add_task(send_expo_push_notification, [appr["token"]],
                             "New WFH Request", f"{user.name} requested WFH from {from_str} to {to_str}.")
-        except Exception as mail_err:
-            print(f" Non-critical WFH notification error: {mail_err}")
+        # Create notification for reporting manager
+        if user and user.assign_manager:
+            create_notification(
+                db=db,
+                emp_id=user.assign_manager,
+                module="WFH",
+                title="WFH",
+                message=f"WFH Request has been raised by {user.name}",
+                created_by=clean_emp_id
+            )
+
         return {"message": "WFH request submitted successfully", "wfh_id": new_wfh.wfh_id}
     except HTTPException:
         db.rollback(); raise
