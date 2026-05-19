@@ -853,16 +853,15 @@ def get_active_employees_devices(db: Session = Depends(get_db)):
         
         result = []
         for emp in employees:
-            if is_device_id_eligible_user(emp, db):
-                raw_device_id = ""
-                if emp.device_id and str(emp.device_id).strip():
-                    raw_device_id = decrypt_device_id(str(emp.device_id).strip())
-                
-                result.append({
-                    "emp_id": emp.emp_id,
-                    "name": emp.name or emp.emp_id,
-                    "device_id": raw_device_id
-                })
+            raw_device_id = ""
+            if emp.device_id and str(emp.device_id).strip():
+                raw_device_id = decrypt_device_id(str(emp.device_id).strip())
+            
+            result.append({
+                "emp_id": emp.emp_id,
+                "name": emp.name or emp.emp_id,
+                "device_id": raw_device_id
+            })
         return result
     except Exception as e:
         print(f" ERROR fetching active employees devices: {str(e)}")
