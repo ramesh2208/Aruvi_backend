@@ -2312,6 +2312,7 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
         raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
 
 
+@app.get("/admin/all-permission-history")
 @app.get("/admin/pending-permissions")
 def get_all_permission_history(manager_id: Optional[str] = None, db: Session = Depends(get_db)):
     try:
