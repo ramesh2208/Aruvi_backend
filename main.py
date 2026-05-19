@@ -407,6 +407,8 @@ def create_notification(db: Session, emp_id: str, module: str, title: str, messa
     if not emp_id:
         return
     try:
+        from datetime import timezone
+        ist_now = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=5, minutes=30)
         notif = models.AruviNotification(
             emp_id=emp_id.strip(),
             module=module,
@@ -415,9 +417,9 @@ def create_notification(db: Session, emp_id: str, module: str, title: str, messa
             link="",
             is_read=0,
             created_by=created_by.strip(),
-            creation_date=datetime.now(),
+            creation_date=ist_now,
             last_updated_by=created_by.strip(),
-            last_update_date=datetime.now()
+            last_update_date=ist_now
         )
         db.add(notif)
         db.commit()
