@@ -1410,6 +1410,37 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
     }
 
 
+@app.get("/check-status/{emp_id}")
+def check_status(emp_id: str, db: Session = Depends(get_db)):
+    emp_id = emp_id.strip()
+    today_date = datetime.now().date()
+    try:
+        checkin_record = db.query(models.CheckIn).filter(
+            func.lower(func.trim(models.CheckIn.emp_id)) == emp_id.lower(),
+            models.CheckIn.t_date == today_date
+        ).order_by(models.CheckIn.check_in_id.desc()).first()
+
+        if checkin_record:
+            return {
+                "checked_in": True,
+                "in_time": checkin_record.in_time,
+                "out_time": checkin_record.out_time,
+                "total_hours": checkin_record.Total_hours or "0Hr 0Min",
+                "status": checkin_record.status
+            }
+        else:
+            return {
+                "checked_in": False,
+                "in_time": None,
+                "out_time": None,
+                "total_hours": "0Hr 0Min",
+                "status": None
+            }
+    except Exception as e:
+        print(f" ERROR checking status for {emp_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error checking status")
+
+
 @app.get("/leave-stats/{emp_id}")
 def get_leave_stats(emp_id: str, db: Session = Depends(get_db)):
     emp_id = emp_id.strip()
