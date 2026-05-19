@@ -890,6 +890,31 @@ def reset_employee_device(emp_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="Failed to reset device ID")
 
 
+@app.get("/verify-device-session/{emp_id}")
+def verify_device_session(emp_id: str, device_id: str, db: Session = Depends(get_db)):
+    emp_id = emp_id.strip()
+    try:
+        user = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()
+        ).first()
+        if not user:
+            return {"valid": False, "reason": "User not found"}
+        
+        # If user has no device registered in DB, they shouldn't be logged in (needs re-registration/login)
+        if not user.device_id or not str(user.device_id).strip():
+            return {"valid": False, "reason": "Device ID reset by admin"}
+        
+        decrypted_mine = decrypt_device_id_raw(str(user.device_id).strip())
+        if decrypted_mine is None or decrypted_mine != device_id.strip():
+            return {"valid": False, "reason": "Device ID mismatch"}
+            
+        return {"valid": True}
+    except Exception as e:
+        print(f" ERROR verifying device session for employee {emp_id}: {str(e)}")
+        # If database fails, return valid so we don't accidentally log out users during transient database drops.
+        return {"valid": True}
+
+
 class GetAuthKeyRequest(BaseModel):
     p_mail: str
 
