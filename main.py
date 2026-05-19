@@ -707,7 +707,8 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
             "user_id": user.emp_id or "",
             "name": user.name or "User",
             "requires_2fa": has_2fa and not otp_verified,
-            "privileges": privileges
+            "privileges": privileges,
+            "has_device_registered": bool(user.device_id and str(user.device_id).strip())
         }
 
     except HTTPException:
@@ -844,11 +845,7 @@ def check_and_register_device(user, device_id: Optional[str], db: Session, shoul
 def get_active_employees_devices(db: Session = Depends(get_db)):
     try:
         employees = db.query(models.EmpDet).filter(
-            or_(
-                models.EmpDet.end_date == None,
-                models.EmpDet.end_date == "",
-                func.trim(models.EmpDet.end_date) == ""
-            )
+            (models.EmpDet.end_date == None) | (models.EmpDet.end_date == "")
         ).order_by(models.EmpDet.name.asc()).all()
         
         result = []
@@ -1019,7 +1016,8 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
         "user_id": user.emp_id or "",
         "name": user.name or "User",
         "requires_2fa": False,
-        "privileges": privileges
+        "privileges": privileges,
+        "has_device_registered": bool(user.device_id and str(user.device_id).strip())
     }
 
 
@@ -1197,6 +1195,47 @@ def get_attendance_logs(manager_id: Optional[str] = None, db: Session = Depends(
             "status": log.status if log and log.status else "Absent"
         })
     return results
+
+
+@app.post("/check-in")
+def check_in(request: schemas.CheckInRequest, db: Session = Depends(get_db)):
+    emp_id = request.emp_id.strip()
+    now = datetime.now()
+    today_date = now.date()
+    try:
+        existing = db.query(models.CheckIn).filter(
+            models.CheckIn.emp_id == emp_id,
+            models.CheckIn.t_date == today_date
+        ).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Already checked in for today")
+        
+        in_time_str = request.in_time.strip() if request.in_time else now.strftime("%H:%M:%S")
+        month_name = now.strftime("%B")
+        day_name = now.strftime("%A")
+        
+        new_checkin = models.CheckIn(
+            emp_id=emp_id,
+            in_time=in_time_str,
+            out_time="",
+            Total_hours="",
+            t_date=today_date,
+            t_day=day_name,
+            month=month_name,
+            status="Present",
+            created_by=emp_id,
+            creation_date=now,
+            last_updated_by=emp_id,
+            last_update_date=now
+        )
+        db.add(new_checkin)
+        db.commit()
+        return {"message": "Checked in successfully", "status": "Present", "in_time": in_time_str}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        handle_db_error(e)
 
 
 @app.post("/check-out")
