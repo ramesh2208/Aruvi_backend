@@ -845,7 +845,10 @@ def check_and_register_device(user, device_id: Optional[str], db: Session, shoul
 def get_active_employees_devices(db: Session = Depends(get_db)):
     try:
         employees = db.query(models.EmpDet).filter(
-            (models.EmpDet.end_date == None) | (models.EmpDet.end_date == "")
+            (models.EmpDet.end_date == None) |
+            (models.EmpDet.end_date == "") |
+            (func.lower(func.trim(models.EmpDet.end_date)) == "none") |
+            (models.EmpDet.end_date.like("0000-00-00%"))
         ).order_by(models.EmpDet.name.asc()).all()
         
         result = []
@@ -1082,7 +1085,10 @@ def sync_privileges(emp_id: str, db: Session = Depends(get_db)):
 def get_employees(manager_id: Optional[str] = None, db: Session = Depends(get_db)):
     try:
         query = db.query(models.EmpDet).filter(
-            (models.EmpDet.end_date == None) | (models.EmpDet.end_date == "")
+            (models.EmpDet.end_date == None) |
+            (models.EmpDet.end_date == "") |
+            (func.lower(func.trim(models.EmpDet.end_date)) == "none") |
+            (models.EmpDet.end_date.like("0000-00-00%"))
         )
         if manager_id:
             query = query.filter(
@@ -1167,7 +1173,10 @@ def get_attendance_logs(manager_id: Optional[str] = None, db: Session = Depends(
     today = datetime.now().date()
     try:
         query = db.query(models.EmpDet).filter(
-            (models.EmpDet.end_date == None) | (models.EmpDet.end_date == "")
+            (models.EmpDet.end_date == None) |
+            (models.EmpDet.end_date == "") |
+            (func.lower(func.trim(models.EmpDet.end_date)) == "none") |
+            (models.EmpDet.end_date.like("0000-00-00%"))
         )
         if manager_id:
             query = query.filter(
@@ -3031,7 +3040,10 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
         except:
             pass
     all_emps = db.query(models.EmpDet).filter(
-        (models.EmpDet.end_date == None) | (models.EmpDet.end_date == "")
+        (models.EmpDet.end_date == None) |
+        (models.EmpDet.end_date == "") |
+        (func.lower(func.trim(models.EmpDet.end_date)) == "none") |
+        (models.EmpDet.end_date.like("0000-00-00%"))
     ).all()
 
     upcoming_events = []
@@ -3265,7 +3277,12 @@ def get_admin_timesheet_employees(month: Optional[str] = None, year: Optional[st
                 except: pass
 
     # 2. Start building employee query
-    emp_query = db.query(models.EmpDet).filter((models.EmpDet.end_date == None) | (models.EmpDet.end_date == ""))
+    emp_query = db.query(models.EmpDet).filter(
+        (models.EmpDet.end_date == None) |
+        (models.EmpDet.end_date == "") |
+        (func.lower(func.trim(models.EmpDet.end_date)) == "none") |
+        (models.EmpDet.end_date.like("0000-00-00%"))
+    )
     if not is_global and requester_id:
         emp_query = emp_query.filter(
             or_(
@@ -4002,7 +4019,12 @@ def get_team_attendance(requester_id: str, start_date: str, end_date: str, db: S
                             is_global = True
                 except: pass
 
-        query = db.query(models.EmpDet).filter((models.EmpDet.end_date == None) | (models.EmpDet.end_date == ""))
+        query = db.query(models.EmpDet).filter(
+            (models.EmpDet.end_date == None) |
+            (models.EmpDet.end_date == "") |
+            (func.lower(func.trim(models.EmpDet.end_date)) == "none") |
+            (models.EmpDet.end_date.like("0000-00-00%"))
+        )
         if not is_global:
             query = query.filter(
                 or_(
