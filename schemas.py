@@ -20,6 +20,7 @@ class Token(BaseModel):
     requires_2fa: Optional[bool] = False
     is_global_admin: Optional[bool] = False
     privileges: Optional[List[dict]] = []
+    has_device_registered: Optional[bool] = False
 
 class CheckInRequest(BaseModel):
     emp_id: str
