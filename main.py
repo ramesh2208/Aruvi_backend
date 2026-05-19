@@ -888,27 +888,6 @@ def reset_employee_device(emp_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         print(f" ERROR resetting device for employee {emp_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to reset device ID")        raise HTTPException(status_code=500, detail="Internal server error")
-
-@app.post("/reset-employee-device/{emp_id}")
-def reset_employee_device(emp_id: str, db: Session = Depends(get_db)):
-    emp_id = emp_id.strip()
-    try:
-        emp = db.query(models.EmpDet).filter(
-            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()
-        ).first()
-        if not emp:
-            raise HTTPException(status_code=404, detail="Employee not found")
-        
-        emp.attribute8 = None
-        db.commit()
-        print(f" [DEVICE LOCK] Device ID reset successfully for employee {emp_id}")
-        return {"message": "Device ID reset successfully"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        print(f" ERROR resetting device for employee {emp_id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to reset device ID")
 
 
