@@ -420,3 +420,42 @@ class ModuleResponse(BaseModel):
     last_updated_by: Optional[str] = None
     last_update_date: Optional[Any] = None
     last_update_login: Optional[str] = None
+
+
+class AruviNotificationBase(BaseModel):
+    emp_id: str
+    module: Optional[str] = None
+    title: str
+    message: str
+    link: Optional[str] = None
+    is_read: Optional[int] = 0
+
+class AruviNotificationCreate(AruviNotificationBase):
+    pass
+
+class AruviNotificationResponse(AruviNotificationBase):
+    model_config = {"from_attributes": True}
+
+    id: int
+    created_by: Optional[str] = None
+    creation_date: Optional[Any] = None
+    last_updated_by: Optional[str] = None
+    last_update_date: Optional[Any] = None
+    last_update_login: Optional[str] = None
+    attribute_category: Optional[str] = None
+    attribute1: Optional[str] = None
+    attribute2: Optional[str] = None
+    attribute3: Optional[str] = None
+    attribute4: Optional[str] = None
+    attribute5: Optional[str] = None
+    attribute6: Optional[str] = None
+    attribute7: Optional[str] = None
+    attribute8: Optional[str] = None
+    attribute9: Optional[str] = None
+    attribute10: Optional[str] = None
+    attribute11: Optional[str] = None
+    attribute12: Optional[str] = None
+    attribute13: Optional[str] = None
+    attribute14: Optional[str] = None
+    attribute15: Optional[str] = None
+
