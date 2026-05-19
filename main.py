@@ -544,6 +544,23 @@ def auto_calculate_hours_endpoint(request: schemas.AutoCalculateHoursRequest, db
     return result
 
 
+def is_device_id_eligible_user(user, db: Session) -> bool:
+    if not user or not user.dom_id:
+        return False
+    try:
+        dom_id_str = str(user.dom_id).strip()
+        if not dom_id_str.isdigit():
+            return False
+        d_id = int(dom_id_str)
+        domain_obj = db.query(models.Domain).filter(models.Domain.dom_id == d_id).first()
+        if domain_obj and domain_obj.domain:
+            dom_name = domain_obj.domain.lower()
+            return any(x in dom_name for x in ["admin", "executive", "management"])
+    except Exception as e:
+        print(f" Error checking domain eligibility: {e}")
+    return False
+
+
 # ─── LOGIN ────────────────────────────────────────────────────────────────────
 
 @app.post("/login", response_model=schemas.Token)
@@ -673,8 +690,9 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         # or if 2FA was successfully verified in this call (registers on Step 2).
         should_register = (not has_2fa) or otp_verified
         
-        # Check and enforce device lock
-        check_and_register_device(user, request.device_id, db, should_register=should_register)
+        # Check and enforce device lock ONLY for eligible domains
+        if is_device_id_eligible_user(user, db):
+            check_and_register_device(user, request.device_id, db, should_register=should_register)
         
         privileges = get_user_privileges(user, db, role_priv=role_priv)
         print(f" Privileges: {len(privileges)} modules loaded")
@@ -836,15 +854,16 @@ def get_active_employees_devices(db: Session = Depends(get_db)):
         
         result = []
         for emp in employees:
-            raw_device_id = ""
-            if emp.attribute8 and str(emp.attribute8).strip():
-                raw_device_id = decrypt_device_id(str(emp.attribute8).strip())
-            
-            result.append({
-                "emp_id": emp.emp_id,
-                "name": emp.name or emp.emp_id,
-                "device_id": raw_device_id
-            })
+            if is_device_id_eligible_user(emp, db):
+                raw_device_id = ""
+                if emp.attribute8 and str(emp.attribute8).strip():
+                    raw_device_id = decrypt_device_id(str(emp.attribute8).strip())
+                
+                result.append({
+                    "emp_id": emp.emp_id,
+                    "name": emp.name or emp.emp_id,
+                    "device_id": raw_device_id
+                })
         return result
     except Exception as e:
         print(f" ERROR fetching active employees devices: {str(e)}")
@@ -938,8 +957,9 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
         raise HTTPException(status_code=401, detail="Invalid Authenticator code")
     print(" 2FA SUCCESS")
 
-    # Enforce and register device lock on successful 2FA validation
-    check_and_register_device(user, request.device_id, db, should_register=True)
+    # Enforce and register device lock on successful 2FA validation ONLY for eligible domains
+    if is_device_id_eligible_user(user, db):
+        check_and_register_device(user, request.device_id, db, should_register=True)
 
     is_global_admin = False
     role_type = "Employee"
