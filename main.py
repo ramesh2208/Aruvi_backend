@@ -690,9 +690,8 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         # or if 2FA was successfully verified in this call (registers on Step 2).
         should_register = (not has_2fa) or otp_verified
         
-        # Check and enforce device lock ONLY for eligible domains
-        if is_device_id_eligible_user(user, db):
-            check_and_register_device(user, request.device_id, db, should_register=should_register)
+        # Check and enforce device lock
+        check_and_register_device(user, request.device_id, db, should_register=should_register)
         
         privileges = get_user_privileges(user, db, role_priv=role_priv)
         print(f" Privileges: {len(privileges)} modules loaded")
@@ -805,13 +804,13 @@ def check_and_register_device(user, device_id: Optional[str], db: Session, shoul
     
     # 1. Check if this device is already assigned to another employee
     all_users_with_devices = db.query(models.EmpDet).filter(
-        models.EmpDet.attribute8 != None,
-        models.EmpDet.attribute8 != "",
+        models.EmpDet.device_id != None,
+        models.EmpDet.device_id != "",
         models.EmpDet.emp_id != user.emp_id
     ).all()
     
     for other_user in all_users_with_devices:
-        decrypted_other = decrypt_device_id_raw(str(other_user.attribute8).strip())
+        decrypted_other = decrypt_device_id_raw(str(other_user.device_id).strip())
         if decrypted_other is not None and decrypted_other == clean_device_id:
             raise HTTPException(
                 status_code=400, 
@@ -819,8 +818,8 @@ def check_and_register_device(user, device_id: Optional[str], db: Session, shoul
             )
         
     # 2. Check if the current user already has a registered device ID
-    if user.attribute8 and str(user.attribute8).strip():
-        decrypted_mine = decrypt_device_id_raw(str(user.attribute8).strip())
+    if user.device_id and str(user.device_id).strip():
+        decrypted_mine = decrypt_device_id_raw(str(user.device_id).strip())
         if decrypted_mine is not None:
             if decrypted_mine != clean_device_id:
                 raise HTTPException(
@@ -830,13 +829,13 @@ def check_and_register_device(user, device_id: Optional[str], db: Session, shoul
         else:
             # Legacy value found! We can register the new device ID!
             if should_register:
-                user.attribute8 = encrypt_device_id(clean_device_id)
+                user.device_id = encrypt_device_id(clean_device_id)
                 db.commit()
-                print(f" [DEVICE LOCK] Overwrote legacy value in attribute8 with device ID '{clean_device_id}' for user '{user.emp_id}'")
+                print(f" [DEVICE LOCK] Overwrote legacy value in device_id with device ID '{clean_device_id}' for user '{user.emp_id}'")
     else:
         # If user has no registered device ID and we are at the successful OTP/login step, register it!
         if should_register:
-            user.attribute8 = encrypt_device_id(clean_device_id)
+            user.device_id = encrypt_device_id(clean_device_id)
             db.commit()
             print(f" [DEVICE LOCK] Registered device ID '{clean_device_id}' for user '{user.emp_id}'")
 
@@ -856,8 +855,8 @@ def get_active_employees_devices(db: Session = Depends(get_db)):
         for emp in employees:
             if is_device_id_eligible_user(emp, db):
                 raw_device_id = ""
-                if emp.attribute8 and str(emp.attribute8).strip():
-                    raw_device_id = decrypt_device_id(str(emp.attribute8).strip())
+                if emp.device_id and str(emp.device_id).strip():
+                    raw_device_id = decrypt_device_id(str(emp.device_id).strip())
                 
                 result.append({
                     "emp_id": emp.emp_id,
@@ -868,6 +867,28 @@ def get_active_employees_devices(db: Session = Depends(get_db)):
     except Exception as e:
         print(f" ERROR fetching active employees devices: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/reset-employee-device/{emp_id}")
+def reset_employee_device(emp_id: str, db: Session = Depends(get_db)):
+    emp_id = emp_id.strip()
+    try:
+        emp = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()
+        ).first()
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        
+        emp.device_id = None
+        db.commit()
+        print(f" [DEVICE LOCK] Device ID reset successfully for employee {emp_id}")
+        return {"message": "Device ID reset successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f" ERROR resetting device for employee {emp_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to reset device ID")        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/reset-employee-device/{emp_id}")
 def reset_employee_device(emp_id: str, db: Session = Depends(get_db)):
@@ -957,9 +978,8 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
         raise HTTPException(status_code=401, detail="Invalid Authenticator code")
     print(" 2FA SUCCESS")
 
-    # Enforce and register device lock on successful 2FA validation ONLY for eligible domains
-    if is_device_id_eligible_user(user, db):
-        check_and_register_device(user, request.device_id, db, should_register=True)
+    # Enforce and register device lock on successful 2FA validation
+    check_and_register_device(user, request.device_id, db, should_register=True)
 
     is_global_admin = False
     role_type = "Employee"
@@ -1136,7 +1156,8 @@ def get_employee_profile(emp_id: str, db: Session = Depends(get_db)):
         "password": user.password,
         "aadhaar_no": user.aadhar_no,
         "pan_no": user.pan_no,
-        "passport_no": user.passport_no
+        "passport_no": user.passport_no,
+        "device_id": decrypt_device_id(user.device_id) if user.device_id else ""
     }
 
 
