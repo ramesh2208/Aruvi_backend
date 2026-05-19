@@ -2426,6 +2426,9 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
                 if appr["token"]:
                     background_tasks.add_task(send_expo_push_notification, [appr["token"]],
                         "New OT Request", f"{user.name} requested OT for {ot_date_clean} ({request.duration}).")
+        except Exception as mail_err:
+            print(f" Non-critical OT notification error: {mail_err}")
+
         # Create notification for reporting manager
         if user.assign_manager:
             create_notification(
@@ -2590,6 +2593,9 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                 if appr["token"]:
                     background_tasks.add_task(send_expo_push_notification, [appr["token"]],
                         "New Permission Request", f"{user.name} requested permission for {request.date} ({f_display} to {t_display}).")
+        except Exception as mail_err:
+            print(f"   Non-critical email error: {mail_err}")
+
         # Create notification for reporting manager
         if user.assign_manager:
             create_notification(
@@ -3075,6 +3081,9 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
                     if appr["token"]:
                         background_tasks.add_task(send_expo_push_notification, [appr["token"]],
                             "New WFH Request", f"{user.name} requested WFH from {from_str} to {to_str}.")
+        except Exception as mail_err:
+            print(f" Non-critical WFH notification error: {mail_err}")
+
         # Create notification for reporting manager
         if user and user.assign_manager:
             create_notification(
