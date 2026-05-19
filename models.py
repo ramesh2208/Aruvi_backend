@@ -67,7 +67,7 @@ class EmpDet(Base):
     attribute5 = Column(String(240))
     attribute6 = Column(String(240))
     attribute7 = Column(String(240))
-    attribute8 = Column(String(240))
+    device_id = Column(String(240))
     assign_manager = Column(String(240))
     project_manager = Column(String(240))
     hr_spoc = Column(String(240))
