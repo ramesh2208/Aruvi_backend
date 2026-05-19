@@ -664,3 +664,37 @@ class RolePrivilege(Base):
     update_prv = Column(String(240))
     delete_prv = Column(String(240))
     permissions = Column(Text)
+
+
+class AruviNotification(Base):
+    __tablename__ = "xxits_aruvi_notifications_t"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    emp_id = Column(String(50))
+    module = Column(String(50))
+    title = Column(String(255))
+    message = Column(Text)
+    link = Column(String(500))
+    is_read = Column(Integer, default=0)
+    created_by = Column(String(250))
+    creation_date = Column(DateTime)
+    last_updated_by = Column(String(250))
+    last_update_date = Column(DateTime)
+    last_update_login = Column(String(250))
+    attribute_category = Column(String(240))
+    attribute1 = Column(String(240))
+    attribute2 = Column(String(240))
+    attribute3 = Column(String(240))
+    attribute4 = Column(String(240))
+    attribute5 = Column(String(240))
+    attribute6 = Column(String(240))
+    attribute7 = Column(String(240))
+    attribute8 = Column(String(240))
+    attribute9 = Column(String(240))
+    attribute10 = Column(String(240))
+    attribute11 = Column(String(240))
+    attribute12 = Column(String(240))
+    attribute13 = Column(String(240))
+    attribute14 = Column(String(240))
+    attribute15 = Column(String(240))
+
