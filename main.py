@@ -47,39 +47,6 @@ def safe_dt(d):
 # ═══════════════════════════════════════════════════════════════════════════════
 # PRIVILEGE SYSTEM - COMPLETE FIXED
 # ═══════════════════════════════════════════════════════════════════════════════
-#
-# MASTER MOD_ID LIST — positional order mirrors PHP session arrays.
-# Backend always returns privileges aligned to this list.
-# Frontend finds by mod_id value (not index).
-#
-# mod_id => module
-#  1  = Attendance (own)
-#  2  = Leave (own)
-#  3  = Timesheet (own)
-#  4  = Permission (own)
-#  5-10 = reserved
-#  11 = Employee list
-#  12 = Timesheet (global/HR)
-#  13 = HR Leave (global)
-#  14 = HR Permission (global)
-#  15 = Attendance (global)
-#  16 = Client
-#  17 = Project (admin + own)
-#  18-32 = reserved
-#  33 = OT (global/HR)
-#  34-53 = reserved
-#  54 = WFH (global)
-#  55-56 = reserved
-#  57 = WFH (own)
-#
-# PRIVILEGE VALUE MEANINGS:
-#   create_prv = 1  → can create
-#   read_prv   = 2  → can read/access page
-#   update_prv = 3  → can update
-#   delete_prv = 4  → can delete
-#   view_prv= 5  → global/HR view (see all employees)
-#   0 = no privilege
-# ═══════════════════════════════════════════════════════════════════════════════
 
 MASTER_MOD_IDS = [
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
@@ -109,7 +76,6 @@ MODULE_NAMES = {
 
 
 def _build_empty_priv(mod_id_val: int = 0) -> dict:
-    """Return a zero-filled privilege dict for a given mod_id."""
     return {
         "mod_id":      mod_id_val,
         "module_name": MODULE_NAMES.get(mod_id_val, f"Module {mod_id_val}"),
@@ -125,7 +91,6 @@ def _build_empty_priv(mod_id_val: int = 0) -> dict:
 
 
 def parse_privilege_array(s):
-    """Split a comma-separated privilege string into list of stripped strings."""
     if not s or not isinstance(s, str):
         return []
     s = s.strip()
@@ -135,7 +100,6 @@ def parse_privilege_array(s):
 
 
 def _safe_int(arr, idx):
-    """Return arr[idx] as int, or 0 on any failure."""
     try:
         if idx < len(arr) and arr[idx].strip().lstrip('-').isdigit():
             return int(arr[idx].strip())
@@ -145,13 +109,7 @@ def _safe_int(arr, idx):
 
 
 def _build_privileges_from_arrays(source_obj) -> list:
-    """
-    Unified logic to build privileges from any object (EmpDet or RolePrivilege)
-    that stores module access as parallel comma-separated strings (arrays).
-    """
-    # 1. Parse all arrays from the source object
     mid_raw = getattr(source_obj, 'mod_array', None) or getattr(source_obj, 'mod_id', None)
-    
     mod_ids_raw = parse_privilege_array(mid_raw)
     create_prvs = parse_privilege_array(getattr(source_obj, 'create_prv', None))
     read_prvs   = parse_privilege_array(getattr(source_obj, 'read_prv',   None))
@@ -161,58 +119,46 @@ def _build_privileges_from_arrays(source_obj) -> list:
     admin_prvs  = parse_privilege_array(getattr(source_obj, 'admin_prv',  None))
     hr_prvs     = parse_privilege_array(getattr(source_obj, 'hr_prv',     None))
 
-    # 2. Build lookup: mod_id_value → position index in the source arrays
     user_mod_index: dict[int, int] = {}
     for i, m in enumerate(mod_ids_raw):
         m = m.strip()
         if m and m.isdigit():
             user_mod_index[int(m)] = i
 
-    # 3. Align results to MASTER_MOD_IDS for consistent response order
     privileges = []
     for master_mod in MASTER_MOD_IDS:
         if master_mod in user_mod_index:
             i = user_mod_index[master_mod]
-            # view_prv is treated as view_prv in this system (value 5)
             vg = _safe_int(view_prvs, i)
             privileges.append({
                 "mod_id":      master_mod,
                 "module_name": MODULE_NAMES.get(master_mod, f"Module {master_mod}"),
-                "create_prv":  _safe_int(create_prvs, i), # 1 = Enabled
-                "read_prv":    _safe_int(read_prvs,   i), # 2 = Enabled
-                "view_prv":    vg,                        # 5 = Global View
-                "update_prv":  _safe_int(update_prvs, i), # 3 = Enabled
-                "delete_prv":  _safe_int(delete_prvs, i), # 4 = Enabled
+                "create_prv":  _safe_int(create_prvs, i),
+                "read_prv":    _safe_int(read_prvs,   i),
+                "view_prv":    vg,
+                "update_prv":  _safe_int(update_prvs, i),
+                "delete_prv":  _safe_int(delete_prvs, i),
                 "admin_prv":   _safe_int(admin_prvs,  i),
                 "hr_prv":      _safe_int(hr_prvs,     i),
                 "permissions": getattr(source_obj, 'permissions', None),
             })
         else:
-            # Module not assigned to user/role
             privileges.append(_build_empty_priv(master_mod))
 
     return privileges
 
 
 def _build_module_based_privileges(user) -> list:
-    """Helper for module-based users (arrays stored in EmpDet)."""
     return _build_privileges_from_arrays(user)
 
 
 def _build_role_based_privileges(priv_rows) -> list:
-    """Helper for role-based users (arrays stored in RolePrivilege)."""
     if not priv_rows:
         return [_build_empty_priv(m) for m in MASTER_MOD_IDS]
-    
-    # In 'array type' logic, the first matching row contains the full arrays
     return _build_privileges_from_arrays(priv_rows[0])
 
 
 def get_user_privileges(user, db, role_priv=None) -> list:
-    """
-    Single entry-point: return privilege list for any EmpDet user.
-    Always returns list aligned to MASTER_MOD_IDS (same length, same order).
-    """
     emp_role_type = (getattr(user, 'role_type', '') or '').strip().lower()
 
     if emp_role_type in ('module based', 'module_based'):
@@ -227,7 +173,6 @@ def get_user_privileges(user, db, role_priv=None) -> list:
             if role_priv:
                 privs = _build_role_based_privileges([role_priv])
             else:
-                # Convert rpd_id to int as it's the primary key in RolePrivilege
                 r_id = int(str(user.rpd_id).strip())
                 priv_rows = (
                     db.query(models.RolePrivilege)
@@ -293,17 +238,6 @@ router = APIRouter()
 test_db_connection()
 
 
-# @app.get("/test-db")
-# def test_db():
-#     my_ip = requests.get("https://api.ipify.org").text
-#     try:
-#         sock = socket.create_connection(("184.168.119.82", 3306), timeout=5)
-#         sock.close()
-#         return {"render_ip": my_ip, "mysql_port": "OPEN ✅"}
-#     except Exception as e:
-#         return {"render_ip": my_ip, "mysql_port": f"BLOCKED ❌ - {str(e)}"}
-
-
 def run_migrations_with_retry(max_retries: int = 3, delay: int = 5):
     for attempt in range(1, max_retries + 1):
         try:
@@ -340,7 +274,6 @@ def create_tables_with_retry(max_retries: int = 5, delay: int = 5):
             if any(term in err_msg for term in ["is not allowed to connect", "1130", "timed out", "2003"]):
                 try:
                     current_ip = requests.get("https://api.ipify.org?format=json", timeout=2).json().get("ip")
-                    # print(f"⚠️  CONNECTION BLOCKED OR TIMED OUT: Please ensure '{current_ip}' is whitelisted in GoDaddy Remote MySQL.")
                 except: pass
             if attempt < max_retries:
                 print(f"   Retrying in {delay}s...")
@@ -477,7 +410,7 @@ def parse_date(d):
             except:
                 pass
     formats = (
-        "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", 
+        "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y",
         "%Y/%m/%d", "%d.%m.%Y", "%Y.%m.%d",
         "%d-%b-%Y", "%d/%b/%Y", "%d %b %Y",
         "%d-%b-%y", "%d/%b/%y", "%d %b %y",
@@ -571,19 +504,20 @@ def auto_calculate_hours_endpoint(request: schemas.AutoCalculateHoursRequest, db
 
 
 def is_device_id_eligible_user(user, db: Session) -> bool:
-    if not user or not user.dom_id:
-        return False
-    try:
-        dom_id_str = str(user.dom_id).strip()
-        if not dom_id_str.isdigit():
-            return False
-        d_id = int(dom_id_str)
-        domain_obj = db.query(models.Domain).filter(models.Domain.dom_id == d_id).first()
-        if domain_obj and domain_obj.domain:
-            dom_name = domain_obj.domain.lower()
-            return any(x in dom_name for x in ["admin", "executive", "management"])
-    except Exception as e:
-        print(f" Error checking domain eligibility: {e}")
+    # ── DEVICE ID FEATURE DISABLED ──
+    # if not user or not user.dom_id:
+    #     return False
+    # try:
+    #     dom_id_str = str(user.dom_id).strip()
+    #     if not dom_id_str.isdigit():
+    #         return False
+    #     d_id = int(dom_id_str)
+    #     domain_obj = db.query(models.Domain).filter(models.Domain.dom_id == d_id).first()
+    #     if domain_obj and domain_obj.domain:
+    #         dom_name = domain_obj.domain.lower()
+    #         return any(x in dom_name for x in ["admin", "executive", "management"])
+    # except Exception as e:
+    #     print(f" Error checking domain eligibility: {e}")
     return False
 
 
@@ -603,7 +537,6 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
             raise HTTPException(status_code=500, detail="Database connection failed")
 
         try:
-            # Optimize user lookup: Try direct matches first to leverage potential indexes
             user = db.query(models.EmpDet).filter(
                 or_(
                     models.EmpDet.p_mail == username_input,
@@ -665,11 +598,11 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         # ── Role & Domain Logic ──────────────────────────────────────────
         top_roles = ["Admin", "Management", "Executive", "Project Management"]
         top_domains = [1, 2, 3, 9]
-        
+
         role_name = ""
+        role_priv = None
         if user.rpd_id:
             try:
-                # rpd_id is stored as string in EmpDet but int in RolePrivilege primary key
                 r_id = int(str(user.rpd_id).strip())
                 role_priv = db.query(models.RolePrivilege).filter(models.RolePrivilege.rpd_id == r_id).first()
                 if role_priv:
@@ -688,7 +621,6 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         is_super_global = any(tr.lower() in role_name.lower() for tr in top_roles) if role_name else False
         is_super_global = is_super_global or is_domain_top
 
-        # Faster manager check: direct column comparison
         clean_emp_id = user.emp_id.strip()
         is_manager = db.query(models.EmpDet).filter(
             or_(
@@ -698,12 +630,10 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         ).first() is not None
 
         role_type = "Admin" if (is_manager or is_super_global) else "Employee"
-        
-        # As per requirement: "show everything" is STRICTLY limited to domain IDs 1, 2, 3, 9
         is_global_admin = is_domain_top
 
         has_2fa = bool(user.auth_key and user.auth_key.strip())
-        
+
         otp_verified = False
         if has_2fa and request.authOtp and request.authOtp.strip():
             ok = verify_authenticator_otp_for_user(user, request.authOtp.strip())
@@ -711,14 +641,11 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
                 raise HTTPException(status_code=401, detail="Invalid OTP code")
             otp_verified = True
             print(f" [LOGIN 2FA] OTP verified successfully for user '{user.emp_id}'")
-            
-        # Register the device signature either if there's no 2FA (registers on password login),
-        # or if 2FA was successfully verified in this call (registers on Step 2).
-        should_register = (not has_2fa) or otp_verified
-        
-        # Check and enforce device lock
-        check_and_register_device(user, request.device_id, db, should_register=should_register)
-        
+
+        # ── DEVICE ID CHECK DISABLED ──
+        # should_register = (not has_2fa) or otp_verified
+        # check_and_register_device(user, request.device_id, db, should_register=should_register)
+
         privileges = get_user_privileges(user, db, role_priv=role_priv)
         print(f" Privileges: {len(privileges)} modules loaded")
         print("=" * 60)
@@ -734,7 +661,6 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
             "name": user.name or "User",
             "requires_2fa": has_2fa and not otp_verified,
             "privileges": privileges,
-            "has_device_registered": bool(user.device_id and str(user.device_id).strip())
         }
 
     except HTTPException:
@@ -760,7 +686,6 @@ def forgot_password(request: schemas.ForgotPasswordRequest, background_tasks: Ba
     print(f" Generated OTP: {otp}")
 
 @app.post("/verify-otp")
-
 def verify_otp(request: schemas.VerifyOtpRequest):
     email = request.email.strip().lower()
     otp = request.otp.strip()
@@ -774,6 +699,7 @@ def verify_otp(request: schemas.VerifyOtpRequest):
     raise HTTPException(status_code=400, detail="Invalid OTP")
 
 
+# ── FERNET KEY (used for 2FA auth_key encryption) ──
 FERNET_KEY = "8wXVu4azfUZx6g0yJOC4FFXG7O5WzFn1WyVTxmEtHQ0="
 
 
@@ -787,158 +713,162 @@ def decrypt_auth_key_fernet(encrypted_auth_key: str) -> str:
         raise HTTPException(status_code=500, detail="Failed to decrypt 2FA secret")
 
 
-def encrypt_device_id(device_id: str) -> str:
-    try:
-        if not device_id or not device_id.strip():
-            return ""
-        fernet = Fernet(FERNET_KEY.encode())
-        return fernet.encrypt(device_id.strip().encode()).decode()
-    except Exception as e:
-        print(f" Encryption error: {str(e)}")
-        return device_id
+# ══════════════════════════════════════════════════════════════════
+# DEVICE ID FUNCTIONS - COMMENTED OUT (DISABLED)
+# ══════════════════════════════════════════════════════════════════
 
-def decrypt_device_id_raw(encrypted_device_id: str) -> Optional[str]:
-    try:
-        if not encrypted_device_id or not encrypted_device_id.strip():
-            return None
-        val = encrypted_device_id.strip()
-        if not val.startswith("gAAAAA"):
-            return None
-        fernet = Fernet(FERNET_KEY.encode())
-        return fernet.decrypt(val.encode()).decode()
-    except Exception as e:
-        print(f" Decryption error during raw check: {str(e)}")
-        return None
+# def encrypt_device_id(device_id: str) -> str:
+#     try:
+#         if not device_id or not device_id.strip():
+#             return ""
+#         fernet = Fernet(FERNET_KEY.encode())
+#         return fernet.encrypt(device_id.strip().encode()).decode()
+#     except Exception as e:
+#         print(f" Encryption error: {str(e)}")
+#         return device_id
 
-def decrypt_device_id(encrypted_device_id: str) -> str:
-    try:
-        if not encrypted_device_id or not encrypted_device_id.strip():
-            return ""
-        val = encrypted_device_id.strip()
-        if not val.startswith("gAAAAA"):
-            return ""
-        fernet = Fernet(FERNET_KEY.encode())
-        return fernet.decrypt(val.encode()).decode()
-    except Exception as e:
-        print(f" Decryption error: {str(e)}")
-        return ""
+# def decrypt_device_id_raw(encrypted_device_id: str) -> Optional[str]:
+#     try:
+#         if not encrypted_device_id or not encrypted_device_id.strip():
+#             return None
+#         val = encrypted_device_id.strip()
+#         if not val.startswith("gAAAAA"):
+#             return None
+#         fernet = Fernet(FERNET_KEY.encode())
+#         return fernet.decrypt(val.encode()).decode()
+#     except Exception as e:
+#         print(f" Decryption error during raw check: {str(e)}")
+#         return None
 
-def check_and_register_device(user, device_id: Optional[str], db: Session, should_register: bool = False):
-    if not device_id or not str(device_id).strip():
-        return
-    
-    clean_device_id = str(device_id).strip()
-    
-    # 1. Check if this device is already assigned to another employee
-    all_users_with_devices = db.query(models.EmpDet).filter(
-        models.EmpDet.device_id != None,
-        models.EmpDet.device_id != "",
-        models.EmpDet.emp_id != user.emp_id
-    ).all()
-    
-    for other_user in all_users_with_devices:
-        decrypted_other = decrypt_device_id_raw(str(other_user.device_id).strip())
-        if decrypted_other is not None and decrypted_other == clean_device_id:
-            raise HTTPException(
-                status_code=400, 
-                detail="Invalid device: This device is already registered to another user."
-            )
-        
-    # 2. Check if the current user already has a registered device ID
-    if user.device_id and str(user.device_id).strip():
-        decrypted_mine = decrypt_device_id_raw(str(user.device_id).strip())
-        if decrypted_mine is not None:
-            if decrypted_mine != clean_device_id:
-                raise HTTPException(
-                    status_code=400, 
-                    detail="Invalid device: This account is locked to a different device."
-                )
-        else:
-            # Legacy value found! We can register the new device ID!
-            if should_register:
-                user.device_id = encrypt_device_id(clean_device_id)
-                db.commit()
-                print(f" [DEVICE LOCK] Overwrote legacy value in device_id with device ID '{clean_device_id}' for user '{user.emp_id}'")
-    else:
-        # If user has no registered device ID and we are at the successful OTP/login step, register it!
-        if should_register:
-            user.device_id = encrypt_device_id(clean_device_id)
-            db.commit()
-            print(f" [DEVICE LOCK] Registered device ID '{clean_device_id}' for user '{user.emp_id}'")
+# def decrypt_device_id(encrypted_device_id: str) -> str:
+#     try:
+#         if not encrypted_device_id or not encrypted_device_id.strip():
+#             return ""
+#         val = encrypted_device_id.strip()
+#         if not val.startswith("gAAAAA"):
+#             return ""
+#         fernet = Fernet(FERNET_KEY.encode())
+#         return fernet.decrypt(val.encode()).decode()
+#     except Exception as e:
+#         print(f" Decryption error: {str(e)}")
+#         return ""
 
+# def check_and_register_device(user, device_id: Optional[str], db: Session, should_register: bool = False):
+#     if not device_id or not str(device_id).strip():
+#         return
+#
+#     clean_device_id = str(device_id).strip()
+#
+#     # 1. Check if this device is already assigned to another employee
+#     all_users_with_devices = db.query(models.EmpDet).filter(
+#         models.EmpDet.device_id != None,
+#         models.EmpDet.device_id != "",
+#         models.EmpDet.emp_id != user.emp_id
+#     ).all()
+#
+#     for other_user in all_users_with_devices:
+#         decrypted_other = decrypt_device_id_raw(str(other_user.device_id).strip())
+#         if decrypted_other is not None and decrypted_other == clean_device_id:
+#             raise HTTPException(
+#                 status_code=400,
+#                 detail="Invalid device: This device is already registered to another user."
+#             )
+#
+#     # 2. Check if the current user already has a registered device ID
+#     if user.device_id and str(user.device_id).strip():
+#         decrypted_mine = decrypt_device_id_raw(str(user.device_id).strip())
+#         if decrypted_mine is not None:
+#             if decrypted_mine != clean_device_id:
+#                 raise HTTPException(
+#                     status_code=400,
+#                     detail="Invalid device: This account is locked to a different device."
+#                 )
+#         else:
+#             if should_register:
+#                 user.device_id = encrypt_device_id(clean_device_id)
+#                 db.commit()
+#                 print(f" [DEVICE LOCK] Overwrote legacy value in device_id for user '{user.emp_id}'")
+#     else:
+#         if should_register:
+#             user.device_id = encrypt_device_id(clean_device_id)
+#             db.commit()
+#             print(f" [DEVICE LOCK] Registered device ID '{clean_device_id}' for user '{user.emp_id}'")
 
-@app.get("/active-employees-devices")
-def get_active_employees_devices(db: Session = Depends(get_db)):
-    try:
-        employees = db.query(models.EmpDet).filter(
-            (models.EmpDet.end_date == None) |
-            (models.EmpDet.end_date == "") |
-            (func.lower(func.trim(models.EmpDet.end_date)) == "none") |
-            (models.EmpDet.end_date.like("0000-00-00%"))
-        ).order_by(models.EmpDet.name.asc()).all()
-        
-        result = []
-        for emp in employees:
-            raw_device_id = ""
-            if emp.device_id and str(emp.device_id).strip():
-                raw_device_id = decrypt_device_id(str(emp.device_id).strip())
-            
-            result.append({
-                "emp_id": emp.emp_id,
-                "name": emp.name or emp.emp_id,
-                "device_id": raw_device_id
-            })
-        return result
-    except Exception as e:
-        print(f" ERROR fetching active employees devices: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+# ══════════════════════════════════════════════════════════════════
+# DEVICE ID ENDPOINTS - COMMENTED OUT (DISABLED)
+# ══════════════════════════════════════════════════════════════════
 
-
-@app.post("/reset-employee-device/{emp_id}")
-def reset_employee_device(emp_id: str, db: Session = Depends(get_db)):
-    emp_id = emp_id.strip()
-    try:
-        emp = db.query(models.EmpDet).filter(
-            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()
-        ).first()
-        if not emp:
-            raise HTTPException(status_code=404, detail="Employee not found")
-        
-        emp.device_id = None
-        db.commit()
-        print(f" [DEVICE LOCK] Device ID reset successfully for employee {emp_id}")
-        return {"message": "Device ID reset successfully"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        print(f" ERROR resetting device for employee {emp_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to reset device ID")
+# @app.get("/active-employees-devices")
+# def get_active_employees_devices(db: Session = Depends(get_db)):
+#     try:
+#         employees = db.query(models.EmpDet).filter(
+#             (models.EmpDet.end_date == None) |
+#             (models.EmpDet.end_date == "") |
+#             (func.lower(func.trim(models.EmpDet.end_date)) == "none") |
+#             (models.EmpDet.end_date.like("0000-00-00%"))
+#         ).order_by(models.EmpDet.name.asc()).all()
+#
+#         result = []
+#         for emp in employees:
+#             raw_device_id = ""
+#             if emp.device_id and str(emp.device_id).strip():
+#                 raw_device_id = decrypt_device_id(str(emp.device_id).strip())
+#             result.append({
+#                 "emp_id": emp.emp_id,
+#                 "name": emp.name or emp.emp_id,
+#                 "device_id": raw_device_id
+#             })
+#         return result
+#     except Exception as e:
+#         print(f" ERROR fetching active employees devices: {str(e)}")
+#         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/verify-device-session/{emp_id}")
-def verify_device_session(emp_id: str, device_id: str, db: Session = Depends(get_db)):
-    emp_id = emp_id.strip()
-    try:
-        user = db.query(models.EmpDet).filter(
-            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()
-        ).first()
-        if not user:
-            return {"valid": False, "reason": "User not found"}
-        
-        # If user has no device registered in DB, they shouldn't be logged in (needs re-registration/login)
-        if not user.device_id or not str(user.device_id).strip():
-            return {"valid": False, "reason": "Device ID reset by admin"}
-        
-        decrypted_mine = decrypt_device_id_raw(str(user.device_id).strip())
-        if decrypted_mine is None or decrypted_mine != device_id.strip():
-            return {"valid": False, "reason": "Device ID mismatch"}
-            
-        return {"valid": True}
-    except Exception as e:
-        print(f" ERROR verifying device session for employee {emp_id}: {str(e)}")
-        # If database fails, return valid so we don't accidentally log out users during transient database drops.
-        return {"valid": True}
+# @app.post("/reset-employee-device/{emp_id}")
+# def reset_employee_device(emp_id: str, db: Session = Depends(get_db)):
+#     emp_id = emp_id.strip()
+#     try:
+#         emp = db.query(models.EmpDet).filter(
+#             func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()
+#         ).first()
+#         if not emp:
+#             raise HTTPException(status_code=404, detail="Employee not found")
+#
+#         emp.device_id = None
+#         db.commit()
+#         print(f" [DEVICE LOCK] Device ID reset successfully for employee {emp_id}")
+#         return {"message": "Device ID reset successfully"}
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         db.rollback()
+#         print(f" ERROR resetting device for employee {emp_id}: {str(e)}")
+#         raise HTTPException(status_code=500, detail="Failed to reset device ID")
+
+
+# @app.get("/verify-device-session/{emp_id}")
+# def verify_device_session(emp_id: str, device_id: str, db: Session = Depends(get_db)):
+#     emp_id = emp_id.strip()
+#     try:
+#         user = db.query(models.EmpDet).filter(
+#             func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()
+#         ).first()
+#         if not user:
+#             return {"valid": False, "reason": "User not found"}
+#
+#         if not user.device_id or not str(user.device_id).strip():
+#             return {"valid": False, "reason": "Device ID reset by admin"}
+#
+#         decrypted_mine = decrypt_device_id_raw(str(user.device_id).strip())
+#         if decrypted_mine is None or decrypted_mine != device_id.strip():
+#             return {"valid": False, "reason": "Device ID mismatch"}
+#
+#         return {"valid": True}
+#     except Exception as e:
+#         print(f" ERROR verifying device session for employee {emp_id}: {str(e)}")
+#         return {"valid": True}
+
+# ══════════════════════════════════════════════════════════════════
 
 
 class GetAuthKeyRequest(BaseModel):
@@ -1007,8 +937,8 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
         raise HTTPException(status_code=401, detail="Invalid Authenticator code")
     print(" 2FA SUCCESS")
 
-    # Enforce and register device lock on successful 2FA validation
-    check_and_register_device(user, request.device_id, db, should_register=True)
+    # ── DEVICE ID REGISTRATION DISABLED ──
+    # check_and_register_device(user, request.device_id, db, should_register=True)
 
     is_global_admin = False
     role_type = "Employee"
@@ -1031,7 +961,6 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
     if is_manager and role_type != "Admin":
         role_type = "Admin"
 
-    # ── Get privileges (works for BOTH module-based AND role-based) ──────────
     privileges = get_user_privileges(user, db)
     print(f" Privileges: {len(privileges)} modules loaded")
     print("=" * 60)
@@ -1046,7 +975,7 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
         "name": user.name or "User",
         "requires_2fa": False,
         "privileges": privileges,
-        "has_device_registered": bool(user.device_id and str(user.device_id).strip())
+        # "has_device_registered": bool(user.device_id and str(user.device_id).strip())  # DEVICE ID DISABLED
     }
 
 
@@ -1083,11 +1012,6 @@ def reset_password(request: schemas.ResetPasswordRequest, db: Session = Depends(
 # ─── SYNC PRIVILEGE ──────────────────────────────────────────────────────────
 @app.get("/sync-privileges/{emp_id}")
 def sync_privileges(emp_id: str, db: Session = Depends(get_db)):
-    """
-    Returns current privileges for an employee.
-    Always returns list aligned to MASTER_MOD_IDS.
-    Called by the app on pull-to-refresh.
-    """
     emp_id = emp_id.strip()
     try:
         user = (
@@ -1150,8 +1074,6 @@ def get_employees(manager_id: Optional[str] = None, db: Session = Depends(get_db
     return results
 
 
-        
-        
 @app.get("/employee-profile/{emp_id}", response_model=schemas.EmployeeProfileResponse)
 def get_employee_profile(emp_id: str, db: Session = Depends(get_db)):
     emp_id = emp_id.strip()
@@ -1190,7 +1112,7 @@ def get_employee_profile(emp_id: str, db: Session = Depends(get_db)):
         "aadhaar_no": user.aadhar_no,
         "pan_no": user.pan_no,
         "passport_no": user.passport_no,
-        "device_id": decrypt_device_id(user.device_id) if user.device_id else ""
+        "device_id": ""  # DEVICE ID DISABLED - always return empty string
     }
 
 
