@@ -19,8 +19,10 @@ class Token(BaseModel):
     gender: Optional[str] = None
     requires_2fa: Optional[bool] = False
     is_global_admin: Optional[bool] = False
+    role_name: Optional[str] = None
     privileges: Optional[List[dict]] = []
     has_device_registered: Optional[bool] = False
+    auth_timer: Optional[int] = 30
 
 class CheckInRequest(BaseModel):
     emp_id: str
