@@ -3677,7 +3677,15 @@ def get_domains(dom_id: Optional[str] = None, db: Session = Depends(get_db)):
 
 @app.get("/admin/employees/brief", response_model=List[schemas.EmployeeBriefResponse])
 def get_employees_brief(db: Session = Depends(get_db)):
-    employees = db.query(models.EmpDet.emp_id, models.EmpDet.name, models.EmpDet.role_id, models.EmpDet.dpt_id, models.EmpDet.dom_id).all()
+    employees = db.query(
+        models.EmpDet.emp_id,
+        models.EmpDet.name,
+        models.EmpDet.role_id,
+        models.EmpDet.dpt_id,
+        models.EmpDet.dom_id
+    ).filter(
+        or_(models.EmpDet.end_date.is_(None), models.EmpDet.end_date == '')
+    ).all()
     return [{"emp_id": e.emp_id, "name": e.name, "role_id": e.role_id, "dpt_id": e.dpt_id, "dom_id": e.dom_id} for e in employees]
 
 
