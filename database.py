@@ -1,36 +1,41 @@
+import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from urllib.parse import quote_plus
 
-import os
-
-# Use environment variables from Render, falling back to your verified IP
+# DB Credentials
 USERNAME = os.getenv("DB_USER", "aruvitest")
 PASSWORD = os.getenv("DB_PASSWORD", "Ti*&#V*&urAtEst")
 HOST = os.getenv("DB_HOST", "184.168.119.82")
 PORT = os.getenv("DB_PORT", "3306")
 DATABASE = os.getenv("DB_NAME", "aruvi_test")
 
+# Encode password
 encoded_password = quote_plus(PASSWORD)
 
-# Switching to official mysqlconnector for better remote connectivity
-SQLALCHEMY_DATABASE_URL = f"mysql+mysqlconnector://{USERNAME}:{encoded_password}@{HOST}:{PORT}/{DATABASE}"
+# MySQL URL
+SQLALCHEMY_DATABASE_URL = (
+    f"mysql+mysqlconnector://{USERNAME}:{encoded_password}@{HOST}:{PORT}/{DATABASE}"
+)
 
+# Engine
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
     pool_pre_ping=True,
-    pool_recycle=300,
-    pool_size=3,
-    max_overflow=5,
-    connect_args={
-        "connection_timeout": 60
-    }
+    pool_recycle=300
 )
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Session
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine
+)
+
 Base = declarative_base()
 
+# DB Dependency
 def get_db():
     db = SessionLocal()
     try:
@@ -38,13 +43,15 @@ def get_db():
     finally:
         db.close()
 
-# Startup test
+# Test Connection
 def test_db_connection():
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        print("✅ DB Connected successfully!")
+
+        print("✅ MySQL Connected Successfully!")
         return True
+
     except Exception as e:
-        print(f"❌ DB Connection FAILED: {e}")
+        print(f"❌ Connection Failed: {e}")
         return False
