@@ -485,17 +485,35 @@ class Project(Base):
 
 
 class Department(Base):
-    __tablename__ = "xxits_aruvi_dept_t"
+    __tablename__ = "xxits_aruvi_department_t"
 
     dpt_id = Column(Integer, primary_key=True, autoincrement=True)
-    department_ref_no = Column(String(150))
+    department_ref_no = Column(String(1000))
     department = Column(String(100))
     description = Column(String(100))
-    status = Column(String(20))
+    status = Column(String(100))
+    dom_id = Column(Integer)
+    attribute_category = Column(String(240))
+    attribute1 = Column(String(240))
+    attribute2 = Column(String(240))
+    attribute3 = Column(String(240))
+    attribute4 = Column(String(240))
+    attribute5 = Column(String(240))
+    attribute6 = Column(String(240))
+    attribute7 = Column(String(240))
+    attribute8 = Column(String(240))
+    attribute9 = Column(String(240))
+    attribute10 = Column(String(240))
+    attribute11 = Column(String(240))
+    attribute12 = Column(String(240))
+    attribute13 = Column(String(240))
+    attribute14 = Column(String(240))
+    attribute15 = Column(String(240))
     created_by = Column(String(100))
     creation_date = Column(DateTime)
     last_updated_by = Column(String(100))
     last_update_date = Column(DateTime)
+    last_update_login = Column(String(255))
 
 class Role(Base):
     __tablename__ = "xxits_aruvi_role_t"
