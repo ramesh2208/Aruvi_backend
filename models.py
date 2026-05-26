@@ -244,17 +244,20 @@ class WFHDet(Base):
     __tablename__ = "xxits_aruvi_wfh_det_t"
 
     wfh_id = Column(Integer, primary_key=True, autoincrement=True)
-    from_date = Column(String(20), nullable=False)
+    date = Column(String(20), nullable=False)
     emp_id = Column(String(50), nullable=False)
     to_date = Column(String(20), nullable=False)
     days = Column(String(15), nullable=False)
     reason = Column(String(2000), nullable=False)
     status = Column(String(20), nullable=False)
+    approved_by = Column(String(250), nullable=True)
+    remarks = Column(String(2000), nullable=True)
     created_by = Column(String(250), nullable=False)
     creation_date = Column(DateTime, nullable=False)
     last_updated_by = Column(String(250), nullable=False)
     last_update_date = Column(DateTime, nullable=False)
     last_update_login = Column(String(250), nullable=False)
+    
 
 
 
