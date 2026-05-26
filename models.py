@@ -244,7 +244,7 @@ class WFHDet(Base):
     __tablename__ = "xxits_aruvi_wfh_det_t"
 
     wfh_id = Column(Integer, primary_key=True, autoincrement=True)
-    date = Column(String(20), nullable=False)
+    from_date = Column("date", String(20), nullable=False)
     emp_id = Column(String(50), nullable=False)
     to_date = Column(String(20), nullable=False)
     days = Column(String(15), nullable=False)
