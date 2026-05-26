@@ -1067,21 +1067,36 @@ def get_employees(
     except Exception as e:
         handle_db_error(e)
     results = []
+    
+    # Pre-fetch domains and employee manager names to avoid N+1 queries in the loop
+    domains_map = {}
+    try:
+        domains_map = {d.dom_id: d.domain for d in db.query(models.Domain.dom_id, models.Domain.domain).all() if d.dom_id}
+    except Exception as e:
+        print(f"Error pre-fetching domains: {e}")
+
+    manager_map = {}
+    try:
+        manager_map = {e.emp_id: e.name for e in db.query(models.EmpDet.emp_id, models.EmpDet.name).all() if e.emp_id}
+    except Exception as e:
+        print(f"Error pre-fetching manager names: {e}")
+
     for emp in employees:
         if not emp:
             continue
         domain_name = "Employee"
         if emp.dom_id:
-            domain = db.query(models.Domain).filter(models.Domain.dom_id == emp.dom_id).first()
-            if domain:
-                domain_name = domain.domain
+            try:
+                # dom_id can be string in EmpDet but integer in Domain model
+                d_id = int(emp.dom_id) if str(emp.dom_id).isdigit() else emp.dom_id
+                domain_name = domains_map.get(d_id, "Employee")
+            except Exception:
+                pass
                 
         manager_name = emp.assign_manager or "N/A"
         if emp.assign_manager:
-            mgr = db.query(models.EmpDet).filter(models.EmpDet.emp_id == emp.assign_manager).first()
-            if mgr and mgr.name:
-                manager_name = mgr.name
-                
+            manager_name = manager_map.get(emp.assign_manager, emp.assign_manager)
+            
         results.append({
             "id": emp.emp_id,
             "name": emp.name or "Unknown",
