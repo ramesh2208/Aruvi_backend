@@ -1508,7 +1508,8 @@ def get_leave_history(emp_id: str, db: Session = Depends(get_db)):
     return [
         {"l_id": row.l_id, "leaveType": row.leave_type, "leave_type": row.leave_type,
         "from_date": row.from_date, "to_date": row.to_date, "days": row.days,
-        "reason": row.reason, "status": row.status, "remarks": row.remarks, "revision": row.revision}
+        "reason": row.reason, "status": row.status, "remarks": row.remarks, "revision": row.revision,
+        "file": row.file, "attribute14": row.attribute14}
         for row in history
     ]
 
