@@ -3874,7 +3874,7 @@ def get_clients(
         last_update_dt = safe_dt(c.last_update_date)
         res.append({
             "client_id": c.cl_id, "client_ref_no": c.client_ref_no, "client_name": c.client_name,
-            "client_type": c.client_type,
+            "client_type": getattr(c, "client_type", None),
             "mobile_no": c.mobile_no, "country_code": c.country_code, "email_id": c.email,
             "gst_available": c.gst, "gst": c.gst_no, "msme_available": c.msme, "msme": c.msme_no,
             "pan_no": c.pan, "address": c.address, "status": c.status or "Active",
