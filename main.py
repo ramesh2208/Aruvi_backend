@@ -1,5 +1,6 @@
 from fastapi.openapi import constants
 from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, Form, BackgroundTasks
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
@@ -29,7 +30,6 @@ from cryptography.fernet import Fernet
 from sqlalchemy import extract
 import sqlalchemy
 import sys
-
 import socket
 import requests
 
@@ -232,6 +232,25 @@ def handle_db_error(e: Exception):
 
 
 app = FastAPI()
+
+# Mount static directory for public files download
+os.makedirs("uploads/attachments", exist_ok=True)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
+@app.post("/admin/upload-file")
+def upload_file(file: UploadFile = File(...)):
+    try:
+        upload_dir = "uploads/attachments"
+        os.makedirs(upload_dir, exist_ok=True)
+        file_extension = file.filename.split('.')[-1] if '.' in file.filename else 'bin'
+        file_name = f"attach_{int(time.time())}_{random.randint(1000, 9999)}.{file_extension}"
+        file_path = os.path.join(upload_dir, file_name)
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        return {"uri": f"uploads/attachments/{file_name}", "name": file.filename, "type": file.content_type}
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 router = APIRouter()
 
@@ -3534,11 +3553,33 @@ def get_projects(
     
     if search:
         search_filter = f"%{search}%"
+        # Find all client ref nos matching client name or company name
+        matching_clients = db.query(models.CompanyClient.client_ref_no).filter(
+            or_(
+                models.CompanyClient.client_name.ilike(search_filter),
+                models.CompanyClient.company_name.ilike(search_filter)
+            )
+        ).all()
+        matching_client_refs = [c[0] for c in matching_clients if c[0]]
+
+        # Find all employee IDs matching employee name
+        matching_employees = db.query(models.EmpDet.emp_id).filter(
+            models.EmpDet.name.ilike(search_filter)
+        ).all()
+        matching_emp_ids = [e[0] for e in matching_employees if e[0]]
+
         query = query.filter(
             or_(
                 models.Project.project_name.ilike(search_filter),
                 models.Project.project_ref_no.ilike(search_filter),
-                models.Project.client_ref_no.ilike(search_filter)
+                models.Project.client_ref_no.ilike(search_filter),
+                models.Project.client_ref_no.in_(matching_client_refs),
+                models.Project.project_manager.ilike(search_filter),
+                models.Project.project_manager.in_(matching_emp_ids),
+                models.Project.status.ilike(search_filter),
+                models.Project.project_priority.ilike(search_filter),
+                models.Project.description.ilike(search_filter),
+                models.Project.project_type.ilike(search_filter)
             )
         )
     
@@ -3833,6 +3874,7 @@ def get_clients(
         last_update_dt = safe_dt(c.last_update_date)
         res.append({
             "client_id": c.cl_id, "client_ref_no": c.client_ref_no, "client_name": c.client_name,
+            "client_type": c.client_type,
             "mobile_no": c.mobile_no, "country_code": c.country_code, "email_id": c.email,
             "gst_available": c.gst, "gst": c.gst_no, "msme_available": c.msme, "msme": c.msme_no,
             "pan_no": c.pan, "address": c.address, "status": c.status or "Active",
@@ -3845,7 +3887,7 @@ def get_clients(
             "attribute4": c.attribute4, "attribute5": c.attribute5, "attribute6": c.attribute6,
             "attribute7": c.attribute7, "attribute8": c.attribute8, "attribute9": c.attribute9,
             "attribute10": c.attribute10, "attribute11": c.attribute11, "attribute12": c.attribute12,
-            "attribute13": c.attribute13, "attribute14": c.attribute14, "sites": sites_list
+            "attribute13": c.attribute13, "sites": sites_list
         })
     return res
 
@@ -3866,7 +3908,8 @@ def get_client(client_id: int, db: Session = Depends(get_db)):
     last_update_dt = safe_dt(client.last_update_date)
     return {
         "client_id": client.cl_id, "client_ref_no": client.client_ref_no, "client_name": client.client_name,
-        "company_name": client.company_name, "mobile_no": client.mobile_no, "email_id": client.email,
+        "company_name": client.company_name, "client_type": client.client_type,
+        "mobile_no": client.mobile_no, "email_id": client.email,
         "gst_available": client.gst, "gst": client.gst_no, "msme_available": client.msme,
         "msme": client.msme_no, "pan_no": client.pan, "status": client.status or "Active",
         "website": client.website, "short_code": client.short_code, "currency": client.currency,
@@ -3882,6 +3925,7 @@ def update_client(client_id: int, client_req: schemas.ClientApplyRequest, db: Se
     now = datetime.now()
     client.client_name = client_req.client_name
     client.company_name = client_req.company_name
+    client.client_type = client_req.client_type
     client.mobile_no = client_req.mobile_no
     client.email = client_req.email_id
     client.gst = client_req.gst_available
@@ -3940,6 +3984,7 @@ def create_client(client_req: schemas.ClientApplyRequest, db: Session = Depends(
             client_ref_no=client_req.client_ref_no.strip(),
             client_name=client_req.client_name,
             company_name=client_req.company_name,
+            client_type=client_req.client_type,
             mobile_no=client_req.mobile_no,
             country_code=client_req.country_code,
             email=client_req.email_id,
