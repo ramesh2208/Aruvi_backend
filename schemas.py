@@ -172,7 +172,7 @@ class ResetPasswordRequest(BaseModel):
 class SubClientSchema(BaseModel):
     sub_cl_id: Optional[int] = None
     sub_client_name: str
-    client_ref_no: str
+    client_ref_no: Optional[str] = ""
     sub_gst_no: Optional[str] = None
     sub_msme_no: Optional[str] = None
     sub_pan: Optional[str] = None
@@ -185,7 +185,8 @@ class SubClientSchema(BaseModel):
     status: Optional[str] = "Active"
 
 class ClientApplyRequest(BaseModel):
-    client_ref_no: str
+    client_type: Optional[str] = None
+    client_ref_no: Optional[str] = ""
     client_name: str
     company_name: str
     mobile_no: Optional[str] = None
@@ -210,6 +211,7 @@ class ClientResponse(BaseModel):
     client_ref_no: str
     client_name: str
     company_name: str
+    client_type: Optional[str] = None
     country_code: Optional[str] = "+91"
     mobile_no: Optional[str] = None
     email_id: Optional[str] = None
