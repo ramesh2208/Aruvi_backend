@@ -201,7 +201,7 @@ class ClientApplyRequest(BaseModel):
     short_code: Optional[str] = None
     currency: Optional[str] = None
     tds: Optional[str] = None
-    gst_p: Optional[str] = None
+    gst_p: Optional[str] = ""
     address: Optional[str] = None
     status: Optional[str] = "Active"
     sites: Optional[List[SubClientSchema]] = []
@@ -220,13 +220,13 @@ class ClientResponse(BaseModel):
     msme_available: Optional[str] = None
     msme: Optional[str] = None
     pan_no: Optional[str] = None
-    address: Optional[str] = None
+    address: Optional[str] = ""
     status: Optional[str] = "Active"
-    website: Optional[str] = None
-    short_code: Optional[str] = None
+    website: Optional[str] = ""
+    short_code: Optional[str] = ""
     currency: Optional[str] = None
-    tds: Optional[str] = None
-    gst_p: Optional[str] = None
+    tds: Optional[str] = ""
+    gst_p: Optional[str] = ""
     sites: Optional[List[SubClientSchema]] = []
     creation_date: Optional[Any] = None
     last_update_date: Optional[Any] = None
