@@ -372,6 +372,7 @@ class CompanyClient(Base):
     cl_id = Column(Integer, primary_key=True, autoincrement=True)
     client_ref_no = Column(String(100))
     client_name = Column(String(240))
+    client_type = Column(String(20))
     mobile_no = Column(String(15))
     country_code = Column(String(10))
     email = Column(String(50))
@@ -406,7 +407,6 @@ class CompanyClient(Base):
     attribute11 = Column(String(240))
     attribute12 = Column(String(240))
     attribute13 = Column(String(240))
-    attribute14 = Column(String(240))
 
 class SubClient(Base):
     __tablename__ = "xxits_aruvi_sub_client_t"
