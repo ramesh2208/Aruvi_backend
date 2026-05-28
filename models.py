@@ -387,7 +387,7 @@ class CompanyClient(Base):
     website = Column(String(1000))
     short_code = Column(String(100))
     currency = Column(String(10))
-    gst_value = Column(String(50))
+    gst_value = Column(String(50), nullable=False, default="")
     attribute_category = Column(String(240))
     creation_date = Column(DateTime)
     last_update_date = Column(DateTime)
