@@ -3967,19 +3967,27 @@ def get_holiday_dates(db: Session = Depends(get_db)):
 @app.post("/admin/create-client")
 def create_client(client_req: schemas.ClientApplyRequest, db: Session = Depends(get_db)):
     now = datetime.now()
+
+    # ── 1. Auto-generate client_ref_no if missing ──────────────────────────────
     if not client_req.client_ref_no or client_req.client_ref_no.strip() == "":
-        last_client = db.query(models.CompanyClient).order_by(models.CompanyClient.cl_id.desc()).first()
+        last_client = (
+            db.query(models.CompanyClient)
+            .order_by(models.CompanyClient.cl_id.desc())
+            .first()
+        )
         if not last_client or not last_client.client_ref_no:
             client_req.client_ref_no = "CLI-001"
         else:
             ref_no = last_client.client_ref_no
-            match = re.search(r'(\d+)$', ref_no)
+            match = re.search(r"(\d+)$", ref_no)
             if match:
                 num = int(match.group(1)) + 1
-                prefix = ref_no[:match.start()]
+                prefix = ref_no[: match.start()]
                 client_req.client_ref_no = f"{prefix}{num:03d}"
             else:
                 client_req.client_ref_no = f"{ref_no}-1"
+
+    # ── 2. Insert client + sub-clients inside ONE transaction ──────────────────
     try:
         new_client = models.CompanyClient(
             client_ref_no=client_req.client_ref_no.strip(),
@@ -4003,46 +4011,76 @@ def create_client(client_req: schemas.ClientApplyRequest, db: Session = Depends(
             last_update_date=now,
             created_by="Admin",
             last_updated_by="Admin",
-            last_update_login="Admin"
+            last_update_login="Admin",
         )
         db.add(new_client)
+        # flush → new_client.cl_id is now populated but transaction not committed
         db.flush()
 
+        # ── 3. Build sub-client rows ───────────────────────────────────────────
         if client_req.sites:
-            for sub_req in client_req.sites:
-                new_sub = models.SubClient(
-                    sub_client_name=sub_req.sub_client_name, client_ref_no=new_client.client_ref_no,
-                    sub_gst_no=sub_req.sub_gst_no or "", sub_msme_no=sub_req.sub_msme_no or "",
-                    sub_pan=sub_req.sub_pan or "", sub_tds_p=sub_req.sub_tds_p or 0,
-                    sub_gst_p=sub_req.sub_gst_p or "", sub_short_code=sub_req.sub_short_code or "",
-                    sub_location=sub_req.sub_location or "", ship_to=sub_req.ship_to or "",
-                    currency=sub_req.currency or "INR", status=sub_req.status or "Active",
-                    creation_date=now, last_update_date=now,
-                    created_by="Admin", last_updated_by="Admin", last_update_login="Admin"
+            sub_clients = [
+                models.SubClient(
+                    sub_client_name=s.sub_client_name or client_req.client_name,
+                    client_ref_no=new_client.client_ref_no,          # ← use flushed ref
+                    sub_gst_no=s.sub_gst_no or "",
+                    sub_msme_no=s.sub_msme_no or "",
+                    sub_pan=s.sub_pan or "",
+                    sub_tds_p=s.sub_tds_p or 0,
+                    sub_gst_p=s.sub_gst_p or "",
+                    sub_short_code=s.sub_short_code or "",
+                    sub_location=s.sub_location or "",
+                    ship_to=s.ship_to or "",
+                    currency=s.currency or "INR",
+                    status=s.status or "Active",
+                    creation_date=now,
+                    last_update_date=now,
+                    created_by="Admin",
+                    last_updated_by="Admin",
+                    last_update_login="Admin",
                 )
-                db.add(new_sub)
+                for s in client_req.sites
+            ]
         else:
-            new_sub = models.SubClient(
-                sub_client_name=client_req.client_name, client_ref_no=new_client.client_ref_no,
-                sub_gst_no=client_req.gst if client_req.gst_available == 'Yes' else "", 
-                sub_msme_no=client_req.msme if client_req.msme_available == 'Yes' else "",
-                sub_pan=client_req.pan_no or "", 
-                sub_tds_p=0,
-                sub_gst_p="", 
-                sub_short_code=client_req.short_code or "",
-                sub_location=client_req.address or "", 
-                ship_to=client_req.address or "",
-                currency=client_req.currency or "INR", 
-                status=client_req.status or "Active",
-                creation_date=now, last_update_date=now,
-                created_by="Admin", last_updated_by="Admin", last_update_login="Admin"
-            )
-            db.add(new_sub)
+            # Default sub-client mirrors the parent client
+            sub_clients = [
+                models.SubClient(
+                    sub_client_name=client_req.client_name,
+                    client_ref_no=new_client.client_ref_no,
+                    sub_gst_no=client_req.gst if client_req.gst_available == "Yes" else "",
+                    sub_msme_no=client_req.msme if client_req.msme_available == "Yes" else "",
+                    sub_pan=client_req.pan_no or "",
+                    sub_tds_p=0,
+                    sub_gst_p="",
+                    sub_short_code=client_req.short_code or "",
+                    sub_location=client_req.address or "",
+                    ship_to=client_req.address or "",
+                    currency=client_req.currency or "INR",
+                    status=client_req.status or "Active",
+                    creation_date=now,
+                    last_update_date=now,
+                    created_by="Admin",
+                    last_updated_by="Admin",
+                    last_update_login="Admin",
+                )
+            ]
+
+        # bulk-add all sub-clients in one shot
+        db.add_all(sub_clients)
+
+        # ── 4. Single commit → both tables written atomically ─────────────────
         db.commit()
         db.refresh(new_client)
-        return {"message": "Client and sub-clients created successfully", "client_id": new_client.cl_id}
+
+        return {
+            "message": "Client and sub-clients created successfully",
+            "client_id": new_client.cl_id,
+            "client_ref_no": new_client.client_ref_no,
+            "sub_clients_created": len(sub_clients),
+        }
+
     except Exception as e:
-        db.rollback()
+        db.rollback()          # rolls back BOTH client and sub-client inserts
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
 
