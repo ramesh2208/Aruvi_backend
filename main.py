@@ -3880,7 +3880,8 @@ def get_clients(
             "gst_available": c.gst, "gst": c.gst_no, "msme_available": c.msme, "msme": c.msme_no,
             "pan_no": c.pan, "address": c.address, "status": c.status or "Active",
             "company_name": c.company_name, "website": c.website, "short_code": c.short_code,
-            "currency": c.currency, "gst_value": c.gst_value, "attribute_category": c.attribute_category,
+            "currency": c.currency, "gst_value": c.gst_value, "gst_p": c.gst_value,
+            "tds": c.attribute1, "attribute_category": c.attribute_category,
             "creation_date": creation_dt, "last_update_date": last_update_dt,
             "created_by": c.created_by, "last_updated_by": c.last_updated_by,
             "last_update_login": c.last_update_login,
@@ -3914,6 +3915,7 @@ def get_client(client_id: int, db: Session = Depends(get_db)):
         "gst_available": client.gst, "gst": client.gst_no, "msme_available": client.msme,
         "msme": client.msme_no, "pan_no": client.pan, "status": client.status or "Active",
         "website": client.website, "short_code": client.short_code, "currency": client.currency,
+        "tds": client.attribute1, "gst_p": client.gst_value,
         "address": client.address, "sites": sites_list, "creation_date": creation_dt, "last_update_date": last_update_dt
     }
 
@@ -3937,6 +3939,8 @@ def update_client(client_id: int, client_req: schemas.ClientApplyRequest, db: Se
     client.website = client_req.website
     client.short_code = client_req.short_code
     client.currency = client_req.currency
+    client.gst_value = client_req.gst_p or ""
+    client.attribute1 = client_req.tds or ""
     client.address = client_req.address
     client.status = client_req.status
     client.last_update_date = now
@@ -4007,6 +4011,8 @@ def create_client(client_req: schemas.ClientApplyRequest, db: Session = Depends(
             website=client_req.website,
             short_code=client_req.short_code,
             currency=client_req.currency,
+            gst_value=client_req.gst_p or "",
+            attribute1=client_req.tds or "",
             creation_date=now,
             last_update_date=now,
             created_by="Admin",
