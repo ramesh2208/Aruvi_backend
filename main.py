@@ -4047,8 +4047,8 @@ def create_client(client_req: schemas.ClientApplyRequest, db: Session = Depends(
                 models.SubClient(
                     sub_client_name=client_req.client_name,
                     client_ref_no=new_client.client_ref_no,
-                    sub_gst_no=client_req.gst if client_req.gst_available == "Yes" else "",
-                    sub_msme_no=client_req.msme if client_req.msme_available == "Yes" else "",
+                    sub_gst_no=(client_req.gst or "") if client_req.gst_available == "Yes" else "",
+                    sub_msme_no=(client_req.msme or "") if client_req.msme_available == "Yes" else "",
                     sub_pan=client_req.pan_no or "",
                     sub_tds_p=0,
                     sub_gst_p="",
