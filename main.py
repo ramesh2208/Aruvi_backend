@@ -1,6 +1,5 @@
 from fastapi.openapi import constants
 from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, Form, BackgroundTasks
-from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
@@ -30,6 +29,7 @@ from cryptography.fernet import Fernet
 from sqlalchemy import extract
 import sqlalchemy
 import sys
+import os
 import socket
 import requests
 
@@ -232,25 +232,6 @@ def handle_db_error(e: Exception):
 
 
 app = FastAPI()
-
-# Mount static directory for public files download
-os.makedirs("uploads/attachments", exist_ok=True)
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
-
-@app.post("/admin/upload-file")
-def upload_file(file: UploadFile = File(...)):
-    try:
-        upload_dir = "uploads/attachments"
-        os.makedirs(upload_dir, exist_ok=True)
-        file_extension = file.filename.split('.')[-1] if '.' in file.filename else 'bin'
-        file_name = f"attach_{int(time.time())}_{random.randint(1000, 9999)}.{file_extension}"
-        file_path = os.path.join(upload_dir, file_name)
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        return {"uri": f"uploads/attachments/{file_name}", "name": file.filename, "type": file.content_type}
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
 
 router = APIRouter()
 
@@ -1086,36 +1067,21 @@ def get_employees(
     except Exception as e:
         handle_db_error(e)
     results = []
-    
-    # Pre-fetch domains and employee manager names to avoid N+1 queries in the loop
-    domains_map = {}
-    try:
-        domains_map = {d.dom_id: d.domain for d in db.query(models.Domain.dom_id, models.Domain.domain).all() if d.dom_id}
-    except Exception as e:
-        print(f"Error pre-fetching domains: {e}")
-
-    manager_map = {}
-    try:
-        manager_map = {e.emp_id: e.name for e in db.query(models.EmpDet.emp_id, models.EmpDet.name).all() if e.emp_id}
-    except Exception as e:
-        print(f"Error pre-fetching manager names: {e}")
-
     for emp in employees:
         if not emp:
             continue
         domain_name = "Employee"
         if emp.dom_id:
-            try:
-                # dom_id can be string in EmpDet but integer in Domain model
-                d_id = int(emp.dom_id) if str(emp.dom_id).isdigit() else emp.dom_id
-                domain_name = domains_map.get(d_id, "Employee")
-            except Exception:
-                pass
+            domain = db.query(models.Domain).filter(models.Domain.dom_id == emp.dom_id).first()
+            if domain:
+                domain_name = domain.domain
                 
         manager_name = emp.assign_manager or "N/A"
         if emp.assign_manager:
-            manager_name = manager_map.get(emp.assign_manager, emp.assign_manager)
-            
+            mgr = db.query(models.EmpDet).filter(models.EmpDet.emp_id == emp.assign_manager).first()
+            if mgr and mgr.name:
+                manager_name = mgr.name
+                
         results.append({
             "id": emp.emp_id,
             "name": emp.name or "Unknown",
@@ -1496,6 +1462,63 @@ def get_wfh_history(emp_id: str, db: Session = Depends(get_db)):
     ]
 
 
+@app.put("/update-wfh/{wfh_id}")
+def update_wfh(wfh_id: int, request: schemas.WFHUpdateRequest, db: Session = Depends(get_db)):
+    wfh = db.query(models.WFHDet).filter(models.WFHDet.wfh_id == wfh_id).first()
+    if not wfh:
+        raise HTTPException(status_code=404, detail="WFH request not found")
+    if (wfh.status or "").strip().lower() != "pending":
+        raise HTTPException(status_code=400, detail="Only pending WFH requests can be edited")
+
+    from_date = (request.from_date or "").strip()
+    to_date = (request.to_date or from_date).strip()
+    req_from = parse_date(from_date)
+    req_to = parse_date(to_date)
+    if not req_from or not req_to:
+        raise HTTPException(status_code=400, detail="Invalid WFH from/to date format")
+    if req_to < req_from:
+        raise HTTPException(status_code=400, detail="To date must be on or after from date")
+
+    existing_wfh = db.query(models.WFHDet).filter(
+        models.WFHDet.wfh_id != wfh_id,
+        func.lower(func.trim(models.WFHDet.emp_id)) == (wfh.emp_id or "").strip().lower(),
+        func.lower(func.trim(models.WFHDet.status)).in_(["pending", "approved"])
+    ).all()
+    for row in existing_wfh:
+        row_from = parse_date(row.from_date)
+        row_to = parse_date(row.to_date) if row.to_date else row_from
+        if not row_from or not row_to:
+            continue
+        if not (req_to < row_from or req_from > row_to):
+            raise HTTPException(status_code=400,
+                detail=f"WFH already applied for overlapping dates ({row.from_date} to {row.to_date}).")
+
+    wfh.from_date = from_date
+    wfh.to_date = to_date
+    wfh.days = str(request.days) if request.days is not None else wfh.days
+    wfh.reason = request.reason
+    wfh.last_updated_by = wfh.emp_id
+    wfh.last_update_date = datetime.now()
+    wfh.last_update_login = wfh.emp_id
+    db.commit()
+    return {"message": "WFH request updated successfully"}
+
+
+@app.put("/withdraw-wfh/{wfh_id}")
+def withdraw_wfh(wfh_id: int, db: Session = Depends(get_db)):
+    wfh = db.query(models.WFHDet).filter(models.WFHDet.wfh_id == wfh_id).first()
+    if not wfh:
+        raise HTTPException(status_code=404, detail="WFH request not found")
+    if (wfh.status or "").strip().lower() != "pending":
+        raise HTTPException(status_code=400, detail="Only pending WFH requests can be withdrawn")
+    wfh.status = "Withdrawn"
+    wfh.last_updated_by = wfh.emp_id
+    wfh.last_update_date = datetime.now()
+    wfh.last_update_login = wfh.emp_id
+    db.commit()
+    return {"message": "WFH request withdrawn successfully"}
+
+
 @app.get("/leave-history/{emp_id}")
 def get_leave_history(emp_id: str, db: Session = Depends(get_db)):
     emp_id = emp_id.strip()
@@ -1508,8 +1531,7 @@ def get_leave_history(emp_id: str, db: Session = Depends(get_db)):
     return [
         {"l_id": row.l_id, "leaveType": row.leave_type, "leave_type": row.leave_type,
         "from_date": row.from_date, "to_date": row.to_date, "days": row.days,
-        "reason": row.reason, "status": row.status, "remarks": row.remarks, "revision": row.revision,
-        "file": row.file, "attribute14": row.attribute14}
+        "reason": row.reason, "status": row.status, "remarks": row.remarks, "revision": row.revision}
         for row in history
     ]
 
@@ -2469,6 +2491,126 @@ def get_all_permission_history(manager_id: Optional[str] = None, db: Session = D
     return results
 
 
+@app.post("/admin/approve-permission")
+def approve_permission(request_item: schemas.PermissionApprovalAction, background_tasks: BackgroundTasks,
+                       db: Session = Depends(get_db)):
+    try:
+        perm = db.query(models.EmpPermission).filter(models.EmpPermission.p_id == request_item.p_id).first()
+    except Exception as e:
+        handle_db_error(e)
+    if not perm:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Permission request not found")
+    
+    old_status = perm.status
+    perm.status = request_item.action
+    perm.remarks = request_item.remarks
+    perm.last_update_date = datetime.now()
+    if request_item.action == 'Approved':
+        perm.admin_approval = 'Approved'; perm.hr_approval = 'Approved'
+    elif request_item.action == 'Rejected':
+        perm.admin_approval = 'Rejected'; perm.hr_approval = 'Rejected'
+        
+    admin_user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == request_item.admin_id.strip()).first()
+    if admin_user:
+        perm.approved_by = admin_user.name
+
+    try:
+        val = str(perm.revision or "0")
+        current_rev = int(''.join(filter(str.isdigit, val))) if any(c.isdigit() for c in val) else 0
+    except (ValueError, TypeError):
+        current_rev = 0
+
+    perm.revision = str(current_rev + 1)
+    db.add(perm)
+
+    if request_item.action == 'Rejected' and old_status != 'Rejected':
+        # Revert permission hours back to employee
+        emp = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == (perm.emp_id or "").strip().lower()
+        ).first()
+        if emp:
+            try:
+                curr_rem = float(emp.remaining_perm or "0")
+            except Exception:
+                curr_rem = 4.0
+            restored = curr_rem + float(perm.permitted_permission or 0.0)
+            emp.remaining_perm = str(round(restored, 2))
+
+    db.commit()
+
+    try:
+        emp_user = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == (perm.emp_id or "").strip().lower()
+        ).first()
+        if emp_user and emp_user.p_mail:
+            date_str = perm.date.strftime("%d-%b-%Y") if perm.date else ""
+            f_display = format_time_safe(perm.f_time)
+            t_display = format_time_safe(perm.t_time)
+            subject = f"Permission Request {request_item.action.upper()} - {date_str}"
+            content = f"""
+            <p>Good Day!</p>
+            <p>Your request for <strong>Permission</strong> has been processed.</p>
+            <div style="font-size: 20px; font-weight: 700; color: #00008B; margin: 20px 0;">{request_item.action}</div>
+            <br>
+            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+            <p style="color: #00008B; font-size: 14px;"><strong>Original Request Details:</strong></p>
+            <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                <thead>
+                    <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Name</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Date</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">From Time</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">To Time</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Total Hours</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr style="background-color: transparent;">
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{emp_user.name}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{date_str}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{f_display}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{t_display}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{perm.total_hours}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{perm.reason or "No reason"}</td>
+                    </tr>
+                </tbody>
+            </table>
+            <br>
+            <p><strong>Remarks:</strong> {request_item.remarks or 'No remarks provided.'}</p>
+            """
+            body = get_email_template(emp_user.name, f"Permission Request {request_item.action}", content, perm.approved_by or "Manager")
+            background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
+            if emp_user.attribute7:
+                background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7],
+                    f"Permission Request {request_item.action}",
+                    f"Your permission request for {date_str} has been {request_item.action.lower()} by {perm.approved_by or 'Manager'}.")
+        
+        # Create notification for employee
+        if emp_user:
+            approver_name = perm.approved_by or "Manager"
+            create_notification(
+                db=db,
+                emp_id=emp_user.emp_id,
+                module="Permission",
+                title="Permission",
+                message=f"Permission Request has been {request_item.action.capitalize()} by {approver_name}",
+                created_by=request_item.admin_id
+            )
+    except Exception as e:
+        print(f" Email_id notification failed: {e}")
+        
+    return {"message": f"Permission request {request_item.action.lower()} successfully", "approved_by": perm.approved_by}
+
+
+# ════════════════════════════════════════════════════════════════════════════
+
+# PASTE THIS REPLACEMENT for the existing @app.post("/apply-permission") in main.py
+# It adds an approved-leave overlap check BEFORE creating the permission record.
+# ════════════════════════════════════════════════════════════════════════════
+
 @app.post("/apply-permission")
 def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     try:
@@ -2476,28 +2618,35 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
         user = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == target_emp_id).first()
         if not user:
             raise HTTPException(status_code=404, detail="Employee not found")
+
         p_date_dt = parse_date(request.date)
         if not p_date_dt:
             raise HTTPException(status_code=400, detail=f"Invalid date format: {request.date}")
         p_date = p_date_dt.date()
+
         f_time_dt = parse_time_str(request.f_time)
         t_time_dt = parse_time_str(request.t_time)
         if not f_time_dt:
             raise HTTPException(status_code=400, detail=f"Invalid from time format: {request.f_time}")
         if not t_time_dt:
             raise HTTPException(status_code=400, detail=f"Invalid to time format: {request.t_time}")
+
         h1, m1 = f_time_dt.hour, f_time_dt.minute
         h2, m2 = t_time_dt.hour, t_time_dt.minute
         diff_mins = (h2 * 60 + m2) - (h1 * 60 + m1)
         if diff_mins <= 0:
             raise HTTPException(status_code=400, detail="To Time must be after From Time")
+
         if diff_mins <= 60:
             approved_hrs = 1.0; lop_hrs = 0.0
         elif diff_mins <= 120:
             approved_hrs = 2.0; lop_hrs = 0.0
         else:
             approved_hrs = 2.0; lop_hrs = (diff_mins - 120.0) / 60.0
+
         total_hrs_val = diff_mins / 60.0
+
+        # ── Duplicate permission check ─────────────────────────────────────────
         duplicate = db.query(models.EmpPermission).filter(
             func.lower(func.trim(models.EmpPermission.emp_id)) == target_emp_id,
             models.EmpPermission.date == p_date,
@@ -2505,6 +2654,60 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
         ).first()
         if duplicate:
             raise HTTPException(status_code=400, detail=f"Permission already applied for {request.date}.")
+
+        # ── ★ NEW: Approved leave overlap check ────────────────────────────────
+        # Fetch all approved leaves for this employee and check if p_date falls within any range.
+        approved_leaves = db.query(models.EmpLeave).filter(
+            func.lower(func.trim(models.EmpLeave.emp_id)) == target_emp_id,
+            func.lower(func.trim(models.EmpLeave.status)) == "approved"
+        ).all()
+
+        for leave in approved_leaves:
+            leave_from = parse_date(leave.from_date)
+            leave_to   = parse_date(leave.to_date) if leave.to_date else leave_from
+            if not leave_from:
+                continue
+            leave_from_date = leave_from.date()
+            leave_to_date   = leave_to.date() if leave_to else leave_from_date
+
+            if leave_from_date <= p_date <= leave_to_date:
+                # p_date is inside an approved leave range — block it
+                leave_type = leave.leave_type or "Leave"
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Permission cannot be applied on {request.date} because you have an approved "
+                        f"{leave_type} on that date "
+                        f"({leave.from_date} to {leave.to_date or leave.from_date}). "
+                        f"Please select a different date."
+                    )
+                )
+        # ── End leave overlap check ────────────────────────────────────────────
+
+        # ── ★ NEW: Block Permission if pending/approved WFH exists on the target date ──
+        existing_wfh = db.query(models.WFHDet).filter(
+            func.lower(func.trim(models.WFHDet.emp_id)) == target_emp_id,
+            func.lower(func.trim(models.WFHDet.status)).in_(["pending", "approved"])
+        ).all()
+
+        for w in existing_wfh:
+            wfh_from = parse_date(w.from_date)
+            wfh_to = parse_date(w.to_date) if w.to_date else wfh_from
+            if not wfh_from:
+                continue
+            wfh_from_date = wfh_from.date()
+            wfh_to_date = wfh_to.date() if wfh_to else wfh_from_date
+
+            if wfh_from_date <= p_date <= wfh_to_date:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Permission cannot be applied on {request.date} because you have a Work From Home (WFH) "
+                        f"applied from {w.from_date} to {w.to_date or w.from_date}."
+                    )
+                )
+        # ── End WFH overlap check ──────────────────────────────────────────────
+
         try:
             curr_val = str(user.remaining_perm or "").strip()
             if not curr_val or curr_val in ("None", ""):
@@ -2516,8 +2719,10 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                 curr_perm = float(curr_val)
         except Exception:
             curr_perm = 4.0
+
         new_remaining = max(0.0, curr_perm - approved_hrs)
         user.remaining_perm = str(round(new_remaining, 2))
+
         new_perm = models.EmpPermission(
             emp_id=user.emp_id.strip(), date=p_date,
             f_time=f_time_dt.time(), t_time=t_time_dt.time(),
@@ -2532,6 +2737,7 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
         db.add(new_perm)
         db.commit()
         db.refresh(new_perm)
+
         try:
             approvers = get_approvers(db, user)
             f_display = f_time_dt.strftime("%I:%M %p").lstrip('0')
@@ -2545,7 +2751,7 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                     <br>
                     <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                         <thead>
-                            <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                            <tr style="background-color: #00008B; font-weight: bold;">
                                 <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
                                 <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Date</th>
                                 <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">From time</th>
@@ -2555,7 +2761,7 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                             </tr>
                         </thead>
                         <tbody>
-                            <tr style="background-color: transparent;">
+                            <tr>
                                 <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
                                 <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.date}</td>
                                 <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{f_display}</td>
@@ -2586,111 +2792,18 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                 created_by=user.emp_id
             )
 
-        return {"message": "Permission applied successfully", "p_id": new_perm.p_id, "approved_hrs": approved_hrs, "lop_hrs": round(lop_hrs, 2)}
+        return {
+            "message": "Permission applied successfully",
+            "p_id": new_perm.p_id,
+            "approved_hrs": approved_hrs,
+            "lop_hrs": round(lop_hrs, 2)
+        }
+
     except HTTPException:
         db.rollback(); raise
     except Exception as e:
         db.rollback(); traceback.print_exc()
         raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
-
-
-@app.post("/admin/approve-permission")
-def approve_permission(request: schemas.PermissionApprovalAction, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    try:
-        perm = db.query(models.EmpPermission).filter(models.EmpPermission.p_id == request.p_id).first()
-    except Exception as e:
-        handle_db_error(e)
-    if not perm:
-        raise HTTPException(status_code=404, detail="Permission request not found")
-    old_status = (perm.status or "").strip().lower()
-    new_action = request.action.strip()
-    perm.status = new_action
-    perm.remarks = request.remarks or ""
-    perm.last_update_date = datetime.now()
-    perm.last_updated_by = request.admin_id.strip()
-    try:
-        curr_rev = int(perm.revision) if perm.revision and str(perm.revision).isdigit() else 0
-        perm.revision = str(curr_rev + 1)
-    except:
-        perm.revision = "1"
-    admin_user = db.query(models.EmpDet).filter(
-        func.lower(func.trim(models.EmpDet.emp_id)) == request.admin_id.strip().lower()
-    ).first()
-    if admin_user:
-        perm.approved_by = admin_user.name
-        perm.remarks = (request.remarks or "").strip() + f" (Action by: {admin_user.name})"
-    if new_action.lower() == "rejected" and old_status != "rejected":
-        user = db.query(models.EmpDet).filter(
-            func.lower(func.trim(models.EmpDet.emp_id)) == (perm.emp_id or "").strip().lower()
-        ).first()
-        if user:
-            try:
-                approved_to_refund = float(perm.permitted_permission) if perm.permitted_permission else 0.0
-                curr_rem = float(user.remaining_perm or 0)
-                user.remaining_perm = str(round(curr_rem + approved_to_refund, 2))
-            except Exception as refund_err:
-                print(f"Refund error: {refund_err}")
-    db.commit()
-    try:
-        emp_user = db.query(models.EmpDet).filter(
-            func.lower(func.trim(models.EmpDet.emp_id)) == (perm.emp_id or "").strip().lower()
-        ).first()
-        if emp_user and emp_user.p_mail:
-            perm_date = perm.date.strftime("%d-%b-%Y") if perm.date else "N/A"
-            f_time_str = format_time_safe(perm.f_time)
-            t_time_str = format_time_safe(perm.t_time)
-            subject = f"ITS - Permission Request {new_action} - {perm_date}"
-            content = f"""
-            <p>Good Day!</p>
-            <p>Your request for <strong>Permission</strong> has been processed.</p>
-            <div style="font-size: 20px; font-weight: 700; color: #00008B; margin: 20px 0;">{new_action}</div>
-            <br>
-            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-            <p style="color: #00008B; font-size: 14px;"><strong>Original Request Details:</strong></p>
-            <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
-                <thead>
-                    <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
-                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Date</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">From time</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">To Time</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Total Hours</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr style="background-color: transparent;">
-                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
-                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{perm_date}</td>
-                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{f_time_str}</td>
-                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{t_time_str}</td>
-                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{perm.total_hours or "0.00"} hrs</td>
-                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{perm.reason}</td>
-                    </tr>
-                </tbody>
-            </table>
-            <br>
-            {f'<p><strong>Remarks:</strong> {request.remarks}</p>' if request.remarks else ''}
-            """
-            body = get_email_template(emp_user.name, f"Permission Request {new_action}", content, admin_user.name if admin_user else "Manager")
-            background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
-            if emp_user.attribute7:
-                background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7],
-                    f"Permission Request {new_action}", f"Your permission request for {perm_date} has been {new_action.lower()}.")
-        # Create notification for employee (who it goes to)
-        if emp_user:
-            approver_name = admin_user.name if admin_user else "Manager"
-            create_notification(
-                db=db,
-                emp_id=emp_user.emp_id,
-                module="Permission",
-                title="Permission",
-                message=f"Permission Request has been {new_action.capitalize()} by {approver_name}",
-                created_by=request.admin_id
-            )
-    except Exception as e:
-        print(f"Email_id notification failed: {e}")
-    return {"message": f"Permission {new_action.lower()} successfully"}
 
 
 @app.get("/admin/pending-ot")
@@ -2996,6 +3109,52 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
             if not (req_to < row_from or req_from > row_to):
                 raise HTTPException(status_code=400,
                     detail=f"WFH already applied for overlapping dates ({row.from_date} to {row.to_date}).")
+
+        # ── ★ NEW: Block WFH if an approved leave exists on overlapping dates ──
+        approved_leaves = db.query(models.EmpLeave).filter(
+            func.lower(func.trim(models.EmpLeave.emp_id)) == clean_emp_id.lower(),
+            func.lower(func.trim(models.EmpLeave.status)) == "approved"
+        ).all()
+
+        for leave in approved_leaves:
+            leave_from = parse_date(leave.from_date)
+            leave_to = parse_date(leave.to_date) if leave.to_date else leave_from
+            if not leave_from:
+                continue
+            leave_from_date = leave_from.date()
+            leave_to_date = leave_to.date() if leave_to else leave_from_date
+
+            if not (req_to.date() < leave_from_date or req_from.date() > leave_to_date):
+                leave_type = leave.leave_type or "Leave"
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"WFH cannot be applied on {from_date} to {to_date} because you have an approved "
+                        f"{leave_type} from {leave.from_date} to {leave.to_date or leave.from_date}. "
+                        f"Please select different dates."
+                    )
+                )
+        # ── End approved leave check ────────────────────────────────────────
+
+        # ── ★ NEW: Block WFH if pending/approved Permission exists on overlapping dates ──
+        existing_permissions = db.query(models.EmpPermission).filter(
+            func.lower(func.trim(models.EmpPermission.emp_id)) == clean_emp_id.lower(),
+            func.lower(func.trim(models.EmpPermission.status)).in_(["pending", "approved"])
+        ).all()
+
+        for perm in existing_permissions:
+            if perm.date:
+                if req_from.date() <= perm.date <= req_to.date():
+                    perm_date_str = perm.date.strftime("%d-%b-%Y")
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"WFH cannot be applied from {from_date} to {to_date} because you have a Permission "
+                            f"applied on {perm_date_str}."
+                        )
+                    )
+        # ── End Permission overlap check ────────────────────────────────────
+
         submitter = db.query(models.EmpDet).filter(
             func.lower(func.trim(models.EmpDet.emp_id)) == clean_emp_id.lower()
         ).first()
@@ -3488,6 +3647,93 @@ def get_holidays(db: Session = Depends(get_db)):
     return [{"id": h.holiday_id, "date": h.Office_Holiday_Date, "name": h.Holiday_Name, "year": h.year, "month": h.Month} for h in holidays]
 
 
+@app.post("/timesheet/create")
+def create_timesheet(ts_req: schemas.TimesheetCreate, db: Session = Depends(get_db)):
+    try:
+        # Validate reason field: required if total_hours != 9
+        total_hours = float(ts_req.total_hours)
+        if total_hours != 9 and not ts_req.reason:
+            raise HTTPException(status_code=400, detail="Reason is required when hours are not exactly 9")
+        
+        # Create new timesheet entry
+        new_timesheet = models.TimesheetDet(
+            date=ts_req.date,
+            day=ts_req.day,
+            type=ts_req.type,
+            project=ts_req.project,
+            total_hours=ts_req.total_hours,
+            activity=ts_req.activity,
+            reason=ts_req.reason,
+            emp_id=ts_req.emp_id,
+            month=ts_req.month,
+            working_hours=ts_req.working_hours,
+            status="Pending",
+            remarks=ts_req.remarks,
+            created_by=ts_req.emp_id,
+            creation_date=datetime.now(),
+            last_updated_by=ts_req.emp_id,
+            last_update_date=datetime.now()
+        )
+        db.add(new_timesheet)
+        db.commit()
+        db.refresh(new_timesheet)
+        return {
+            "success": True,
+            "message": "Timesheet created successfully",
+            "t_id": new_timesheet.t_id
+        }
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        db.rollback()
+        handle_db_error(e)
+        raise HTTPException(status_code=500, detail=f"Error creating timesheet: {str(e)}")
+
+
+@app.put("/timesheet/update/{t_id}")
+def update_timesheet(t_id: int, ts_req: schemas.TimesheetUpdate, db: Session = Depends(get_db)):
+    try:
+        ts = db.query(models.TimesheetDet).filter(models.TimesheetDet.t_id == t_id).first()
+    except Exception as e:
+        handle_db_error(e)
+    
+    if not ts:
+        raise HTTPException(status_code=404, detail="Timesheet record not found")
+    
+    try:
+        # Validate reason field: required if total_hours != 9
+        total_hours = float(ts_req.total_hours)
+        if total_hours != 9 and not ts_req.reason:
+            raise HTTPException(status_code=400, detail="Reason is required when hours are not exactly 9")
+        
+        # Update timesheet entry
+        ts.date = ts_req.date
+        ts.day = ts_req.day
+        ts.type = ts_req.type
+        ts.project = ts_req.project
+        ts.total_hours = ts_req.total_hours
+        ts.activity = ts_req.activity
+        ts.reason = ts_req.reason
+        ts.month = ts_req.month
+        ts.working_hours = ts_req.working_hours
+        ts.remarks = ts_req.remarks
+        ts.last_update_date = datetime.now()
+        
+        db.commit()
+        db.refresh(ts)
+        return {
+            "success": True,
+            "message": "Timesheet updated successfully",
+            "t_id": ts.t_id
+        }
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        db.rollback()
+        handle_db_error(e)
+        raise HTTPException(status_code=500, detail=f"Error updating timesheet: {str(e)}")
+
+
 @app.post("/admin/timesheet/action")
 def timesheet_action(action_req: schemas.TimesheetApprovalAction, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     try:
@@ -3554,33 +3800,11 @@ def get_projects(
     
     if search:
         search_filter = f"%{search}%"
-        # Find all client ref nos matching client name or company name
-        matching_clients = db.query(models.CompanyClient.client_ref_no).filter(
-            or_(
-                models.CompanyClient.client_name.ilike(search_filter),
-                models.CompanyClient.company_name.ilike(search_filter)
-            )
-        ).all()
-        matching_client_refs = [c[0] for c in matching_clients if c[0]]
-
-        # Find all employee IDs matching employee name
-        matching_employees = db.query(models.EmpDet.emp_id).filter(
-            models.EmpDet.name.ilike(search_filter)
-        ).all()
-        matching_emp_ids = [e[0] for e in matching_employees if e[0]]
-
         query = query.filter(
             or_(
                 models.Project.project_name.ilike(search_filter),
                 models.Project.project_ref_no.ilike(search_filter),
-                models.Project.client_ref_no.ilike(search_filter),
-                models.Project.client_ref_no.in_(matching_client_refs),
-                models.Project.project_manager.ilike(search_filter),
-                models.Project.project_manager.in_(matching_emp_ids),
-                models.Project.status.ilike(search_filter),
-                models.Project.project_priority.ilike(search_filter),
-                models.Project.description.ilike(search_filter),
-                models.Project.project_type.ilike(search_filter)
+                models.Project.client_ref_no.ilike(search_filter)
             )
         )
     
@@ -3709,6 +3933,51 @@ def get_ot_history(emp_id: str, db: Session = Depends(get_db)):
         handle_db_error(e)
 
 
+@app.put("/update-ot/{ot_id}")
+def update_ot(ot_id: int, request: schemas.OTUpdateRequest, db: Session = Depends(get_db)):
+    ot = db.query(models.OverTimeDet).filter(models.OverTimeDet.ot_id == ot_id).first()
+    if not ot:
+        raise HTTPException(status_code=404, detail="OT request not found")
+    if (ot.status or "").strip().lower() != "pending":
+        raise HTTPException(status_code=400, detail="Only pending OT requests can be edited")
+
+    ot_date_clean = (request.ot_date or "").strip()
+    duplicate = db.query(models.OverTimeDet).filter(
+        models.OverTimeDet.ot_id != ot_id,
+        func.lower(func.trim(models.OverTimeDet.emp_id)) == (ot.emp_id or "").strip().lower(),
+        func.lower(func.trim(models.OverTimeDet.ot_date)) == ot_date_clean.lower(),
+        func.lower(func.trim(models.OverTimeDet.status)).in_(["pending", "approved"])
+    ).first()
+    if duplicate:
+        raise HTTPException(status_code=400, detail=f"OT already applied for {ot_date_clean}.")
+
+    ot.ot_date = ot_date_clean
+    ot.from_time = request.from_time
+    ot.to_time = request.to_time
+    ot.duration = request.duration
+    ot.reason = request.reason
+    ot.last_updated_by = ot.emp_id
+    ot.last_update_date = datetime.now()
+    ot.last_update_login = ot.emp_id
+    db.commit()
+    return {"message": "OT request updated successfully"}
+
+
+@app.put("/withdraw-ot/{ot_id}")
+def withdraw_ot(ot_id: int, db: Session = Depends(get_db)):
+    ot = db.query(models.OverTimeDet).filter(models.OverTimeDet.ot_id == ot_id).first()
+    if not ot:
+        raise HTTPException(status_code=404, detail="OT request not found")
+    if (ot.status or "").strip().lower() != "pending":
+        raise HTTPException(status_code=400, detail="Only pending OT requests can be withdrawn")
+    ot.status = "Withdrawn"
+    ot.last_updated_by = ot.emp_id
+    ot.last_update_date = datetime.now()
+    ot.last_update_login = ot.emp_id
+    db.commit()
+    return {"message": "OT request withdrawn successfully"}
+
+
 @app.get("/admin/roles", response_model=List[schemas.RoleResponse])
 def get_roles(db: Session = Depends(get_db)):
     return db.query(models.Role).all()
@@ -3734,15 +4003,7 @@ def get_domains(dom_id: Optional[str] = None, db: Session = Depends(get_db)):
 
 @app.get("/admin/employees/brief", response_model=List[schemas.EmployeeBriefResponse])
 def get_employees_brief(db: Session = Depends(get_db)):
-    employees = db.query(
-        models.EmpDet.emp_id,
-        models.EmpDet.name,
-        models.EmpDet.role_id,
-        models.EmpDet.dpt_id,
-        models.EmpDet.dom_id
-    ).filter(
-        or_(models.EmpDet.end_date.is_(None), models.EmpDet.end_date == '')
-    ).all()
+    employees = db.query(models.EmpDet.emp_id, models.EmpDet.name, models.EmpDet.role_id, models.EmpDet.dpt_id, models.EmpDet.dom_id).all()
     return [{"emp_id": e.emp_id, "name": e.name, "role_id": e.role_id, "dpt_id": e.dpt_id, "dom_id": e.dom_id} for e in employees]
 
 
@@ -3875,13 +4136,11 @@ def get_clients(
         last_update_dt = safe_dt(c.last_update_date)
         res.append({
             "client_id": c.cl_id, "client_ref_no": c.client_ref_no, "client_name": c.client_name,
-            "client_type": getattr(c, "client_type", None),
             "mobile_no": c.mobile_no, "country_code": c.country_code, "email_id": c.email,
             "gst_available": c.gst, "gst": c.gst_no, "msme_available": c.msme, "msme": c.msme_no,
             "pan_no": c.pan, "address": c.address, "status": c.status or "Active",
             "company_name": c.company_name, "website": c.website, "short_code": c.short_code,
-            "currency": c.currency, "gst_value": c.gst_value, "gst_p": c.gst_value,
-            "tds": c.attribute1, "attribute_category": c.attribute_category,
+            "currency": c.currency, "gst_value": c.gst_value, "attribute_category": c.attribute_category,
             "creation_date": creation_dt, "last_update_date": last_update_dt,
             "created_by": c.created_by, "last_updated_by": c.last_updated_by,
             "last_update_login": c.last_update_login,
@@ -3889,7 +4148,7 @@ def get_clients(
             "attribute4": c.attribute4, "attribute5": c.attribute5, "attribute6": c.attribute6,
             "attribute7": c.attribute7, "attribute8": c.attribute8, "attribute9": c.attribute9,
             "attribute10": c.attribute10, "attribute11": c.attribute11, "attribute12": c.attribute12,
-            "attribute13": c.attribute13, "sites": sites_list
+            "attribute13": c.attribute13, "attribute14": c.attribute14, "sites": sites_list
         })
     return res
 
@@ -3910,12 +4169,10 @@ def get_client(client_id: int, db: Session = Depends(get_db)):
     last_update_dt = safe_dt(client.last_update_date)
     return {
         "client_id": client.cl_id, "client_ref_no": client.client_ref_no, "client_name": client.client_name,
-        "company_name": client.company_name, "client_type": client.client_type,
-        "mobile_no": client.mobile_no, "email_id": client.email,
+        "company_name": client.company_name, "mobile_no": client.mobile_no, "email_id": client.email,
         "gst_available": client.gst, "gst": client.gst_no, "msme_available": client.msme,
         "msme": client.msme_no, "pan_no": client.pan, "status": client.status or "Active",
         "website": client.website, "short_code": client.short_code, "currency": client.currency,
-        "tds": client.attribute1, "gst_p": client.gst_value,
         "address": client.address, "sites": sites_list, "creation_date": creation_dt, "last_update_date": last_update_dt
     }
 
@@ -3928,7 +4185,6 @@ def update_client(client_id: int, client_req: schemas.ClientApplyRequest, db: Se
     now = datetime.now()
     client.client_name = client_req.client_name
     client.company_name = client_req.company_name
-    client.client_type = client_req.client_type
     client.mobile_no = client_req.mobile_no
     client.email = client_req.email_id
     client.gst = client_req.gst_available
@@ -3939,8 +4195,6 @@ def update_client(client_id: int, client_req: schemas.ClientApplyRequest, db: Se
     client.website = client_req.website
     client.short_code = client_req.short_code
     client.currency = client_req.currency
-    client.gst_value = client_req.gst_p or ""
-    client.attribute1 = client_req.tds or ""
     client.address = client_req.address
     client.status = client_req.status
     client.last_update_date = now
@@ -3971,33 +4225,24 @@ def get_holiday_dates(db: Session = Depends(get_db)):
 @app.post("/admin/create-client")
 def create_client(client_req: schemas.ClientApplyRequest, db: Session = Depends(get_db)):
     now = datetime.now()
-
-    # ── 1. Auto-generate client_ref_no if missing ──────────────────────────────
     if not client_req.client_ref_no or client_req.client_ref_no.strip() == "":
-        last_client = (
-            db.query(models.CompanyClient)
-            .order_by(models.CompanyClient.cl_id.desc())
-            .first()
-        )
+        last_client = db.query(models.CompanyClient).order_by(models.CompanyClient.cl_id.desc()).first()
         if not last_client or not last_client.client_ref_no:
             client_req.client_ref_no = "CLI-001"
         else:
             ref_no = last_client.client_ref_no
-            match = re.search(r"(\d+)$", ref_no)
+            match = re.search(r'(\d+)$', ref_no)
             if match:
                 num = int(match.group(1)) + 1
-                prefix = ref_no[: match.start()]
+                prefix = ref_no[:match.start()]
                 client_req.client_ref_no = f"{prefix}{num:03d}"
             else:
                 client_req.client_ref_no = f"{ref_no}-1"
-
-    # ── 2. Insert client + sub-clients inside ONE transaction ──────────────────
     try:
         new_client = models.CompanyClient(
             client_ref_no=client_req.client_ref_no.strip(),
             client_name=client_req.client_name,
             company_name=client_req.company_name,
-            client_type=client_req.client_type,
             mobile_no=client_req.mobile_no,
             country_code=client_req.country_code,
             email=client_req.email_id,
@@ -4011,82 +4256,50 @@ def create_client(client_req: schemas.ClientApplyRequest, db: Session = Depends(
             website=client_req.website,
             short_code=client_req.short_code,
             currency=client_req.currency,
-            gst_value=client_req.gst_p if client_req.gst_p is not None else "",
-            attribute1=client_req.tds or "",
             creation_date=now,
             last_update_date=now,
             created_by="Admin",
             last_updated_by="Admin",
-            last_update_login="Admin",
+            last_update_login="Admin"
         )
         db.add(new_client)
-        # flush → new_client.cl_id is now populated but transaction not committed
         db.flush()
 
-        # ── 3. Build sub-client rows ───────────────────────────────────────────
         if client_req.sites:
-            sub_clients = [
-                models.SubClient(
-                    sub_client_name=s.sub_client_name or client_req.client_name,
-                    client_ref_no=new_client.client_ref_no,          # ← use flushed ref
-                    sub_gst_no=s.sub_gst_no or "",
-                    sub_msme_no=s.sub_msme_no or "",
-                    sub_pan=s.sub_pan or "",
-                    sub_tds_p=s.sub_tds_p or 0,
-                    sub_gst_p=s.sub_gst_p or "",
-                    sub_short_code=s.sub_short_code or "",
-                    sub_location=s.sub_location or "",
-                    ship_to=s.ship_to or "",
-                    currency=s.currency or "INR",
-                    status=s.status or "Active",
-                    creation_date=now,
-                    last_update_date=now,
-                    created_by="Admin",
-                    last_updated_by="Admin",
-                    last_update_login="Admin",
+            for sub_req in client_req.sites:
+                new_sub = models.SubClient(
+                    sub_client_name=sub_req.sub_client_name, client_ref_no=new_client.client_ref_no,
+                    sub_gst_no=sub_req.sub_gst_no or "", sub_msme_no=sub_req.sub_msme_no or "",
+                    sub_pan=sub_req.sub_pan or "", sub_tds_p=sub_req.sub_tds_p or 0,
+                    sub_gst_p=sub_req.sub_gst_p or "", sub_short_code=sub_req.sub_short_code or "",
+                    sub_location=sub_req.sub_location or "", ship_to=sub_req.ship_to or "",
+                    currency=sub_req.currency or "INR", status=sub_req.status or "Active",
+                    creation_date=now, last_update_date=now,
+                    created_by="Admin", last_updated_by="Admin", last_update_login="Admin"
                 )
-                for s in client_req.sites
-            ]
+                db.add(new_sub)
         else:
-            # Default sub-client mirrors the parent client
-            sub_clients = [
-                models.SubClient(
-                    sub_client_name=client_req.client_name,
-                    client_ref_no=new_client.client_ref_no,
-                    sub_gst_no=(client_req.gst or "") if client_req.gst_available == "Yes" else "",
-                    sub_msme_no=(client_req.msme or "") if client_req.msme_available == "Yes" else "",
-                    sub_pan=client_req.pan_no or "",
-                    sub_tds_p=0,
-                    sub_gst_p="",
-                    sub_short_code=client_req.short_code or "",
-                    sub_location=client_req.address or "",
-                    ship_to=client_req.address or "",
-                    currency=client_req.currency or "INR",
-                    status=client_req.status or "Active",
-                    creation_date=now,
-                    last_update_date=now,
-                    created_by="Admin",
-                    last_updated_by="Admin",
-                    last_update_login="Admin",
-                )
-            ]
-
-        # bulk-add all sub-clients in one shot
-        db.add_all(sub_clients)
-
-        # ── 4. Single commit → both tables written atomically ─────────────────
+            new_sub = models.SubClient(
+                sub_client_name=client_req.client_name, client_ref_no=new_client.client_ref_no,
+                sub_gst_no=client_req.gst if client_req.gst_available == 'Yes' else "", 
+                sub_msme_no=client_req.msme if client_req.msme_available == 'Yes' else "",
+                sub_pan=client_req.pan_no or "", 
+                sub_tds_p=0,
+                sub_gst_p="", 
+                sub_short_code=client_req.short_code or "",
+                sub_location=client_req.address or "", 
+                ship_to=client_req.address or "",
+                currency=client_req.currency or "INR", 
+                status=client_req.status or "Active",
+                creation_date=now, last_update_date=now,
+                created_by="Admin", last_updated_by="Admin", last_update_login="Admin"
+            )
+            db.add(new_sub)
         db.commit()
         db.refresh(new_client)
-
-        return {
-            "message": "Client and sub-clients created successfully",
-            "client_id": new_client.cl_id,
-            "client_ref_no": new_client.client_ref_no,
-            "sub_clients_created": len(sub_clients),
-        }
-
+        return {"message": "Client and sub-clients created successfully", "client_id": new_client.cl_id}
     except Exception as e:
-        db.rollback()          # rolls back BOTH client and sub-client inserts
+        db.rollback()
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
 
