@@ -97,6 +97,19 @@ class WFHApplyRequest(BaseModel):
     to_date: Optional[str] = None   # to_date (if not given, defaults to date)
     days: Optional[float] = None    # if not given, auto-calculated on backend
 
+class OTUpdateRequest(BaseModel):
+    ot_date: str
+    from_time: str
+    to_time: str
+    duration: str
+    reason: str
+
+class WFHUpdateRequest(BaseModel):
+    from_date: str
+    to_date: Optional[str] = None
+    days: Optional[float] = None
+    reason: str
+
 class WFHApprovalAction(BaseModel):
     wfh_id: int
     admin_id: str
@@ -152,6 +165,31 @@ class TimesheetApprovalAction(BaseModel):
     action: str
     remarks: Optional[str] = None
 
+class TimesheetCreate(BaseModel):
+    date: str
+    day: str
+    type: str
+    project: str
+    total_hours: str
+    activity: str
+    reason: Optional[str] = None
+    emp_id: str
+    month: str
+    working_hours: Optional[str] = None
+    remarks: Optional[str] = None
+
+class TimesheetUpdate(BaseModel):
+    date: str
+    day: str
+    type: str
+    project: str
+    total_hours: str
+    activity: str
+    reason: Optional[str] = None
+    month: str
+    working_hours: Optional[str] = None
+    remarks: Optional[str] = None
+
 class Verify2FARequest(BaseModel):
     user_id: str
     totp_code: str
@@ -172,7 +210,7 @@ class ResetPasswordRequest(BaseModel):
 class SubClientSchema(BaseModel):
     sub_cl_id: Optional[int] = None
     sub_client_name: str
-    client_ref_no: Optional[str] = ""
+    client_ref_no: str
     sub_gst_no: Optional[str] = None
     sub_msme_no: Optional[str] = None
     sub_pan: Optional[str] = None
@@ -185,8 +223,7 @@ class SubClientSchema(BaseModel):
     status: Optional[str] = "Active"
 
 class ClientApplyRequest(BaseModel):
-    client_type: Optional[str] = None
-    client_ref_no: Optional[str] = ""
+    client_ref_no: str
     client_name: str
     company_name: str
     mobile_no: Optional[str] = None
@@ -201,7 +238,7 @@ class ClientApplyRequest(BaseModel):
     short_code: Optional[str] = None
     currency: Optional[str] = None
     tds: Optional[str] = None
-    gst_p: Optional[str] = ""
+    gst_p: Optional[str] = None
     address: Optional[str] = None
     status: Optional[str] = "Active"
     sites: Optional[List[SubClientSchema]] = []
@@ -211,7 +248,6 @@ class ClientResponse(BaseModel):
     client_ref_no: str
     client_name: str
     company_name: str
-    client_type: Optional[str] = None
     country_code: Optional[str] = "+91"
     mobile_no: Optional[str] = None
     email_id: Optional[str] = None
@@ -220,13 +256,13 @@ class ClientResponse(BaseModel):
     msme_available: Optional[str] = None
     msme: Optional[str] = None
     pan_no: Optional[str] = None
-    address: Optional[str] = ""
+    address: Optional[str] = None
     status: Optional[str] = "Active"
-    website: Optional[str] = ""
-    short_code: Optional[str] = ""
+    website: Optional[str] = None
+    short_code: Optional[str] = None
     currency: Optional[str] = None
-    tds: Optional[str] = ""
-    gst_p: Optional[str] = ""
+    tds: Optional[str] = None
+    gst_p: Optional[str] = None
     sites: Optional[List[SubClientSchema]] = []
     creation_date: Optional[Any] = None
     last_update_date: Optional[Any] = None
