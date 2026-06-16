@@ -244,20 +244,17 @@ class WFHDet(Base):
     __tablename__ = "xxits_aruvi_wfh_det_t"
 
     wfh_id = Column(Integer, primary_key=True, autoincrement=True)
-    from_date = Column("date", String(20), nullable=False)
+    from_date = Column(String(20), nullable=False)
     emp_id = Column(String(50), nullable=False)
     to_date = Column(String(20), nullable=False)
     days = Column(String(15), nullable=False)
     reason = Column(String(2000), nullable=False)
     status = Column(String(20), nullable=False)
-    approved_by = Column(String(250), nullable=True)
-    remarks = Column(String(2000), nullable=True)
     created_by = Column(String(250), nullable=False)
     creation_date = Column(DateTime, nullable=False)
     last_updated_by = Column(String(250), nullable=False)
     last_update_date = Column(DateTime, nullable=False)
     last_update_login = Column(String(250), nullable=False)
-    
 
 
 
@@ -309,14 +306,14 @@ class TimesheetDet(Base):
     day = Column(String(50))
     type = Column(String(100))
     project = Column(String(1000))
-    total_hours = Column(String(11), nullable=False)
+    total_hours = Column(String(11))
     activity = Column(String(4000))
-    reason = Column(String(240))
+    reason = Column(String(1000))
     emp_id = Column(String(50))
     month = Column(String(50))
     working_hours = Column(String(20))
     status = Column(String(240))
-    remarks = Column(String(350))
+    remarks = Column(String(1000))
     revision = Column(String(10))
     approved_by = Column(String(100))
     approved_on = Column(DateTime)
@@ -328,6 +325,13 @@ class TimesheetDet(Base):
     attribute5 = Column(String(240))
     attribute6 = Column(String(240))
     attribute7 = Column(String(240))
+    attribute8 = Column(String(240))
+    attribute9 = Column(String(240))
+    attribute10 = Column(String(240))
+    attribute11 = Column(String(240))
+    attribute12 = Column(String(240))
+    attribute13 = Column(String(240))
+    attribute14 = Column(String(240))
     attribute15 = Column(String(240))
     created_by = Column(String(100))
     creation_date = Column(DateTime)
@@ -372,7 +376,6 @@ class CompanyClient(Base):
     cl_id = Column(Integer, primary_key=True, autoincrement=True)
     client_ref_no = Column(String(100))
     client_name = Column(String(240))
-    client_type = Column(String(20))
     mobile_no = Column(String(15))
     country_code = Column(String(10))
     email = Column(String(50))
@@ -387,7 +390,7 @@ class CompanyClient(Base):
     website = Column(String(1000))
     short_code = Column(String(100))
     currency = Column(String(10))
-    gst_value = Column(String(50), nullable=False, default="")
+    gst_value = Column(String(50))
     attribute_category = Column(String(240))
     creation_date = Column(DateTime)
     last_update_date = Column(DateTime)
@@ -407,6 +410,7 @@ class CompanyClient(Base):
     attribute11 = Column(String(240))
     attribute12 = Column(String(240))
     attribute13 = Column(String(240))
+    attribute14 = Column(String(240))
 
 class SubClient(Base):
     __tablename__ = "xxits_aruvi_sub_client_t"
@@ -488,35 +492,17 @@ class Project(Base):
 
 
 class Department(Base):
-    __tablename__ = "xxits_aruvi_department_t"
+    __tablename__ = "xxits_aruvi_dept_t"
 
     dpt_id = Column(Integer, primary_key=True, autoincrement=True)
-    department_ref_no = Column(String(1000))
+    department_ref_no = Column(String(150))
     department = Column(String(100))
     description = Column(String(100))
-    status = Column(String(100))
-    dom_id = Column(Integer)
-    attribute_category = Column(String(240))
-    attribute1 = Column(String(240))
-    attribute2 = Column(String(240))
-    attribute3 = Column(String(240))
-    attribute4 = Column(String(240))
-    attribute5 = Column(String(240))
-    attribute6 = Column(String(240))
-    attribute7 = Column(String(240))
-    attribute8 = Column(String(240))
-    attribute9 = Column(String(240))
-    attribute10 = Column(String(240))
-    attribute11 = Column(String(240))
-    attribute12 = Column(String(240))
-    attribute13 = Column(String(240))
-    attribute14 = Column(String(240))
-    attribute15 = Column(String(240))
+    status = Column(String(20))
     created_by = Column(String(100))
     creation_date = Column(DateTime)
     last_updated_by = Column(String(100))
     last_update_date = Column(DateTime)
-    last_update_login = Column(String(255))
 
 class Role(Base):
     __tablename__ = "xxits_aruvi_role_t"
