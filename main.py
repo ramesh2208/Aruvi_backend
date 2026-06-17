@@ -1147,6 +1147,15 @@ def get_attendance_logs(manager_id: Optional[str] = None, db: Session = Depends(
     today = datetime.now().date()
     try:
         query = db.query(models.EmpDet)
+        # Filter only active employees (exclude resigned/inactive)
+        query = query.filter(
+            or_(
+                models.EmpDet.end_date == None,
+                models.EmpDet.end_date == "",
+                func.lower(func.trim(models.EmpDet.end_date)) == "none",
+                models.EmpDet.end_date.like("0000-00-00%")
+            )
+        )
         if manager_id:
             query = query.filter(
                 or_(
@@ -1154,7 +1163,7 @@ def get_attendance_logs(manager_id: Optional[str] = None, db: Session = Depends(
                     func.lower(func.trim(models.EmpDet.project_manager)) == manager_id.strip().lower()
                 )
             )
-        employees = query.all()
+        employees = query.order_by(models.EmpDet.name).all()
         logs = db.query(models.CheckIn).filter(models.CheckIn.t_date == today).all()
     except Exception as e:
         handle_db_error(e)
@@ -1170,7 +1179,7 @@ def get_attendance_logs(manager_id: Optional[str] = None, db: Session = Depends(
             "inTime": log.in_time if log and log.in_time else "--:--",
             "outTime": log.out_time if log and log.out_time else "--:--",
             "totalHours": log.Total_hours if log and log.Total_hours else "0Hr 0Min",
-            "status": log.status if log and log.status else "Absent"
+            "status": log.status if log and log.status else "A"
         })
     return results
 
