@@ -1267,11 +1267,8 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
             t1 = grace_start_time
             checkin_record.in_time = "09:30:00"
 
-        if checkout_grace_start and checkout_grace_end and checkout_grace_start <= t2 <= checkout_grace_end:
-            t2 = checkout_grace_end
-            checkin_record.out_time = "19:00:00"
-        else:
-            checkin_record.out_time = raw_out_time
+        # Save the actual out_time as-is (no auto-snap to 19:00)
+        checkin_record.out_time = raw_out_time
 
         delta = t2 - t1
         total_seconds = int(delta.total_seconds())
@@ -4665,5 +4662,193 @@ def get_filtered_data_by_modules(user_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/mark-halfday-auto")
+def mark_halfday_auto(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """
+    EOD job: finds employees with in_time recorded today but NO out_time,
+    marks them as 0.5CL (or 0.5LOP if no balance), deducts leave, and
+    sends email + push notification to employee and manager.
+    """
+    today = datetime.now().date()
+    now   = datetime.now()
+
+    # Find all checkin records today that have in_time but missing/empty out_time
+    records = db.query(models.CheckIn).filter(
+        models.CheckIn.t_date == today,
+        models.CheckIn.in_time.isnot(None),
+        models.CheckIn.in_time != "",
+        models.CheckIn.in_time != "--:--",
+        or_(
+            models.CheckIn.out_time == None,
+            models.CheckIn.out_time == "",
+            models.CheckIn.out_time == "--:--",
+        )
+    ).all()
+
+    processed = []
+    skipped   = []
+
+    for record in records:
+        emp_id = (record.emp_id or "").strip()
+        if not emp_id:
+            continue
+
+        # Skip if already has a leave status (0.5CL, CL, SL, etc.)
+        current_status = (record.status or "").strip().upper()
+        if current_status in ("0.5CL", "CL", "0.5SL", "SL", "0.5LOP", "LOP", "WFH"):
+            skipped.append(emp_id)
+            continue
+
+        emp = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()
+        ).first()
+
+        # Check and deduct 0.5 CL balance
+        cl_balance = db.query(models.LeaveDet).filter(
+            models.LeaveDet.emp_id == emp_id,
+            or_(
+                func.lower(models.LeaveDet.leave_type).contains("casual"),
+                func.lower(models.LeaveDet.leave_type) == "cl"
+            )
+        ).first()
+
+        days_to_deduct = 0.5
+        leave_reason   = "Auto-deducted: Checked in but no checkout recorded"
+
+        if cl_balance and float(cl_balance.available_leave or 0) >= 0.5:
+            cl_balance.available_leave = float(cl_balance.available_leave) - 0.5
+            cl_balance.availed_leave   = float(cl_balance.availed_leave or 0) + 0.5
+            cl_balance.last_update_date = now
+            cl_balance.last_updated_by  = emp_id
+            db.add(cl_balance)
+            new_status        = "0.5CL"
+            actual_leave_type = cl_balance.leave_type or "Casual Leave"
+            l_det_id_val      = cl_balance.l_det_id
+        else:
+            new_status        = "0.5LOP"
+            actual_leave_type = "Loss of Pay"
+            l_det_id_val      = None
+
+        # Update checkin record
+        record.status          = new_status
+        record.out_time        = ""
+        record.Total_hours     = ""
+        record.last_update_date = now
+        record.last_updated_by  = emp_id
+        db.add(record)
+
+        # Create leave entry
+        new_leave = models.EmpLeave(
+            l_det_id=l_det_id_val, emp_id=emp_id, leave_type=actual_leave_type,
+            from_date=today.strftime("%d-%b-%Y"), to_date=today.strftime("%d-%b-%Y"),
+            days="0.5", reason=leave_reason, status="Approved",
+            applied_date=now.strftime("%d-%b-%Y"),
+            mail_message_id="", hr_action="", hr_approval="", admin_approval="",
+            lop_days="0.5" if "LOP" in new_status else "0",
+            remarks="Auto-generated: No checkout", approved_by="System",
+            reporting_manager="", approver="", revision="0",
+            attribute_category="AUTO", attribute1="0.5",
+            attribute2="", attribute3="", attribute4="", attribute5="",
+            attribute6="", attribute7="", attribute8="", attribute9="",
+            attribute10="", attribute11="", attribute12="", attribute13="",
+            attribute14="", file="",
+            created_by=emp_id, creation_date=now,
+            last_updated_by=emp_id, last_update_date=now
+        )
+        db.add(new_leave)
+
+        # Send email to employee and notify manager
+        try:
+            if emp and emp.p_mail:
+                date_str = today.strftime("%d-%b-%Y")
+                subject  = f"ITS - {emp.name} - Half Day (0.5 {actual_leave_type}) Auto-Deducted | {date_str}"
+                content  = f"""
+                <p>Good Day!</p>
+                <p>This is an automated notification to inform you that <strong>0.5 day ({actual_leave_type})</strong>
+                has been auto-deducted for <strong>{date_str}</strong> because your check-in was recorded
+                but no check-out was found for the day.</p>
+                <br>
+                <table style="border-collapse:collapse;width:100%;max-width:600px;text-align:center;
+                              font-family:'Times New Roman',Times,serif;border:1px solid #000;">
+                    <thead>
+                        <tr style="background-color:#00008B;font-weight:bold;">
+                            <th style="padding:8px;border:1px solid #000;color:#fff;">Date</th>
+                            <th style="padding:8px;border:1px solid #000;color:#fff;">Check In</th>
+                            <th style="padding:8px;border:1px solid #000;color:#fff;">Check Out</th>
+                            <th style="padding:8px;border:1px solid #000;color:#fff;">Status</th>
+                            <th style="padding:8px;border:1px solid #000;color:#fff;">Deduction</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td style="padding:8px;border:1px solid #000;color:#00008B;">{date_str}</td>
+                            <td style="padding:8px;border:1px solid #000;color:#00008B;">{record.in_time}</td>
+                            <td style="padding:8px;border:1px solid #000;color:#00008B;">--:--</td>
+                            <td style="padding:8px;border:1px solid #000;color:#00008B;">{new_status}</td>
+                            <td style="padding:8px;border:1px solid #000;color:#00008B;">0.5 day</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <br>
+                <p>If this is incorrect, please contact your HR/Admin.</p>
+                """
+                body = get_email_template(emp.name, "Half Day Auto-Deduction", content, "Aruvi System")
+                background_tasks.add_task(send_email_notification, emp.p_mail, subject, body)
+
+                # Push notification to employee
+                if emp.attribute7:
+                    background_tasks.add_task(
+                        send_expo_push_notification, [emp.attribute7],
+                        "Half Day Auto-Deducted",
+                        f"0.5 {actual_leave_type} deducted for {date_str} — no checkout recorded."
+                    )
+
+            # Notify manager
+            if emp:
+                approvers = get_approvers(db, emp)
+                for appr in approvers:
+                    if appr.get("email"):
+                        mgr_content = f"""
+                        <p>Good Day!</p>
+                        <p>This is an automated notification. <strong>{emp.name if emp else emp_id}</strong>
+                        checked in on <strong>{today.strftime('%d-%b-%Y')}</strong> but did not check out.
+                        <strong>0.5 day ({actual_leave_type})</strong> has been auto-deducted from their leave balance.</p>
+                        """
+                        mgr_body = get_email_template(
+                            appr["name"], "Employee Half Day Auto-Deduction",
+                            mgr_content, "Aruvi System"
+                        )
+                        mgr_subject = f"ITS - {emp.name if emp else emp_id} - Half Day Auto-Deducted | {today.strftime('%d-%b-%Y')}"
+                        background_tasks.add_task(send_email_notification, appr["email"], mgr_subject, mgr_body)
+                    if appr.get("token"):
+                        background_tasks.add_task(
+                            send_expo_push_notification, [appr["token"]],
+                            "Employee Half Day",
+                            f"{emp.name if emp else emp_id} has no checkout — 0.5 {actual_leave_type} auto-deducted."
+                        )
+
+            # In-app notification
+            create_notification(
+                db=db, emp_id=emp_id, module="Leave",
+                title="Half Day Auto-Deducted",
+                message=f"0.5 {actual_leave_type} auto-deducted for {today.strftime('%d-%b-%Y')} — no checkout recorded.",
+                created_by="System"
+            )
+        except Exception as notif_err:
+            print(f"⚠️ Notification error for {emp_id}: {notif_err}")
+
+        processed.append({"emp_id": emp_id, "status": new_status})
+
+    db.commit()
+    print(f"✅ mark-halfday-auto: processed={len(processed)}, skipped={len(skipped)}")
+    return {
+        "message": f"Half-day auto-mark complete for {today}",
+        "processed": len(processed),
+        "skipped": len(skipped),
+        "details": processed
+    }
+
 
 app.include_router(router)
