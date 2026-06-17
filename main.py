@@ -1427,10 +1427,10 @@ def get_leave_stats(emp_id: str, db: Session = Depends(get_db)):
         "casualLeave": {"total": 0, "availed": 0},
         "sickLeave": {"total": 0, "availed": 0},
         "maternityPaternity": {"total": 0, "availed": 0},
-        "marriageLeave": {"total": 5, "availed": 0},
+        "marriageLeave": {"total": 0, "availed": 0},
         "total": 0, "availed": 0
     }
-    cl_total = sl_total = mp_total = cl_availed = sl_availed = mp_availed = 0.0
+    cl_total = sl_total = mp_total = wl_total = cl_availed = sl_availed = mp_availed = wl_availed = 0.0
     for row in leave_rows:
         l_type = (row.leave_type or "").lower()
         try:
@@ -1444,11 +1444,14 @@ def get_leave_stats(emp_id: str, db: Session = Depends(get_db)):
             sl_total = t_val; sl_availed = a_val
         elif 'maternity' in l_type or 'paternity' in l_type or l_type in ['ml', 'pl']:
             mp_total = t_val; mp_availed = a_val
+        elif 'wedding' in l_type or 'marriage' in l_type:
+            wl_total = t_val; wl_availed = a_val
     stats["casualLeave"] = {"total": cl_total, "availed": cl_availed}
     stats["sickLeave"] = {"total": sl_total, "availed": sl_availed}
     stats["maternityPaternity"] = {"total": mp_total, "availed": mp_availed}
-    stats["total"] = cl_total + sl_total + mp_total + 5
-    stats["availed"] = cl_availed + sl_availed + mp_availed
+    stats["marriageLeave"] = {"total": wl_total, "availed": wl_availed}
+    stats["total"] = cl_total + sl_total + mp_total + wl_total
+    stats["availed"] = cl_availed + sl_availed + mp_availed + wl_availed
     return {**stats, "has_record": len(leave_rows) > 0}
 
 
@@ -1769,6 +1772,8 @@ async def apply_leave(
                 )
             ).first()
             search_key = None
+        elif 'marriage' in l_type_lower or 'wedding' in l_type_lower:
+            search_key = 'wedding'
         else:
             search_key = l_type_lower.split(' ')[0]
 
