@@ -1700,7 +1700,7 @@ def get_approvers(db: Session, user: models.EmpDet):
                 print(f"   {label} '{ref}' has no email in p_mail/mail_id. Mail cannot be sent.")
                 return
             if approver.emp_id not in approver_ids:
-                approvers.append({"email": email, "name": approver.name, "token": approver.attribute7})
+                approvers.append({"email": email, "name": approver.name, "token": getattr(approver, "attribute7", None)})
                 approver_ids.add(approver.emp_id)
             return
 
