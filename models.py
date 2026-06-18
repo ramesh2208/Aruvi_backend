@@ -217,6 +217,7 @@ class LeaveDet(Base):
     total_leave = Column(String(240))
     available_leave = Column(DECIMAL(5, 2))
     availed_leave = Column(DECIMAL(5, 2))
+    revision = Column(String(240), default="0")
     revised_year = Column(String(250))
     attribute_category = Column(String(240))
     attribute1 = Column(String(240))
