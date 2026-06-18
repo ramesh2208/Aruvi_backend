@@ -1618,7 +1618,11 @@ def test_push(req: schemas.PushTokenRegisterRequest, db: Session = Depends(get_d
 
 
 def get_employee_email(emp: models.EmpDet) -> str:
-    return (emp.p_mail or emp.mail_id or "").strip()
+    for candidate in (emp.p_mail, emp.mail_id):
+        email = (candidate or "").strip()
+        if email:
+            return email
+    return ""
 
 
 def find_employee_reference(db: Session, value: Optional[str]):
@@ -1637,7 +1641,12 @@ def find_employee_reference(db: Session, value: Optional[str]):
     ).first()
 
 
-def get_approvers(db: Session, user: models.EmpDet):
+def looks_like_email(value: Optional[str]) -> bool:
+    email = (value or "").strip()
+    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email))
+
+
+def _get_approvers_legacy(db: Session, user: models.EmpDet):
     approvers = []
     approver_ids = set()
 
@@ -1669,6 +1678,46 @@ def get_approvers(db: Session, user: models.EmpDet):
 
     print(f"   📬 Total approvers with email: {sum(1 for a in approvers if a['email'])}/{len(approvers)}")
     # Management/Admin auto-inclusion removed as per user request
+    return approvers
+
+
+def get_approvers(db: Session, user: models.EmpDet):
+    approvers = []
+    approver_ids = set()
+
+    print(f"\n[get_approvers] emp_id={user.emp_id}, assign_manager={user.assign_manager}, project_manager={user.project_manager}")
+
+    def add_approver(label: str, reference: Optional[str]):
+        ref = (reference or "").strip()
+        if not ref:
+            return
+
+        approver = find_employee_reference(db, ref)
+        if approver:
+            email = get_employee_email(approver)
+            print(f"   {label} found: {approver.name} ({approver.emp_id}) | email={email}")
+            if not email:
+                print(f"   {label} '{ref}' has no email in p_mail/mail_id. Mail cannot be sent.")
+                return
+            if approver.emp_id not in approver_ids:
+                approvers.append({"email": email, "name": approver.name, "token": approver.attribute7})
+                approver_ids.add(approver.emp_id)
+            return
+
+        if looks_like_email(ref):
+            print(f"   {label} is already an email address: {ref}")
+            email_key = ref.lower()
+            if email_key not in approver_ids:
+                approvers.append({"email": ref, "name": label, "token": None})
+                approver_ids.add(email_key)
+            return
+
+        print(f"   {label} emp_id='{ref}' NOT found in EmpDet table!")
+
+    add_approver("Assign Manager", user.assign_manager)
+    add_approver("Project Manager", user.project_manager)
+
+    print(f"   Total approvers with email: {sum(1 for a in approvers if a['email'])}/{len(approvers)}")
     return approvers
 
 
