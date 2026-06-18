@@ -488,7 +488,7 @@ def auto_calculate_total_hours(emp_id: str, db: Session):
             total_seconds = int(delta.total_seconds())
             hours = total_seconds // 3600
             minutes = (total_seconds % 3600) // 60
-            total_hours_str = f"{hours}h {minutes}m"
+            total_hours_str = f"{hours}Hr {minutes}Min"
             checkin_record.Total_hours = total_hours_str
             checkin_record.last_update_date = datetime.now()
             db.commit()
@@ -2417,7 +2417,7 @@ def get_notifications(
                     "id": f"admin_ot_{ot.ot_id}", "record_id": ot.ot_id,
                     "type": _status_type(st), "notification_type": "ot",
                     "title": f"OT Request – {emp_name}",
-                    "message": f"{_status_label(st)} | {ot.ot_date}: {ot.duration} hrs",
+                    "message": f"{_status_label(st)} | {ot.ot_date}: {ot.duration}",
                     "time": str(update_time or "Recently"), "icon": _status_icon(st),
                     "screen": f"/AdminOt?tab=myApproval&ot_id={ot.ot_id}"
                 })
@@ -2472,7 +2472,7 @@ def get_notifications(
                 "id": f"emp_ot_{ot.ot_id}", "record_id": ot.ot_id,
                 "type": _status_type(st), "notification_type": "ot",
                 "title": f"OT {_status_label(st)}",
-                "message": f"OT on {ot.ot_date}: {ot.duration} hrs",
+                "message": f"OT on {ot.ot_date}: {ot.duration}",
                 "time": str(update_time or "Recently"), "icon": _status_icon(st),
                 "screen": f"/EmployeeOt?tab=history&id={ot.ot_id}"
             })
@@ -2525,6 +2525,7 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
             for appr in approvers:
                 print(f"   Sending to: {appr['email']} ({appr['name']})")
                 if appr["email"]:
+                    duration_display = request.duration.replace("h", "Hr").replace("m", "Min")
                     content = f"""
                     <p>Good Day!</p>
                     <p>Please find below the details of my overtime request.</p>
@@ -2547,7 +2548,7 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
                                 <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.reason}</td>
                                 <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.from_time}</td>
                                 <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.to_time}</td>
-                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.duration}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{duration_display}</td>
                             </tr>
                         </tbody>
                     </table>
