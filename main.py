@@ -2226,7 +2226,47 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
                 if from_dt: month_str = from_dt.strftime("%b-%y")
             except: pass
             
-            pure_days = fmt_days(leave.days)
+            # Ensure we show the computed working days if stored `leave.days` is missing/zero
+            try:
+                has_days = False
+                if leave.days is not None:
+                    try:
+                        has_days = float(str(leave.days).strip()) > 0
+                    except:
+                        has_days = False
+                if has_days:
+                    pure_days = fmt_days(leave.days)
+                else:
+                    # compute working days between from_date and to_date (exclude Sundays and office holidays)
+                    computed_days = 0
+                    try:
+                        req_from = parse_date(leave.from_date)
+                        req_to = parse_date(leave.to_date) if leave.to_date else req_from
+                        # gather holidays
+                        holidays_raw = db.query(models.HolidayDet.Office_Holiday_Date).all()
+                        holiday_dates = set()
+                        for h in holidays_raw:
+                            try:
+                                hd = parse_date(h[0])
+                                if hd:
+                                    holiday_dates.add(hd.date())
+                            except:
+                                continue
+                        if req_from and req_to:
+                            cur = req_from
+                            while cur <= req_to:
+                                # Python weekday: Monday=0 ... Sunday=6
+                                if cur.weekday() != 6 and cur.date() not in holiday_dates:
+                                    computed_days += 1
+                                cur += timedelta(days=1)
+                        # adjust for half-day recorded in leave.half_date
+                        if getattr(leave, 'half_date', None):
+                            computed_days = max(0.5, computed_days - 0.5)
+                    except Exception:
+                        computed_days = 0
+                    pure_days = fmt_days(computed_days)
+            except Exception:
+                pure_days = fmt_days(leave.days)
             
             status_content = f"""
             <p>Good Day!</p>
