@@ -66,7 +66,7 @@ class EmpDet(Base):
     # attribute4 = Column(String(240))
     # attribute5 = Column(String(240))
     # attribute6 = Column(String(240))
-    # attribute7 = Column(String(240))
+    attribute7 = Column(String(255))
     push_notification = Column(String(240))
     device_id = Column(String(240))
     assign_manager = Column(String(240))
@@ -707,4 +707,3 @@ class AruviNotification(Base):
     attribute13 = Column(String(240))
     attribute14 = Column(String(240))
     attribute15 = Column(String(240))
-
