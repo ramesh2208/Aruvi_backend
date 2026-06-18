@@ -3249,7 +3249,7 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
         db.rollback(); raise
     except Exception as e:
         db.rollback(); traceback.print_exc()
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
 
 
 @app.get("/permission-stats/{emp_id}")
