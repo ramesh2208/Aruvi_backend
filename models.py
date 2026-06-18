@@ -244,17 +244,19 @@ class WFHDet(Base):
     __tablename__ = "xxits_aruvi_wfh_det_t"
 
     wfh_id = Column(Integer, primary_key=True, autoincrement=True)
-    from_date = Column(String(20), nullable=False)
+    date = Column(String(500))          # stores the individual WFH date (one row per day)
     emp_id = Column(String(50), nullable=False)
-    to_date = Column(String(20), nullable=False)
-    days = Column(String(15), nullable=False)
-    reason = Column(String(2000), nullable=False)
-    status = Column(String(20), nullable=False)
-    created_by = Column(String(250), nullable=False)
-    creation_date = Column(DateTime, nullable=False)
-    last_updated_by = Column(String(250), nullable=False)
-    last_update_date = Column(DateTime, nullable=False)
-    last_update_login = Column(String(250), nullable=False)
+    days = Column(String(15))
+    reason = Column(String(2000))
+    status = Column(String(20))
+    approved_by = Column(String(250))
+    remarks = Column(String(2000))
+    created_by = Column(String(250))
+    creation_date = Column(DateTime)
+    last_updated_by = Column(String(250))
+    last_update_date = Column(DateTime)
+    last_update_login = Column(String(250))
+    to_date = Column(String(20))        # end-date of the original range (informational)
 
 
 
