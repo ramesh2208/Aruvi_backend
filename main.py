@@ -1620,21 +1620,38 @@ def test_push(req: schemas.PushTokenRegisterRequest, db: Session = Depends(get_d
 def get_approvers(db: Session, user: models.EmpDet):
     approvers = []
     approver_ids = set()
-    
+
+    print(f"\n📧 [get_approvers] emp_id={user.emp_id}, assign_manager={user.assign_manager}, project_manager={user.project_manager}")
+
     # 1. Direct Assign Manager (Primary)
-    if user.assign_manager:
-        m = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == user.assign_manager.strip().lower()).first()
-        if m and m.emp_id not in approver_ids:
-            approvers.append({"email": m.p_mail, "name": m.name, "token": m.attribute7})
-            approver_ids.add(m.emp_id)
-            
+    if user.assign_manager and user.assign_manager.strip():
+        m = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == user.assign_manager.strip().lower()
+        ).first()
+        if m:
+            mgr_email = (m.p_mail or m.mail_id or "").strip()
+            print(f"   ✅ Assign Manager found: {m.name} ({m.emp_id}) | email={mgr_email}")
+            if m.emp_id not in approver_ids:
+                approvers.append({"email": mgr_email, "name": m.name, "token": m.attribute7})
+                approver_ids.add(m.emp_id)
+        else:
+            print(f"   ❌ Assign Manager emp_id='{user.assign_manager}' NOT found in EmpDet table!")
+
     # 2. Project Manager (Secondary)
-    if user.project_manager:
-        pm = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == user.project_manager.strip().lower()).first()
-        if pm and pm.emp_id not in approver_ids:
-            approvers.append({"email": pm.p_mail, "name": pm.name, "token": pm.attribute7})
-            approver_ids.add(pm.emp_id)
-            
+    if user.project_manager and user.project_manager.strip():
+        pm = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == user.project_manager.strip().lower()
+        ).first()
+        if pm:
+            pm_email = (pm.p_mail or pm.mail_id or "").strip()
+            print(f"   ✅ Project Manager found: {pm.name} ({pm.emp_id}) | email={pm_email}")
+            if pm.emp_id not in approver_ids:
+                approvers.append({"email": pm_email, "name": pm.name, "token": pm.attribute7})
+                approver_ids.add(pm.emp_id)
+        else:
+            print(f"   ❌ Project Manager emp_id='{user.project_manager}' NOT found in EmpDet table!")
+
+    print(f"   📬 Total approvers with email: {sum(1 for a in approvers if a['email'])}/{len(approvers)}")
     # Management/Admin auto-inclusion removed as per user request
     return approvers
 
@@ -1877,8 +1894,10 @@ async def apply_leave(
                 pure_days = fmt_days(requested_days)
                 subject = f"ITS - {emp_name} - {leave_type} Request | {from_date}"
 
+                print(f"\n📧 [LEAVE EMAIL] approvers={approvers}")
                 if approvers:
                     for appr in approvers:
+                        print(f"   Sending to: {appr['email']} ({appr['name']})")
                         if appr["email"]:
                             content = f"""
                             <p>Good Day!</p>
@@ -1909,10 +1928,12 @@ async def apply_leave(
                             """
                             body = get_email_template(appr["name"], "Leave Request", content, emp_name)
                             background_tasks.add_task(send_email_notification, appr["email"], subject, body)
-                        
+
                         if appr["token"]:
                             background_tasks.add_task(send_expo_push_notification, [appr["token"]],
                                 "New Leave Request", f"{emp_name} has requested {leave_type} from {from_date} to {to_date}.")
+                else:
+                    print(f"   ⚠️ [LEAVE EMAIL] No approvers found for emp_id={emp_id}. Email NOT sent.")
         except Exception as mail_err:
             print(f"❌ Error sending notifications: {mail_err}")
 
@@ -2402,7 +2423,9 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
         try:
             approvers = get_approvers(db, user)
             subject = f"ITS - {user.name} - OT Request | {ot_date_clean} | {request.from_time} to {request.to_time}"
+            print(f"\n📧 [OT EMAIL] approvers={approvers}")
             for appr in approvers:
+                print(f"   Sending to: {appr['email']} ({appr['name']})")
                 if appr["email"]:
                     content = f"""
                     <p>Good Day!</p>
@@ -2437,6 +2460,8 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
                 if appr["token"]:
                     background_tasks.add_task(send_expo_push_notification, [appr["token"]],
                         "New OT Request", f"{user.name} requested OT for {ot_date_clean} ({request.duration}).")
+            if not approvers:
+                print(f"   ⚠️ [OT EMAIL] No approvers found for emp_id={request.emp_id}. Email NOT sent.")
         except Exception as mail_err:
             print(f" Non-critical OT notification error: {mail_err}")
 
@@ -2457,7 +2482,7 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
     except Exception as e:
         print(f" OT INSERT ERROR: {str(e)}")
         db.rollback()
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
 
 
 @app.get("/admin/all-permission-history")
@@ -2750,7 +2775,9 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
             f_display = f_time_dt.strftime("%I:%M %p").lstrip('0')
             t_display = t_time_dt.strftime("%I:%M %p").lstrip('0')
             subject = f"ITS - {user.name} - Permission Request | {request.date} | {f_display} to {t_display}"
+            print(f"\n📧 [PERMISSION EMAIL] approvers={approvers}")
             for appr in approvers:
+                print(f"   Sending to: {appr['email']} ({appr['name']})")
                 if appr["email"]:
                     content = f"""
                     <p>Good Day!</p>
@@ -2785,6 +2812,8 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                 if appr["token"]:
                     background_tasks.add_task(send_expo_push_notification, [appr["token"]],
                         "New Permission Request", f"{user.name} requested permission for {request.date} ({f_display} to {t_display}).")
+            if not approvers:
+                print(f"   ⚠️ [PERMISSION EMAIL] No approvers found for emp_id={target_emp_id}. Email NOT sent.")
         except Exception as mail_err:
             print(f"   Non-critical email error: {mail_err}")
 
@@ -3213,7 +3242,9 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
                 wfh_days_fmt = fmt_days(days_val)
                 wfh_day_label = "Day" if float(days_val or 0) == 1.0 else "Days"
                 subject = f"ITS - {user.name} - WFH | {from_str} to {to_str} ({wfh_days_fmt} {wfh_day_label})"
+                print(f"\n📧 [WFH EMAIL] approvers={approvers}")
                 for appr in approvers:
+                    print(f"   Sending to: {appr['email']} ({appr['name']})")
                     if appr["email"]:
                         content = f"""
                         <p>Good Day!</p>
@@ -3248,6 +3279,8 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
                     if appr["token"]:
                         background_tasks.add_task(send_expo_push_notification, [appr["token"]],
                             "New WFH Request", f"{user.name} requested WFH from {from_str} to {to_str}.")
+                if not approvers:
+                    print(f"   ⚠️ [WFH EMAIL] No approvers found for emp_id={clean_emp_id}. Email NOT sent.")
         except Exception as mail_err:
             print(f" Non-critical WFH notification error: {mail_err}")
 
