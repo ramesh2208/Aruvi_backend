@@ -1904,6 +1904,15 @@ async def apply_leave(
                 db.rollback()
 
         try:
+            db.commit()
+            db.refresh(new_leave)
+            print(f"DEBUG: Leave committed before mail trigger. leave_id={new_leave.l_id}")
+        except Exception as commit_err:
+            print(f"ERROR: Leave commit failed before mail trigger: {commit_err}")
+            db.rollback()
+            raise
+
+        try:
             if user:
                 approvers = get_approvers(db, user)
                 month_str = req_from.strftime("%b-%y") if req_from else ""
@@ -1943,7 +1952,8 @@ async def apply_leave(
                             <br>
                             """
                             body = get_email_template(appr["name"], "Leave Request", content, emp_name)
-                            background_tasks.add_task(send_email_notification, appr["email"], subject, body)
+                            print(f"   Triggering leave email API now: {appr['email']}")
+                            send_email_notification(appr["email"], subject, body)
 
                         if appr["token"]:
                             background_tasks.add_task(send_expo_push_notification, [appr["token"]],
