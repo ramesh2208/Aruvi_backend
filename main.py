@@ -252,6 +252,10 @@ def run_migrations_with_retry(max_retries: int = 3, delay: int = 5):
                     print(" ✅ Migration: Added revision to xxits_aruvi_emp_leave_t")
                 except: pass
                 try:
+                    conn.execute(sqlalchemy.text("ALTER TABLE xxits_leave_det_t ADD COLUMN revision VARCHAR(10)"))
+                    print("Migration: Added revision to xxits_leave_det_t")
+                except: pass
+                try:
                     conn.execute(sqlalchemy.text("ALTER TABLE xxits_emp_det_t ADD COLUMN attribute7 VARCHAR(255)"))
                     print(" ✅ Migration: Added attribute7 to xxits_emp_det_t")
                 except: pass
@@ -2133,9 +2137,24 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
     leave.revision = str(current_rev + 1)
     db.add(leave)
 
+    leave_det = None
+    if leave.l_det_id:
+        leave_det = db.query(models.LeaveDet).filter(models.LeaveDet.l_det_id == leave.l_det_id).first()
+    if not leave_det:
+        l_type_key = (leave.leave_type or "").strip().lower().split(' ')[0]
+        leave_det = db.query(models.LeaveDet).filter(
+            func.lower(func.trim(models.LeaveDet.emp_id)) == (leave.emp_id or "").strip().lower(),
+            func.lower(func.trim(models.LeaveDet.leave_type)).contains(l_type_key)
+        ).first()
+    if leave_det:
+        leave_det.revision = leave.revision
+        leave_det.last_updated_by = request_item.admin_id
+        leave_det.last_update_date = datetime.now()
+        db.add(leave_det)
+
     if request_item.action == 'Rejected' and old_status != 'Rejected':
         l_type_key = leave.leave_type.strip().lower().split(' ')[0]
-        balance = db.query(models.LeaveDet).filter(
+        balance = leave_det or db.query(models.LeaveDet).filter(
             func.lower(func.trim(models.LeaveDet.emp_id)) == leave.emp_id.lower(),
             func.lower(func.trim(models.LeaveDet.leave_type)).contains(l_type_key)
         ).first()
@@ -2256,7 +2275,11 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
             )
     except Exception as e:
         print(f" Email_id notification failed: {e}")
-    return {"message": f"Leave request {request_item.action.lower()} successfully", "approved_by": leave.approved_by}
+    return {
+        "message": f"Leave request {request_item.action.lower()} successfully",
+        "approved_by": leave.approved_by,
+        "revision": leave.revision
+    }
 
 def _status_type(s: str) -> str:
     s = (s or '').lower().strip()
