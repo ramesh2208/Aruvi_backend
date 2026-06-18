@@ -1617,6 +1617,26 @@ def test_push(req: schemas.PushTokenRegisterRequest, db: Session = Depends(get_d
     return {"message": "Test push triggered"}
 
 
+def get_employee_email(emp: models.EmpDet) -> str:
+    return (emp.p_mail or emp.mail_id or "").strip()
+
+
+def find_employee_reference(db: Session, value: Optional[str]):
+    ref = (value or "").strip()
+    if not ref:
+        return None
+
+    ref_lower = ref.lower()
+    return db.query(models.EmpDet).filter(
+        or_(
+            func.lower(func.trim(models.EmpDet.emp_id)) == ref_lower,
+            func.lower(func.trim(models.EmpDet.p_mail)) == ref_lower,
+            func.lower(func.trim(models.EmpDet.mail_id)) == ref_lower,
+            func.lower(func.trim(models.EmpDet.name)) == ref_lower
+        )
+    ).first()
+
+
 def get_approvers(db: Session, user: models.EmpDet):
     approvers = []
     approver_ids = set()
@@ -1625,13 +1645,11 @@ def get_approvers(db: Session, user: models.EmpDet):
 
     # 1. Direct Assign Manager (Primary)
     if user.assign_manager and user.assign_manager.strip():
-        m = db.query(models.EmpDet).filter(
-            func.lower(func.trim(models.EmpDet.emp_id)) == user.assign_manager.strip().lower()
-        ).first()
+        m = find_employee_reference(db, user.assign_manager)
         if m:
-            mgr_email = (m.p_mail or m.mail_id or "").strip()
+            mgr_email = get_employee_email(m)
             print(f"   ✅ Assign Manager found: {m.name} ({m.emp_id}) | email={mgr_email}")
-            if m.emp_id not in approver_ids:
+            if mgr_email and m.emp_id not in approver_ids:
                 approvers.append({"email": mgr_email, "name": m.name, "token": m.attribute7})
                 approver_ids.add(m.emp_id)
         else:
@@ -1639,13 +1657,11 @@ def get_approvers(db: Session, user: models.EmpDet):
 
     # 2. Project Manager (Secondary)
     if user.project_manager and user.project_manager.strip():
-        pm = db.query(models.EmpDet).filter(
-            func.lower(func.trim(models.EmpDet.emp_id)) == user.project_manager.strip().lower()
-        ).first()
+        pm = find_employee_reference(db, user.project_manager)
         if pm:
-            pm_email = (pm.p_mail or pm.mail_id or "").strip()
+            pm_email = get_employee_email(pm)
             print(f"   ✅ Project Manager found: {pm.name} ({pm.emp_id}) | email={pm_email}")
-            if pm.emp_id not in approver_ids:
+            if pm_email and pm.emp_id not in approver_ids:
                 approvers.append({"email": pm_email, "name": pm.name, "token": pm.attribute7})
                 approver_ids.add(pm.emp_id)
         else:
