@@ -1465,7 +1465,7 @@ def get_wfh_history(emp_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         handle_db_error(e)
     return [
-        {"wfh_id": row.wfh_id, "from_date": row.from_date, "to_date": row.to_date,
+        {"wfh_id": row.wfh_id, "date": row.date, "from_date": row.date, "to_date": row.to_date,
         "days": row.days, "reason": row.reason, "status": row.status}
         for row in history
     ]
@@ -1494,15 +1494,14 @@ def update_wfh(wfh_id: int, request: schemas.WFHUpdateRequest, db: Session = Dep
         func.lower(func.trim(models.WFHDet.status)).in_(["pending", "approved"])
     ).all()
     for row in existing_wfh:
-        row_from = parse_date(row.from_date)
-        row_to = parse_date(row.to_date) if row.to_date else row_from
-        if not row_from or not row_to:
+        row_date = parse_date(row.date)
+        if not row_date:
             continue
-        if not (req_to < row_from or req_from > row_to):
+        if req_from.date() <= row_date.date() <= req_to.date():
             raise HTTPException(status_code=400,
-                detail=f"WFH already applied for overlapping dates ({row.from_date} to {row.to_date}).")
+                detail=f"WFH already applied for {row.date}.")
 
-    wfh.from_date = from_date
+    wfh.date = from_date
     wfh.to_date = to_date
     wfh.days = str(request.days) if request.days is not None else wfh.days
     wfh.reason = request.reason
@@ -2695,26 +2694,23 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                 )
         # ── End leave overlap check ────────────────────────────────────────────
 
-        # ── ★ NEW: Block Permission if pending/approved WFH exists on the target date ──
+        # ── ★ Block Permission if pending/approved WFH exists on the target date ──
         existing_wfh = db.query(models.WFHDet).filter(
             func.lower(func.trim(models.WFHDet.emp_id)) == target_emp_id,
             func.lower(func.trim(models.WFHDet.status)).in_(["pending", "approved"])
         ).all()
 
         for w in existing_wfh:
-            wfh_from = parse_date(w.from_date)
-            wfh_to = parse_date(w.to_date) if w.to_date else wfh_from
-            if not wfh_from:
+            # Each WFH row stores a single date in the `date` column
+            wfh_date = parse_date(w.date)
+            if not wfh_date:
                 continue
-            wfh_from_date = wfh_from.date()
-            wfh_to_date = wfh_to.date() if wfh_to else wfh_from_date
-
-            if wfh_from_date <= p_date <= wfh_to_date:
+            if wfh_date.date() == p_date:
                 raise HTTPException(
                     status_code=400,
                     detail=(
                         f"Permission cannot be applied on {request.date} because you have a Work From Home (WFH) "
-                        f"applied from {w.from_date} to {w.to_date or w.from_date}."
+                        f"applied on {w.date}."
                     )
                 )
         # ── End WFH overlap check ──────────────────────────────────────────────
@@ -2814,7 +2810,7 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
         db.rollback(); raise
     except Exception as e:
         db.rollback(); traceback.print_exc()
-        raise HTTPException(status_code=503, detail="Database unavailable. Please try again shortly.")
+        handle_db_error(e)
 
 
 @app.get("/admin/pending-ot")
@@ -2974,7 +2970,7 @@ def get_pending_wfh(manager_id: Optional[str] = None, db: Session = Depends(get_
     for wfh, emp in pending:
         results.append({
             "wfh_id": wfh.wfh_id, "emp_name": emp.name or "Unknown", "emp_id": emp.emp_id or "N/A",
-            "date": wfh.from_date, "from_date": wfh.from_date, "to_date": wfh.to_date,
+            "date": wfh.date, "from_date": wfh.date, "to_date": wfh.to_date,
             "reason": wfh.reason or "No reason", "remarks": "", "status": wfh.status or "Pending",
             "submittedDate": wfh.creation_date.strftime("%d-%b-%Y") if wfh.creation_date else "N/A"
         })
@@ -3000,7 +2996,7 @@ def get_all_wfh_history(manager_id: Optional[str] = None, db: Session = Depends(
         for wfh, emp in all_wfh:
             results.append({
                 "wfh_id": wfh.wfh_id, "emp_name": emp.name if emp else "Unknown",
-                "emp_id": wfh.emp_id, "date": wfh.from_date, "from_date": wfh.from_date,
+                "emp_id": wfh.emp_id, "date": wfh.date, "from_date": wfh.date,
                 "to_date": wfh.to_date, "days": wfh.days, "reason": wfh.reason or "No reason",
                 "remarks": "", "status": wfh.status or "Pending",
                 "submittedDate": wfh.creation_date.strftime("%d-%b-%Y") if wfh.creation_date else "N/A"
@@ -3025,7 +3021,7 @@ def approve_wfh(request: schemas.WFHApprovalAction, background_tasks: Background
     try:
         emp_user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == wfh.emp_id).first()
         if emp_user and emp_user.p_mail:
-            subject = f"WFH Request {request.action.upper()} - {wfh.from_date}"
+            subject = f"WFH Request {request.action.upper()} - {wfh.date}"
             content = f"""
             <p>Good Day!</p>
             <p>Your request for <strong>Work From Home</strong> has been processed.</p>
@@ -3048,7 +3044,7 @@ def approve_wfh(request: schemas.WFHApprovalAction, background_tasks: Background
                     <tr style="background-color: transparent;">
                         <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
                         <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{emp_user.name}</td>
-                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{wfh.from_date}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{wfh.date}</td>
                         <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{wfh.to_date}</td>
                         <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{fmt_days(wfh.days)} {"Day" if float(wfh.days or 0) == 1.0 else "Days"}</td>
                         <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{wfh.reason or "No reason"}</td>
@@ -3062,7 +3058,7 @@ def approve_wfh(request: schemas.WFHApprovalAction, background_tasks: Background
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
             if emp_user.attribute7:
                 background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7],
-                    f"WFH Request {request.action.upper()}", f"Your WFH request for {wfh.from_date} has been {request.action.lower()}.")
+                    f"WFH Request {request.action.upper()}", f"Your WFH request for {wfh.date} has been {request.action.lower()}.")
         # Create notification for employee (who it goes to)
         if emp_user:
             approver_name = admin_user.name if admin_user else "Manager"
@@ -3114,12 +3110,13 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
             func.lower(func.trim(models.WFHDet.status)).in_(["pending", "approved"])
         ).all()
         for row in existing_wfh:
-            row_from = parse_date(row.from_date)
-            row_to = parse_date(row.to_date) if row.to_date else row_from
-            if not row_from or not row_to: continue
-            if not (req_to < row_from or req_from > row_to):
+            row_date = parse_date(row.date)
+            if not row_date:
+                continue
+            # Each row is a single day; check if that day falls within the new requested range
+            if req_from.date() <= row_date.date() <= req_to.date():
                 raise HTTPException(status_code=400,
-                    detail=f"WFH already applied for overlapping dates ({row.from_date} to {row.to_date}).")
+                    detail=f"WFH already applied for {row.date}.")
 
         # ── ★ NEW: Block WFH if an approved leave exists on overlapping dates ──
         approved_leaves = db.query(models.EmpLeave).filter(
@@ -3172,15 +3169,36 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
         normalized_status = (request.status or "Pending").strip() or "Pending"
         if normalized_status.lower() == "pending":
             normalized_status = "Pending"
-        new_wfh = models.WFHDet(
-            emp_id=clean_emp_id, from_date=from_date, to_date=to_date, days=days_val,
-            reason=request.reason, status=normalized_status,
-            created_by=clean_emp_id, creation_date=datetime.now(),
-            last_updated_by=clean_emp_id, last_update_date=datetime.now(), last_update_login=clean_emp_id
-        )
-        db.add(new_wfh)
+
+        # ── Insert ONE row per date in the from→to range ─────────────────────
+        from datetime import timedelta as _td
+        inserted_ids = []
+        current_day = req_from.date()
+        end_day = req_to.date()
+        now_ts = datetime.now()
+        while current_day <= end_day:
+            day_str = current_day.strftime("%d-%b-%Y")
+            new_wfh = models.WFHDet(
+                date=day_str,
+                to_date=to_date,
+                emp_id=clean_emp_id,
+                days=days_val,
+                reason=request.reason,
+                status=normalized_status,
+                created_by=clean_emp_id,
+                creation_date=now_ts,
+                last_updated_by=clean_emp_id,
+                last_update_date=now_ts,
+                last_update_login=clean_emp_id
+            )
+            db.add(new_wfh)
+            current_day += _td(days=1)
         db.commit()
-        db.refresh(new_wfh)
+        # Grab the last inserted record for the return value
+        last_wfh = db.query(models.WFHDet).filter(
+            func.lower(func.trim(models.WFHDet.emp_id)) == clean_emp_id.lower()
+        ).order_by(models.WFHDet.wfh_id.desc()).first()
+        # ── End per-date insert ───────────────────────────────────────────────
         user = submitter
         try:
             if user:
@@ -3244,7 +3262,7 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
                 created_by=clean_emp_id
             )
 
-        return {"message": "WFH request submitted successfully", "wfh_id": new_wfh.wfh_id}
+        return {"message": "WFH request submitted successfully", "wfh_id": last_wfh.wfh_id if last_wfh else None}
     except HTTPException:
         db.rollback(); raise
     except Exception as e:
