@@ -4001,11 +4001,33 @@ def get_projects(
     
     if search:
         search_filter = f"%{search}%"
+        # Find all client ref nos matching client name or company name
+        matching_clients = db.query(models.CompanyClient.client_ref_no).filter(
+            or_(
+                models.CompanyClient.client_name.ilike(search_filter),
+                models.CompanyClient.company_name.ilike(search_filter)
+            )
+        ).all()
+        matching_client_refs = [c[0] for c in matching_clients if c[0]]
+
+        # Find all employee IDs matching employee name
+        matching_employees = db.query(models.EmpDet.emp_id).filter(
+            models.EmpDet.name.ilike(search_filter)
+        ).all()
+        matching_emp_ids = [e[0] for e in matching_employees if e[0]]
+
         query = query.filter(
             or_(
                 models.Project.project_name.ilike(search_filter),
                 models.Project.project_ref_no.ilike(search_filter),
-                models.Project.client_ref_no.ilike(search_filter)
+                models.Project.client_ref_no.ilike(search_filter),
+                models.Project.client_ref_no.in_(matching_client_refs),
+                models.Project.project_manager.ilike(search_filter),
+                models.Project.project_manager.in_(matching_emp_ids),
+                models.Project.status.ilike(search_filter),
+                models.Project.project_priority.ilike(search_filter),
+                models.Project.description.ilike(search_filter),
+                models.Project.project_type.ilike(search_filter)
             )
         )
     
@@ -4050,6 +4072,7 @@ def create_project(project_req: schemas.ProjectCreateRequest, db: Session = Depe
     db.commit()
     db.refresh(new_project)
     return new_project
+
 
 
 @app.put("/admin/projects/{pro_id}", response_model=schemas.ProjectResponse)
@@ -4214,6 +4237,7 @@ def get_project_allocations(pro_id: int, db: Session = Depends(get_db)):
     res = []
     for a in allocs:
         emp = db.query(models.EmpDet.name).filter(models.EmpDet.emp_id == a.emp_id).first()
+        lead = db.query(models.EmpDet.name).filter(models.EmpDet.emp_id == a.lead_id).first()
         role = db.query(models.Role.role).filter(models.Role.role_id == a.role_id).first()
         dept = db.query(models.Department.department).filter(models.Department.dpt_id == a.dpt_id).first()
         dom = db.query(models.Domain.domain).filter(models.Domain.dom_id == a.dom_id).first()
@@ -4221,6 +4245,7 @@ def get_project_allocations(pro_id: int, db: Session = Depends(get_db)):
             assign_id=a.assign_id, emp_id=a.emp_id, role_id=a.role_id, dom_id=a.dom_id, dpt_id=a.dpt_id,
             lead_id=a.lead_id, from_date=a.from_date, to_date=a.to_date, task_description=a.task_description,
             allocation_pct=a.allocation_pct, emp_name=emp[0] if emp else "Unknown",
+            lead_name=lead[0] if lead else "Unknown",
             role_name=role[0] if role else "Unknown", dept_name=dept[0] if dept else "Unknown",
             dom_name=dom[0] if dom else "Unknown"
         ))
@@ -4337,11 +4362,13 @@ def get_clients(
         last_update_dt = safe_dt(c.last_update_date)
         res.append({
             "client_id": c.cl_id, "client_ref_no": c.client_ref_no, "client_name": c.client_name,
+            "client_type": getattr(c, "client_type", None),
             "mobile_no": c.mobile_no, "country_code": c.country_code, "email_id": c.email,
             "gst_available": c.gst, "gst": c.gst_no, "msme_available": c.msme, "msme": c.msme_no,
             "pan_no": c.pan, "address": c.address, "status": c.status or "Active",
             "company_name": c.company_name, "website": c.website, "short_code": c.short_code,
-            "currency": c.currency, "gst_value": c.gst_value, "attribute_category": c.attribute_category,
+            "currency": c.currency, "gst_value": c.gst_value, "gst_p": c.gst_value,
+            "tds": c.attribute1, "attribute_category": c.attribute_category,
             "creation_date": creation_dt, "last_update_date": last_update_dt,
             "created_by": c.created_by, "last_updated_by": c.last_updated_by,
             "last_update_login": c.last_update_login,
@@ -4349,7 +4376,7 @@ def get_clients(
             "attribute4": c.attribute4, "attribute5": c.attribute5, "attribute6": c.attribute6,
             "attribute7": c.attribute7, "attribute8": c.attribute8, "attribute9": c.attribute9,
             "attribute10": c.attribute10, "attribute11": c.attribute11, "attribute12": c.attribute12,
-            "attribute13": c.attribute13, "attribute14": c.attribute14, "sites": sites_list
+            "attribute13": c.attribute13, "sites": sites_list
         })
     return res
 
@@ -4370,10 +4397,12 @@ def get_client(client_id: int, db: Session = Depends(get_db)):
     last_update_dt = safe_dt(client.last_update_date)
     return {
         "client_id": client.cl_id, "client_ref_no": client.client_ref_no, "client_name": client.client_name,
-        "company_name": client.company_name, "mobile_no": client.mobile_no, "email_id": client.email,
+        "company_name": client.company_name, "client_type": client.client_type,
+        "mobile_no": client.mobile_no, "email_id": client.email,
         "gst_available": client.gst, "gst": client.gst_no, "msme_available": client.msme,
         "msme": client.msme_no, "pan_no": client.pan, "status": client.status or "Active",
         "website": client.website, "short_code": client.short_code, "currency": client.currency,
+        "tds": client.attribute1, "gst_p": client.gst_value,
         "address": client.address, "sites": sites_list, "creation_date": creation_dt, "last_update_date": last_update_dt
     }
 
@@ -4386,6 +4415,7 @@ def update_client(client_id: int, client_req: schemas.ClientApplyRequest, db: Se
     now = datetime.now()
     client.client_name = client_req.client_name
     client.company_name = client_req.company_name
+    client.client_type = client_req.client_type
     client.mobile_no = client_req.mobile_no
     client.email = client_req.email_id
     client.gst = client_req.gst_available
@@ -4396,6 +4426,8 @@ def update_client(client_id: int, client_req: schemas.ClientApplyRequest, db: Se
     client.website = client_req.website
     client.short_code = client_req.short_code
     client.currency = client_req.currency
+    client.gst_value = client_req.gst_p or ""
+    client.attribute1 = client_req.tds or ""
     client.address = client_req.address
     client.status = client_req.status
     client.last_update_date = now
@@ -4426,24 +4458,33 @@ def get_holiday_dates(db: Session = Depends(get_db)):
 @app.post("/admin/create-client")
 def create_client(client_req: schemas.ClientApplyRequest, db: Session = Depends(get_db)):
     now = datetime.now()
+
+    # ── 1. Auto-generate client_ref_no if missing ──────────────────────────────
     if not client_req.client_ref_no or client_req.client_ref_no.strip() == "":
-        last_client = db.query(models.CompanyClient).order_by(models.CompanyClient.cl_id.desc()).first()
+        last_client = (
+            db.query(models.CompanyClient)
+            .order_by(models.CompanyClient.cl_id.desc())
+            .first()
+        )
         if not last_client or not last_client.client_ref_no:
             client_req.client_ref_no = "CLI-001"
         else:
             ref_no = last_client.client_ref_no
-            match = re.search(r'(\d+)$', ref_no)
+            match = re.search(r"(\d+)$", ref_no)
             if match:
                 num = int(match.group(1)) + 1
-                prefix = ref_no[:match.start()]
+                prefix = ref_no[: match.start()]
                 client_req.client_ref_no = f"{prefix}{num:03d}"
             else:
                 client_req.client_ref_no = f"{ref_no}-1"
+
+    # ── 2. Insert client + sub-clients inside ONE transaction ──────────────────
     try:
         new_client = models.CompanyClient(
             client_ref_no=client_req.client_ref_no.strip(),
             client_name=client_req.client_name,
             company_name=client_req.company_name,
+            client_type=client_req.client_type,
             mobile_no=client_req.mobile_no,
             country_code=client_req.country_code,
             email=client_req.email_id,
@@ -4457,50 +4498,82 @@ def create_client(client_req: schemas.ClientApplyRequest, db: Session = Depends(
             website=client_req.website,
             short_code=client_req.short_code,
             currency=client_req.currency,
+            gst_value=client_req.gst_p if client_req.gst_p is not None else "",
+            attribute1=client_req.tds or "",
             creation_date=now,
             last_update_date=now,
             created_by="Admin",
             last_updated_by="Admin",
-            last_update_login="Admin"
+            last_update_login="Admin",
         )
         db.add(new_client)
+        # flush → new_client.cl_id is now populated but transaction not committed
         db.flush()
 
+        # ── 3. Build sub-client rows ───────────────────────────────────────────
         if client_req.sites:
-            for sub_req in client_req.sites:
-                new_sub = models.SubClient(
-                    sub_client_name=sub_req.sub_client_name, client_ref_no=new_client.client_ref_no,
-                    sub_gst_no=sub_req.sub_gst_no or "", sub_msme_no=sub_req.sub_msme_no or "",
-                    sub_pan=sub_req.sub_pan or "", sub_tds_p=sub_req.sub_tds_p or 0,
-                    sub_gst_p=sub_req.sub_gst_p or "", sub_short_code=sub_req.sub_short_code or "",
-                    sub_location=sub_req.sub_location or "", ship_to=sub_req.ship_to or "",
-                    currency=sub_req.currency or "INR", status=sub_req.status or "Active",
-                    creation_date=now, last_update_date=now,
-                    created_by="Admin", last_updated_by="Admin", last_update_login="Admin"
+            sub_clients = [
+                models.SubClient(
+                    sub_client_name=s.sub_client_name or client_req.client_name,
+                    client_ref_no=new_client.client_ref_no,          # ← use flushed ref
+                    sub_gst_no=s.sub_gst_no or "",
+                    sub_msme_no=s.sub_msme_no or "",
+                    sub_pan=s.sub_pan or "",
+                    sub_tds_p=s.sub_tds_p or 0,
+                    sub_gst_p=s.sub_gst_p or "",
+                    sub_short_code=s.sub_short_code or "",
+                    sub_location=s.sub_location or "",
+                    ship_to=s.ship_to or "",
+                    currency=s.currency or "INR",
+                    status=s.status or "Active",
+                    creation_date=now,
+                    last_update_date=now,
+                    created_by="Admin",
+                    last_updated_by="Admin",
+                    last_update_login="Admin",
                 )
-                db.add(new_sub)
+                for s in client_req.sites
+            ]
         else:
-            new_sub = models.SubClient(
-                sub_client_name=client_req.client_name, client_ref_no=new_client.client_ref_no,
-                sub_gst_no=client_req.gst if client_req.gst_available == 'Yes' else "", 
-                sub_msme_no=client_req.msme if client_req.msme_available == 'Yes' else "",
-                sub_pan=client_req.pan_no or "", 
-                sub_tds_p=0,
-                sub_gst_p="", 
-                sub_short_code=client_req.short_code or "",
-                sub_location=client_req.address or "", 
-                ship_to=client_req.address or "",
-                currency=client_req.currency or "INR", 
-                status=client_req.status or "Active",
-                creation_date=now, last_update_date=now,
-                created_by="Admin", last_updated_by="Admin", last_update_login="Admin"
-            )
-            db.add(new_sub)
+            # Default sub-client mirrors the parent client
+            sub_clients = [
+                models.SubClient(
+                    sub_client_name=client_req.client_name,
+                    client_ref_no=new_client.client_ref_no,
+                    sub_gst_no=(client_req.gst or "") if client_req.gst_available == "Yes" else "",
+                    sub_msme_no=(client_req.msme or "") if client_req.msme_available == "Yes" else "",
+                    sub_pan=client_req.pan_no or "",
+                    sub_tds_p=0,
+                    sub_gst_p="",
+                    sub_short_code=client_req.short_code or "",
+                    sub_location=client_req.address or "",
+                    ship_to=client_req.address or "",
+                    currency=client_req.currency or "INR",
+                    status=client_req.status or "Active",
+                    creation_date=now,
+                    last_update_date=now,
+                    created_by="Admin",
+                    last_updated_by="Admin",
+                    last_update_login="Admin",
+                )
+            ]
+
+        # bulk-add all sub-clients in one shot
+        db.add_all(sub_clients)
+
+        # ── 4. Single commit → both tables written atomically ─────────────────
         db.commit()
         db.refresh(new_client)
-        return {"message": "Client and sub-clients created successfully", "client_id": new_client.cl_id}
+
+        return {
+            "message": "Client and sub-clients created successfully",
+            "client_id": new_client.cl_id,
+            "client_ref_no": new_client.client_ref_no,
+            "sub_clients_created": len(sub_clients),
+        }
+
     except Exception as e:
-        db.rollback()
+        db.rollback()          # rolls back BOTH client and sub-client inserts
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
 
