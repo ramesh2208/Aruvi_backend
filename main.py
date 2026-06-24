@@ -4080,6 +4080,26 @@ def get_project(pro_id: int, db: Session = Depends(get_db)):
     return _get_project_with_names(project, db)
 
 
+@app.post("/admin/upload-file")
+async def upload_project_file(file: UploadFile = File(...)):
+    try:
+        upload_dir = "uploads/project_files"
+        os.makedirs(upload_dir, exist_ok=True)
+        filename = file.filename or "uploaded_file"
+        safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", filename)
+        if "." not in safe_name:
+            ext = file.content_type.split("/")[-1] if file.content_type else "bin"
+            safe_name = f"{safe_name}.{ext}"
+        unique_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{random.randint(1000,9999)}_{safe_name}"
+        file_path = os.path.join(upload_dir, unique_name)
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        return {"uri": f"uploads/project_files/{unique_name}"}
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Unable to save uploaded file.")
+
+
 @app.post("/admin/projects", response_model=schemas.ProjectResponse)
 def create_project(project_req: schemas.ProjectCreateRequest, db: Session = Depends(get_db)):
     now = datetime.now()
@@ -4496,7 +4516,7 @@ def get_client(client_id: int, db: Session = Depends(get_db)):
     last_update_dt = safe_dt(client.last_update_date)
     return {
         "client_id": client.cl_id, "client_ref_no": client.client_ref_no, "client_name": client.client_name,
-        "company_name": client.company_name, "client_type": client.client_type,
+        "company_name": client.company_name,
         "mobile_no": client.mobile_no, "email_id": client.email,
         "gst_available": client.gst, "gst": client.gst_no, "msme_available": client.msme,
         "msme": client.msme_no, "pan_no": client.pan, "status": client.status or "Active",
@@ -4514,7 +4534,6 @@ def update_client(client_id: int, client_req: schemas.ClientApplyRequest, db: Se
     now = datetime.now()
     client.client_name = client_req.client_name
     client.company_name = client_req.company_name
-    client.client_type = client_req.client_type
     client.mobile_no = client_req.mobile_no
     client.email = client_req.email_id
     client.gst = client_req.gst_available
@@ -4583,7 +4602,6 @@ def create_client(client_req: schemas.ClientApplyRequest, db: Session = Depends(
             client_ref_no=client_req.client_ref_no.strip(),
             client_name=client_req.client_name,
             company_name=client_req.company_name,
-            client_type=client_req.client_type,
             mobile_no=client_req.mobile_no,
             country_code=client_req.country_code,
             email=client_req.email_id,
