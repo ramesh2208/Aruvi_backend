@@ -226,6 +226,7 @@ class ClientApplyRequest(BaseModel):
     client_ref_no: str
     client_name: str
     company_name: str
+    client_type: Optional[str] = None
     mobile_no: Optional[str] = None
     country_code: Optional[str] = "+91"
     gst_available: Optional[str] = "No"
@@ -361,8 +362,8 @@ class DomainResponse(BaseModel):
     domain: str
 
 class EmployeeBriefResponse(BaseModel):
-    emp_id: str
-    name: str
+    emp_id: Optional[str] = ""
+    name: Optional[str] = ""
     role_id: Optional[str] = None
     dpt_id: Optional[str] = None
     dom_id: Optional[str] = None
