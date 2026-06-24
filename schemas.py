@@ -338,6 +338,9 @@ class ProjectResponse(BaseModel):
     last_updated_by: Optional[str] = None
     creation_date: Optional[Any] = None
     last_update_date: Optional[Any] = None
+    client_name: Optional[str] = None
+    manager_name: Optional[str] = None
+
 
 
 class RoleResponse(BaseModel):
