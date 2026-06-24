@@ -3985,6 +3985,36 @@ def get_next_project_ref(db: Session = Depends(get_db)):
     return {"next_ref": f"{prefix}{max_num + 1:04d}"}
 
 
+def _get_project_with_names(p, db):
+    client_name = None
+    if p.client_ref_no:
+        client = db.query(models.CompanyClient.client_name).filter(
+            func.lower(func.trim(models.CompanyClient.client_ref_no)) == func.lower(func.trim(p.client_ref_no))
+        ).first()
+        if client:
+            client_name = client[0]
+            
+    manager_name = None
+    if p.project_manager:
+        mgr = db.query(models.EmpDet.name).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(p.project_manager))
+        ).first()
+        if mgr:
+            manager_name = mgr[0]
+            
+    from datetime import datetime, date
+    res = {}
+    for col in p.__table__.columns:
+        val = getattr(p, col.name)
+        if isinstance(val, (datetime, date)):
+            res[col.name] = val.isoformat()
+        else:
+            res[col.name] = val
+    res["client_name"] = client_name
+    res["manager_name"] = manager_name
+    return res
+
+
 @app.get("/admin/projects")
 def get_projects(
     manager_id: Optional[str] = None, 
@@ -4034,9 +4064,9 @@ def get_projects(
     if paginated:
         total = query.count()
         data = query.order_by(models.Project.pro_id.desc()).offset(skip).limit(limit).all()
-        return {"data": data, "total": total}
+        return {"data": [_get_project_with_names(p, db) for p in data], "total": total}
         
-    return query.order_by(models.Project.pro_id.desc()).all()
+    return [_get_project_with_names(p, db) for p in query.order_by(models.Project.pro_id.desc()).all()]
 
 
 @app.get("/admin/projects/{pro_id}", response_model=schemas.ProjectResponse)
@@ -4044,7 +4074,7 @@ def get_project(pro_id: int, db: Session = Depends(get_db)):
     project = db.query(models.Project).filter(models.Project.pro_id == pro_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    return project
+    return _get_project_with_names(project, db)
 
 
 @app.post("/admin/projects", response_model=schemas.ProjectResponse)
@@ -4071,7 +4101,7 @@ def create_project(project_req: schemas.ProjectCreateRequest, db: Session = Depe
     db.add(new_project)
     db.commit()
     db.refresh(new_project)
-    return new_project
+    return _get_project_with_names(new_project, db)
 
 
 
@@ -4103,7 +4133,7 @@ def update_project(pro_id: int, project_req: schemas.ProjectCreateRequest, db: S
     project.project_priority = project_req.project_priority
     db.commit()
     db.refresh(project)
-    return project
+    return _get_project_with_names(project, db)
 
 
 @app.get("/ot-stats/{emp_id}")
@@ -4236,8 +4266,16 @@ def get_project_allocations(pro_id: int, db: Session = Depends(get_db)):
     allocs = db.query(models.ProjectAllocation).filter(models.ProjectAllocation.pro_id == pro_id).all()
     res = []
     for a in allocs:
-        emp = db.query(models.EmpDet.name).filter(models.EmpDet.emp_id == a.emp_id).first()
-        lead = db.query(models.EmpDet.name).filter(models.EmpDet.emp_id == a.lead_id).first()
+        emp = None
+        if a.emp_id:
+            emp = db.query(models.EmpDet.name).filter(
+                func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(a.emp_id))
+            ).first()
+        lead = None
+        if a.lead_id:
+            lead = db.query(models.EmpDet.name).filter(
+                func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(a.lead_id))
+            ).first()
         role = db.query(models.Role.role).filter(models.Role.role_id == a.role_id).first()
         dept = db.query(models.Department.department).filter(models.Department.dpt_id == a.dpt_id).first()
         dom = db.query(models.Domain.domain).filter(models.Domain.dom_id == a.dom_id).first()
@@ -4265,7 +4303,31 @@ def create_project_allocation(pro_id: int, alloc_req: schemas.ProjectAllocationC
     db.add(new_alloc)
     db.commit()
     db.refresh(new_alloc)
-    return new_alloc
+    
+    # Query details to return full schemas.ProjectAllocationResponse
+    emp = None
+    if new_alloc.emp_id:
+        emp = db.query(models.EmpDet.name).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(new_alloc.emp_id))
+        ).first()
+    lead = None
+    if new_alloc.lead_id:
+        lead = db.query(models.EmpDet.name).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(new_alloc.lead_id))
+        ).first()
+    role = db.query(models.Role.role).filter(models.Role.role_id == new_alloc.role_id).first()
+    dept = db.query(models.Department.department).filter(models.Department.dpt_id == new_alloc.dpt_id).first()
+    dom = db.query(models.Domain.domain).filter(models.Domain.dom_id == new_alloc.dom_id).first()
+    
+    return schemas.ProjectAllocationResponse(
+        assign_id=new_alloc.assign_id, emp_id=new_alloc.emp_id, role_id=new_alloc.role_id,
+        dom_id=new_alloc.dom_id, dpt_id=new_alloc.dpt_id, lead_id=new_alloc.lead_id,
+        from_date=new_alloc.from_date, to_date=new_alloc.to_date, task_description=new_alloc.task_description,
+        allocation_pct=new_alloc.allocation_pct, emp_name=emp[0] if emp else "Unknown",
+        lead_name=lead[0] if lead else "Unknown",
+        role_name=role[0] if role else "Unknown", dept_name=dept[0] if dept else "Unknown",
+        dom_name=dom[0] if dom else "Unknown"
+    )
 
 
 @app.get("/admin/allocations", response_model=List[schemas.ProjectAllocationResponse])
@@ -4273,7 +4335,16 @@ def get_all_allocations(db: Session = Depends(get_db)):
     allocs = db.query(models.ProjectAllocation).all()
     res = []
     for a in allocs:
-        emp = db.query(models.EmpDet.name).filter(models.EmpDet.emp_id == a.emp_id).first()
+        emp = None
+        if a.emp_id:
+            emp = db.query(models.EmpDet.name).filter(
+                func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(a.emp_id))
+            ).first()
+        lead = None
+        if a.lead_id:
+            lead = db.query(models.EmpDet.name).filter(
+                func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(a.lead_id))
+            ).first()
         role = db.query(models.Role.role).filter(models.Role.role_id == a.role_id).first()
         dept = db.query(models.Department.department).filter(models.Department.dpt_id == a.dpt_id).first()
         dom = db.query(models.Domain.domain).filter(models.Domain.dom_id == a.dom_id).first()
@@ -4282,6 +4353,7 @@ def get_all_allocations(db: Session = Depends(get_db)):
             assign_id=a.assign_id, emp_id=a.emp_id, role_id=a.role_id, dom_id=a.dom_id, dpt_id=a.dpt_id,
             lead_id=a.lead_id, from_date=a.from_date, to_date=a.to_date, task_description=a.task_description,
             allocation_pct=a.allocation_pct, emp_name=emp[0] if emp else "Unknown",
+            lead_name=lead[0] if lead else "Unknown",
             role_name=role[0] if role else "Unknown", dept_name=dept[0] if dept else "Unknown",
             dom_name=dom[0] if dom else "Unknown", project_name=proj[0] if proj else "Unknown"
         ))
@@ -4293,7 +4365,16 @@ def get_employee_allocations(emp_id: str, db: Session = Depends(get_db)):
     allocs = db.query(models.ProjectAllocation).filter(models.ProjectAllocation.emp_id == emp_id).all()
     res = []
     for a in allocs:
-        emp = db.query(models.EmpDet.name).filter(models.EmpDet.emp_id == a.emp_id).first()
+        emp = None
+        if a.emp_id:
+            emp = db.query(models.EmpDet.name).filter(
+                func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(a.emp_id))
+            ).first()
+        lead = None
+        if a.lead_id:
+            lead = db.query(models.EmpDet.name).filter(
+                func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(a.lead_id))
+            ).first()
         role = db.query(models.Role.role).filter(models.Role.role_id == a.role_id).first()
         dept = db.query(models.Department.department).filter(models.Department.dpt_id == a.dpt_id).first()
         dom = db.query(models.Domain.domain).filter(models.Domain.dom_id == a.dom_id).first()
@@ -4302,6 +4383,7 @@ def get_employee_allocations(emp_id: str, db: Session = Depends(get_db)):
             assign_id=a.assign_id, emp_id=a.emp_id, role_id=a.role_id, dom_id=a.dom_id, dpt_id=a.dpt_id,
             lead_id=a.lead_id, from_date=a.from_date, to_date=a.to_date, task_description=a.task_description,
             allocation_pct=a.allocation_pct, emp_name=emp[0] if emp else "Unknown",
+            lead_name=lead[0] if lead else "Unknown",
             role_name=role[0] if role else "Unknown", dept_name=dept[0] if dept else "Unknown",
             dom_name=dom[0] if dom else "Unknown", project_name=proj[0] if proj else "Unknown"
         ))
