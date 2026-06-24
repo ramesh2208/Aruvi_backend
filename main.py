@@ -1090,7 +1090,7 @@ def get_employees(
             "id": emp.emp_id,
             "name": emp.name or "Unknown",
             "phone": emp.phone_number or emp.alt_phone_number or "N/A",
-            "status": "active" if not emp.end_date else "inactive",
+            "status": "active" if (not emp.end_date or str(emp.end_date).strip().lower() in ("", "none", "0000-00-00", "0000-00-00 00:00:00", "00-00-0000", "00-00-0000 00:00:00")) else "inactive",
             "end_date": emp.end_date,
             "email": emp.p_mail or emp.mail_id or "",
             "department": domain_name,
@@ -1157,7 +1157,8 @@ def get_attendance_logs(manager_id: Optional[str] = None, db: Session = Depends(
                 models.EmpDet.end_date == None,
                 models.EmpDet.end_date == "",
                 func.lower(func.trim(models.EmpDet.end_date)) == "none",
-                models.EmpDet.end_date.like("0000-00-00%")
+                models.EmpDet.end_date.like("0000-00-00%"),
+                models.EmpDet.end_date.like("00-00-0000%")
             )
         )
         if manager_id:
@@ -3528,7 +3529,8 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
         (models.EmpDet.end_date == None) |
         (models.EmpDet.end_date == "") |
         (func.lower(func.trim(models.EmpDet.end_date)) == "none") |
-        (models.EmpDet.end_date.like("0000-00-00%"))
+        (models.EmpDet.end_date.like("0000-00-00%")) |
+        (models.EmpDet.end_date.like("00-00-0000%"))
     ).all()
 
     upcoming_events = []
@@ -3668,7 +3670,7 @@ def get_birthdays_this_month(db: Session = Depends(get_db)):
         birthdays = []
         for emp in all_emps:
             try:
-                is_active = not emp.end_date or str(emp.end_date).strip() in ("", "none", "None", "0000-00-00", "0000-00-00 00:00:00")
+                is_active = not emp.end_date or str(emp.end_date).strip().lower() in ("", "none", "0000-00-00", "0000-00-00 00:00:00", "00-00-0000", "00-00-0000 00:00:00")
                 if is_active and emp.dob and emp.name:
                     dob = parse_date(emp.dob)
                     if dob and dob.month == current_month:
@@ -3766,7 +3768,8 @@ def get_admin_timesheet_employees(month: Optional[str] = None, year: Optional[st
         (models.EmpDet.end_date == None) |
         (models.EmpDet.end_date == "") |
         (func.lower(func.trim(models.EmpDet.end_date)) == "none") |
-        (models.EmpDet.end_date.like("0000-00-00%"))
+        (models.EmpDet.end_date.like("0000-00-00%")) |
+        (models.EmpDet.end_date.like("00-00-0000%"))
     )
     if not is_global and requester_id:
         emp_query = emp_query.filter(
@@ -4257,7 +4260,21 @@ def get_domains(dom_id: Optional[str] = None, db: Session = Depends(get_db)):
 
 @app.get("/admin/employees/brief", response_model=List[schemas.EmployeeBriefResponse])
 def get_employees_brief(db: Session = Depends(get_db)):
-    employees = db.query(models.EmpDet.emp_id, models.EmpDet.name, models.EmpDet.role_id, models.EmpDet.dpt_id, models.EmpDet.dom_id).all()
+    employees = db.query(
+        models.EmpDet.emp_id, models.EmpDet.name, models.EmpDet.role_id, models.EmpDet.dpt_id, models.EmpDet.dom_id
+    ).filter(
+        models.EmpDet.emp_id != None,
+        models.EmpDet.emp_id != "",
+        models.EmpDet.name != None,
+        models.EmpDet.name != "",
+        or_(
+            models.EmpDet.end_date == None,
+            models.EmpDet.end_date == "",
+            func.lower(func.trim(models.EmpDet.end_date)) == "none",
+            models.EmpDet.end_date.like("0000-00-00%"),
+            models.EmpDet.end_date.like("00-00-0000%")
+        )
+    ).all()
     return [{"emp_id": e.emp_id, "name": e.name, "role_id": e.role_id, "dpt_id": e.dpt_id, "dom_id": e.dom_id} for e in employees]
 
 
@@ -4272,7 +4289,7 @@ def get_project_allocations(pro_id: int, db: Session = Depends(get_db)):
                 func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(a.emp_id))
             ).first()
         lead = None
-        if a.lead_id:
+        if a.lead_id and a.lead_id.strip() and a.lead_id.lower() != "none":
             lead = db.query(models.EmpDet.name).filter(
                 func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(a.lead_id))
             ).first()
@@ -4283,7 +4300,7 @@ def get_project_allocations(pro_id: int, db: Session = Depends(get_db)):
             assign_id=a.assign_id, emp_id=a.emp_id, role_id=a.role_id, dom_id=a.dom_id, dpt_id=a.dpt_id,
             lead_id=a.lead_id, from_date=a.from_date, to_date=a.to_date, task_description=a.task_description,
             allocation_pct=a.allocation_pct, emp_name=emp[0] if emp else "Unknown",
-            lead_name=lead[0] if lead else "Unknown",
+            lead_name=lead[0] if lead else ("—" if not a.lead_id or a.lead_id.lower() == "none" else "Unknown"),
             role_name=role[0] if role else "Unknown", dept_name=dept[0] if dept else "Unknown",
             dom_name=dom[0] if dom else "Unknown"
         ))
@@ -4311,7 +4328,7 @@ def create_project_allocation(pro_id: int, alloc_req: schemas.ProjectAllocationC
             func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(new_alloc.emp_id))
         ).first()
     lead = None
-    if new_alloc.lead_id:
+    if new_alloc.lead_id and new_alloc.lead_id.strip() and new_alloc.lead_id.lower() != "none":
         lead = db.query(models.EmpDet.name).filter(
             func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(new_alloc.lead_id))
         ).first()
@@ -4324,7 +4341,7 @@ def create_project_allocation(pro_id: int, alloc_req: schemas.ProjectAllocationC
         dom_id=new_alloc.dom_id, dpt_id=new_alloc.dpt_id, lead_id=new_alloc.lead_id,
         from_date=new_alloc.from_date, to_date=new_alloc.to_date, task_description=new_alloc.task_description,
         allocation_pct=new_alloc.allocation_pct, emp_name=emp[0] if emp else "Unknown",
-        lead_name=lead[0] if lead else "Unknown",
+        lead_name=lead[0] if lead else ("—" if not new_alloc.lead_id or new_alloc.lead_id.lower() == "none" else "Unknown"),
         role_name=role[0] if role else "Unknown", dept_name=dept[0] if dept else "Unknown",
         dom_name=dom[0] if dom else "Unknown"
     )
@@ -4341,7 +4358,7 @@ def get_all_allocations(db: Session = Depends(get_db)):
                 func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(a.emp_id))
             ).first()
         lead = None
-        if a.lead_id:
+        if a.lead_id and a.lead_id.strip() and a.lead_id.lower() != "none":
             lead = db.query(models.EmpDet.name).filter(
                 func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(a.lead_id))
             ).first()
@@ -4353,7 +4370,7 @@ def get_all_allocations(db: Session = Depends(get_db)):
             assign_id=a.assign_id, emp_id=a.emp_id, role_id=a.role_id, dom_id=a.dom_id, dpt_id=a.dpt_id,
             lead_id=a.lead_id, from_date=a.from_date, to_date=a.to_date, task_description=a.task_description,
             allocation_pct=a.allocation_pct, emp_name=emp[0] if emp else "Unknown",
-            lead_name=lead[0] if lead else "Unknown",
+            lead_name=lead[0] if lead else ("—" if not a.lead_id or a.lead_id.lower() == "none" else "Unknown"),
             role_name=role[0] if role else "Unknown", dept_name=dept[0] if dept else "Unknown",
             dom_name=dom[0] if dom else "Unknown", project_name=proj[0] if proj else "Unknown"
         ))
