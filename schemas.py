@@ -1,6 +1,6 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional, List, Any
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 
 class LoginRequest(BaseModel):
@@ -73,6 +73,16 @@ class PermissionApprovalAction(BaseModel):
     action: str # Approved or Rejected
     remarks: Optional[str] = None
 
+class PermissionUpdateRequest(BaseModel):
+    p_id: int
+    date: str
+    f_time: str
+    t_time: str
+    reason: str
+    total_hours: Optional[str] = None
+    dis_total_hours: Optional[str] = None
+    status: Optional[str] = "Pending"
+
 class OverTimeApplyRequest(BaseModel):
     emp_id: str
     ot_date: str # DD-Mon-YYYY
@@ -90,12 +100,13 @@ class OverTimeApprovalAction(BaseModel):
 
 class WFHApplyRequest(BaseModel):
     emp_id: str
-    from_date: Optional[str] = None  # preferred DB column naming
-    date: Optional[str] = None       # backward-compatible alias for from_date
+    dates: Optional[str] = None      # comma-separated dates: "26-Jan-2026, 27-Jan-2026"
+    from_date: Optional[str] = None  # legacy field (backward compat)
+    date: Optional[str] = None       # legacy alias for from_date
     reason: str
     status: Optional[str] = "Pending"
-    to_date: Optional[str] = None   # to_date (if not given, defaults to date)
-    days: Optional[float] = None    # if not given, auto-calculated on backend
+    to_date: Optional[str] = None   # legacy field
+    days: Optional[float] = None
 
 class OTUpdateRequest(BaseModel):
     ot_date: str
@@ -105,8 +116,9 @@ class OTUpdateRequest(BaseModel):
     reason: str
 
 class WFHUpdateRequest(BaseModel):
-    from_date: str
-    to_date: Optional[str] = None
+    dates: Optional[str] = None      # comma-separated dates: "26-Jan-2026, 27-Jan-2026"
+    from_date: Optional[str] = None  # legacy field
+    to_date: Optional[str] = None    # legacy field
     days: Optional[float] = None
     reason: str
 
@@ -142,15 +154,18 @@ class EmployeeProfileResponse(BaseModel):
     device_id: Optional[str] = None
 
 class TimesheetResponse(BaseModel):
+    model_config = {"from_attributes": True}
+
     t_id: int
-    date: str
-    day: str
-    type: str
-    project: str
-    total_hours: str
-    activity: str
+    date: Optional[str] = None
+    day: Optional[str] = None
+    type: Optional[str] = None
+    project: Optional[str] = None
+    total_hours: Optional[str] = None
+    activity: Optional[str] = None
     reason: Optional[str] = None
-    status: str
+    month: Optional[str] = None
+    status: Optional[str] = None
     remarks: Optional[str] = None
 
 class AdminTimesheetEmpResponse(BaseModel):
@@ -189,6 +204,24 @@ class TimesheetUpdate(BaseModel):
     month: str
     working_hours: Optional[str] = None
     remarks: Optional[str] = None
+
+class TimesheetSendMailRequest(BaseModel):
+    emp_id: str
+    month: str          # YYYY-MM
+    requester_id: str
+    sender_type: str    # 'employee' or 'manager'
+    action: Optional[str] = None    # 'Approved' or 'Rejected' (for manager flow)
+    remarks: Optional[str] = None
+
+class AssignedProjectResponse(BaseModel):
+    model_config = {"from_attributes": True}
+    pro_id: int
+    project_name: Optional[str] = None
+    project_type: Optional[str] = None
+
+class HolidayDetailResponse(BaseModel):
+    date: Optional[str] = None
+    name: Optional[str] = None
 
 class Verify2FARequest(BaseModel):
     user_id: str
@@ -502,4 +535,125 @@ class AruviNotificationResponse(AruviNotificationBase):
     attribute13: Optional[str] = None
     attribute14: Optional[str] = None
     attribute15: Optional[str] = None
+
+
+class AnnouncementCreate(BaseModel):
+    title: str
+    message: str
+    start_date: str  # "DD-Mon-YYYY" or similar
+    end_date: str    # "DD-Mon-YYYY" or similar
+    priority: str = "Normal"  # Normal, High, Urgent
+    status: str = "Active"    # Active, Inactive, Deleted
+    created_by: str
+    target_audience: Optional[str] = "all"
+    target_value: Optional[str] = None
+
+
+class AnnouncementResponse(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: int
+    title: str
+    message: str
+    startDate: Optional[str] = None
+    endDate: Optional[str] = None
+    priority: Optional[str] = None
+    status: Optional[str] = None
+    created_by: Optional[str] = None
+    target_audience: Optional[str] = None
+    target_value: Optional[str] = None
+    createdAt: Optional[str] = None
+
+
+# ── AruviPlayzoneConfig (xxits_aruvi_playzone_config_t) ───────────────────────
+
+class PlayzoneConfigResponse(BaseModel):
+    model_config = {"from_attributes": True}
+
+    is_enabled: bool
+    updated_by: Optional[str] = None
+    updated_at: Optional[Any] = None
+
+
+class PlayzoneConfigUpdate(BaseModel):
+    is_enabled: bool
+    updated_by: Optional[str] = None
+
+
+# ── AruviChillax (xxits_aruvi_chillax_t) ──────────────────────────────────────
+
+class AruviChillaxCreate(BaseModel):
+    requested_by: str
+    request_type: str
+    activity_type: str
+    requested_date: str
+    requested_from_time: str
+    requested_to_time: str
+    remarks: Optional[str] = None
+    status: Optional[str] = "Pending"
+
+
+class AruviChillaxUpdate(BaseModel):
+    activity_type: Optional[str] = None
+    remarks: Optional[str] = None
+
+
+class AruviChillaxAdminUpdate(BaseModel):
+    status: str
+    approver_remarks: Optional[str] = None
+    admin_id: Optional[str] = None
+
+
+class AruviChillaxResponse(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: int
+    ref_no: Optional[str] = None
+    requested_by: Optional[str] = None
+    request_type: Optional[str] = None
+    activity_type: Optional[str] = None
+    requested_date: Optional[Any] = None
+    requested_from_time: Optional[Any] = None
+    requested_to_time: Optional[Any] = None
+    remarks: Optional[str] = None
+    status: Optional[str] = None
+    approver_remarks: Optional[str] = None
+    creation_date: Optional[Any] = None
+    last_updated_by: Optional[str] = None
+    last_update_date: Optional[Any] = None
+
+    @field_validator('requested_from_time', 'requested_to_time', mode='before')
+    @classmethod
+    def convert_time(cls, v: Any) -> Any:
+        # SQLAlchemy ORM + mysqlconnector returns datetime.time for TIME columns
+        if hasattr(v, 'strftime'):
+            return v.strftime("%H:%M:%S")
+        # Raw SQL queries may return timedelta
+        if isinstance(v, timedelta):
+            total = int(v.total_seconds())
+            h, rem = divmod(total, 3600)
+            m, s = divmod(rem, 60)
+            return f"{h:02d}:{m:02d}:{s:02d}"
+        return v
+
+    @field_validator('requested_date', mode='before')
+    @classmethod
+    def convert_date(cls, v: Any) -> Any:
+        if isinstance(v, date) and not isinstance(v, datetime):
+            return v.strftime("%Y-%m-%d")
+        return v
+
+    @field_validator('creation_date', 'last_update_date', mode='before')
+    @classmethod
+    def safe_datetime(cls, v: Any) -> Any:
+        if v is None:
+            return None
+        if isinstance(v, str) and '0000-00-00' in v:
+            return None
+        if hasattr(v, 'strftime'):
+            try:
+                return v.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                return None
+        return v
 
