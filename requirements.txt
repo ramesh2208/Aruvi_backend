@@ -12,3 +12,4 @@ cryptography
 requests
 pydantic
 python-dotenv
+openpyxl==3.1.5
