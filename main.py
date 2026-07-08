@@ -533,6 +533,17 @@ def parse_date(d):
     return None
 
 
+def _fmt_alloc_date(d) -> str:
+    """Render an allocation date (may come back as a real date/datetime object
+    from DATE columns, e.g. xxits_aruvi_assign_t.e_start_date/e_end_date) as
+    the 'DD-Mon-YYYY' string the allocation API/UI expects."""
+    if not d:
+        return ""
+    if isinstance(d, (datetime, date)):
+        return d.strftime("%d-%b-%Y")
+    return str(d)
+
+
 def parse_time_str(t_str: str):
     if not t_str:
         return None
@@ -4675,18 +4686,17 @@ def get_holidays(db: Session = Depends(get_db)):
 def get_employee_assigned_projects(emp_id: str, date: Optional[str] = None, db: Session = Depends(get_db)):
     try:
         allocs = db.query(models.ProjectAllocation).filter(
-            func.lower(func.trim(models.ProjectAllocation.emp_id)) == emp_id.strip().lower(),
-            models.ProjectAllocation.status == "Active"
+            func.lower(func.trim(models.ProjectAllocation.emp_id)) == emp_id.strip().lower()
         ).all()
 
         result = []
-        seen_pro_ids = set()
+        seen_ref_nos = set()
         for a in allocs:
             if date:
                 try:
                     sel_dt = parse_date(date)
-                    from_dt = parse_date(a.from_date) if a.from_date else None
-                    to_dt = parse_date(a.to_date) if a.to_date else None
+                    from_dt = parse_date(a.e_start_date) if a.e_start_date else None
+                    to_dt = parse_date(a.e_end_date) if a.e_end_date else None
                     if sel_dt and from_dt and to_dt:
                         if not (from_dt <= sel_dt <= to_dt):
                             continue
@@ -4699,16 +4709,35 @@ def get_employee_assigned_projects(emp_id: str, date: Optional[str] = None, db: 
                 except Exception:
                     pass
 
-            if a.pro_id in seen_pro_ids:
+            if not a.project_ref_no or a.project_ref_no in seen_ref_nos:
                 continue
-            seen_pro_ids.add(a.pro_id)
+            seen_ref_nos.add(a.project_ref_no)
 
-            project = db.query(models.Project).filter(models.Project.pro_id == a.pro_id).first()
-            if project and project.project_name:
+            project = db.query(models.Project).filter(models.Project.project_ref_no == a.project_ref_no).first()
+            project_name = (project.project_name if project else None) or a.project_name
+            if project_name:
+                client_name = a.client_name
+                if not client_name:
+                    client_ref_no = project.client_ref_no if project else a.client_ref_no
+                    if client_ref_no:
+                        client = db.query(models.CompanyClient.client_name).filter(
+                            models.CompanyClient.client_ref_no == client_ref_no
+                        ).first()
+                        client_name = client[0] if client else None
+
+                role = db.query(models.Role.role).filter(models.Role.role_id == a.role_id).first()
+
                 result.append({
-                    "pro_id": project.pro_id,
-                    "project_name": project.project_name,
-                    "project_type": project.project_type or ""
+                    "pro_id": project.pro_id if project else None,
+                    "project_name": project_name,
+                    "project_type": (project.project_type if project else "") or "",
+                    "client_name": client_name or "",
+                    "project_status": (project.status if project else "") or a.e_status or "",
+                    "role_name": role[0] if role else "",
+                    "allocation_pct": str(a.allocation) if a.allocation is not None else "",
+                    "from_date": _fmt_alloc_date(a.e_start_date),
+                    "to_date": _fmt_alloc_date(a.e_end_date),
+                    "task_description": a.task or ""
                 })
 
         return result
@@ -5151,7 +5180,12 @@ def get_employees_brief(db: Session = Depends(get_db)):
 
 @app.get("/admin/projects/{pro_id}/allocations", response_model=List[schemas.ProjectAllocationResponse])
 def get_project_allocations(pro_id: int, db: Session = Depends(get_db)):
-    allocs = db.query(models.ProjectAllocation).filter(models.ProjectAllocation.pro_id == pro_id).all()
+    project = db.query(models.Project).filter(models.Project.pro_id == pro_id).first()
+    if not project:
+        return []
+    allocs = db.query(models.ProjectAllocation).filter(
+        models.ProjectAllocation.project_ref_no == project.project_ref_no
+    ).all()
     res = []
     for a in allocs:
         emp = None
@@ -5159,62 +5193,81 @@ def get_project_allocations(pro_id: int, db: Session = Depends(get_db)):
             emp = db.query(models.EmpDet.name).filter(
                 func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(a.emp_id))
             ).first()
-        lead = None
-        if a.lead_id and a.lead_id.strip() and a.lead_id.lower() != "none":
-            lead = db.query(models.EmpDet.name).filter(
-                func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(a.lead_id))
-            ).first()
         role = db.query(models.Role.role).filter(models.Role.role_id == a.role_id).first()
         dept = db.query(models.Department.department).filter(models.Department.dpt_id == a.dpt_id).first()
         dom = db.query(models.Domain.domain).filter(models.Domain.dom_id == a.dom_id).first()
+        lead_id = a.attribute1 or ""
         res.append(schemas.ProjectAllocationResponse(
             assign_id=a.assign_id, emp_id=a.emp_id, role_id=a.role_id, dom_id=a.dom_id, dpt_id=a.dpt_id,
-            lead_id=a.lead_id, from_date=a.from_date, to_date=a.to_date, task_description=a.task_description,
-            allocation_pct=a.allocation_pct, emp_name=emp[0] if emp else "Unknown",
-            lead_name=lead[0] if lead else ("—" if not a.lead_id or a.lead_id.lower() == "none" else "Unknown"),
+            lead_id=lead_id, from_date=_fmt_alloc_date(a.e_start_date), to_date=_fmt_alloc_date(a.e_end_date), task_description=a.task,
+            allocation_pct=str(a.allocation) if a.allocation is not None else "", emp_name=emp[0] if emp else "Unknown",
+            lead_name=a.lead_name or ("—" if not lead_id or lead_id.lower() == "none" else "Unknown"),
             role_name=role[0] if role else "Unknown", dept_name=dept[0] if dept else "Unknown",
-            dom_name=dom[0] if dom else "Unknown"
+            dom_name=dom[0] if dom else "Unknown", project_name=a.project_name, client_name=a.client_name
         ))
     return res
 
 
 @app.post("/admin/projects/{pro_id}/allocations", response_model=schemas.ProjectAllocationResponse)
 def create_project_allocation(pro_id: int, alloc_req: schemas.ProjectAllocationCreate, db: Session = Depends(get_db)):
+    project = db.query(models.Project).filter(models.Project.pro_id == pro_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    client = db.query(models.CompanyClient).filter(models.CompanyClient.client_ref_no == project.client_ref_no).first()
+
+    lead_name = None
+    if alloc_req.lead_id and alloc_req.lead_id.strip() and alloc_req.lead_id.lower() != "none":
+        lead = db.query(models.EmpDet.name).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(alloc_req.lead_id))
+        ).first()
+        lead_name = lead[0] if lead else "Unknown"
+
+    try:
+        allocation_value = int(float(alloc_req.allocation_pct))
+    except (TypeError, ValueError):
+        allocation_value = 0
+
+    start_dt = parse_date(alloc_req.from_date)
+    end_dt = parse_date(alloc_req.to_date)
+    if not start_dt or not end_dt:
+        raise HTTPException(status_code=400, detail="from_date/to_date must be valid dates")
+
     now = datetime.now()
     new_alloc = models.ProjectAllocation(
-        pro_id=pro_id, emp_id=alloc_req.emp_id, role_id=alloc_req.role_id, dom_id=alloc_req.dom_id,
-        dpt_id=alloc_req.dpt_id, lead_id=alloc_req.lead_id, from_date=alloc_req.from_date, to_date=alloc_req.to_date,
-        task_description=alloc_req.task_description, allocation_pct=alloc_req.allocation_pct,
-        created_by=alloc_req.created_by, creation_date=now,
+        project_ref_no=project.project_ref_no, client_ref_no=project.client_ref_no,
+        emp_id=alloc_req.emp_id, role_id=alloc_req.role_id, dom_id=alloc_req.dom_id, dpt_id=alloc_req.dpt_id,
+        manager_name=project.project_manager or "", lead_name=lead_name or "",
+        e_start_date=start_dt.date(), e_end_date=end_dt.date(),
+        task=alloc_req.task_description or "", allocation=allocation_value,
+        e_status="Active", button="", client_name=(client.client_name if client else "") or "",
+        project_name=project.project_name or "",
+        created_by=alloc_req.created_by, attribute1=alloc_req.lead_id, creation_date=now,
         last_updated_by=alloc_req.created_by or "Admin", last_update_date=now
     )
     db.add(new_alloc)
     db.commit()
     db.refresh(new_alloc)
-    
+
     # Query details to return full schemas.ProjectAllocationResponse
     emp = None
     if new_alloc.emp_id:
         emp = db.query(models.EmpDet.name).filter(
             func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(new_alloc.emp_id))
         ).first()
-    lead = None
-    if new_alloc.lead_id and new_alloc.lead_id.strip() and new_alloc.lead_id.lower() != "none":
-        lead = db.query(models.EmpDet.name).filter(
-            func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(new_alloc.lead_id))
-        ).first()
     role = db.query(models.Role.role).filter(models.Role.role_id == new_alloc.role_id).first()
     dept = db.query(models.Department.department).filter(models.Department.dpt_id == new_alloc.dpt_id).first()
     dom = db.query(models.Domain.domain).filter(models.Domain.dom_id == new_alloc.dom_id).first()
-    
+
     return schemas.ProjectAllocationResponse(
         assign_id=new_alloc.assign_id, emp_id=new_alloc.emp_id, role_id=new_alloc.role_id,
-        dom_id=new_alloc.dom_id, dpt_id=new_alloc.dpt_id, lead_id=new_alloc.lead_id,
-        from_date=new_alloc.from_date, to_date=new_alloc.to_date, task_description=new_alloc.task_description,
-        allocation_pct=new_alloc.allocation_pct, emp_name=emp[0] if emp else "Unknown",
-        lead_name=lead[0] if lead else ("—" if not new_alloc.lead_id or new_alloc.lead_id.lower() == "none" else "Unknown"),
+        dom_id=new_alloc.dom_id, dpt_id=new_alloc.dpt_id, lead_id=alloc_req.lead_id or "",
+        from_date=_fmt_alloc_date(new_alloc.e_start_date), to_date=_fmt_alloc_date(new_alloc.e_end_date), task_description=new_alloc.task,
+        allocation_pct=str(new_alloc.allocation) if new_alloc.allocation is not None else "",
+        emp_name=emp[0] if emp else "Unknown",
+        lead_name=new_alloc.lead_name or ("—" if not alloc_req.lead_id or alloc_req.lead_id.lower() == "none" else "Unknown"),
         role_name=role[0] if role else "Unknown", dept_name=dept[0] if dept else "Unknown",
-        dom_name=dom[0] if dom else "Unknown"
+        dom_name=dom[0] if dom else "Unknown", project_name=new_alloc.project_name, client_name=new_alloc.client_name
     )
 
 
@@ -5228,22 +5281,17 @@ def get_all_allocations(db: Session = Depends(get_db)):
             emp = db.query(models.EmpDet.name).filter(
                 func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(a.emp_id))
             ).first()
-        lead = None
-        if a.lead_id and a.lead_id.strip() and a.lead_id.lower() != "none":
-            lead = db.query(models.EmpDet.name).filter(
-                func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(a.lead_id))
-            ).first()
         role = db.query(models.Role.role).filter(models.Role.role_id == a.role_id).first()
         dept = db.query(models.Department.department).filter(models.Department.dpt_id == a.dpt_id).first()
         dom = db.query(models.Domain.domain).filter(models.Domain.dom_id == a.dom_id).first()
-        proj = db.query(models.Project.project_name).filter(models.Project.pro_id == a.pro_id).first()
+        lead_id = a.attribute1 or ""
         res.append(schemas.ProjectAllocationResponse(
             assign_id=a.assign_id, emp_id=a.emp_id, role_id=a.role_id, dom_id=a.dom_id, dpt_id=a.dpt_id,
-            lead_id=a.lead_id, from_date=a.from_date, to_date=a.to_date, task_description=a.task_description,
-            allocation_pct=a.allocation_pct, emp_name=emp[0] if emp else "Unknown",
-            lead_name=lead[0] if lead else ("—" if not a.lead_id or a.lead_id.lower() == "none" else "Unknown"),
+            lead_id=lead_id, from_date=_fmt_alloc_date(a.e_start_date), to_date=_fmt_alloc_date(a.e_end_date), task_description=a.task,
+            allocation_pct=str(a.allocation) if a.allocation is not None else "", emp_name=emp[0] if emp else "Unknown",
+            lead_name=a.lead_name or ("—" if not lead_id or lead_id.lower() == "none" else "Unknown"),
             role_name=role[0] if role else "Unknown", dept_name=dept[0] if dept else "Unknown",
-            dom_name=dom[0] if dom else "Unknown", project_name=proj[0] if proj else "Unknown"
+            dom_name=dom[0] if dom else "Unknown", project_name=a.project_name or "Unknown", client_name=a.client_name
         ))
     return res
 
@@ -5258,22 +5306,17 @@ def get_employee_allocations(emp_id: str, db: Session = Depends(get_db)):
             emp = db.query(models.EmpDet.name).filter(
                 func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(a.emp_id))
             ).first()
-        lead = None
-        if a.lead_id:
-            lead = db.query(models.EmpDet.name).filter(
-                func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(a.lead_id))
-            ).first()
         role = db.query(models.Role.role).filter(models.Role.role_id == a.role_id).first()
         dept = db.query(models.Department.department).filter(models.Department.dpt_id == a.dpt_id).first()
         dom = db.query(models.Domain.domain).filter(models.Domain.dom_id == a.dom_id).first()
-        proj = db.query(models.Project.project_name).filter(models.Project.pro_id == a.pro_id).first()
+        lead_id = a.attribute1 or ""
         res.append(schemas.ProjectAllocationResponse(
             assign_id=a.assign_id, emp_id=a.emp_id, role_id=a.role_id, dom_id=a.dom_id, dpt_id=a.dpt_id,
-            lead_id=a.lead_id, from_date=a.from_date, to_date=a.to_date, task_description=a.task_description,
-            allocation_pct=a.allocation_pct, emp_name=emp[0] if emp else "Unknown",
-            lead_name=lead[0] if lead else "Unknown",
+            lead_id=lead_id, from_date=_fmt_alloc_date(a.e_start_date), to_date=_fmt_alloc_date(a.e_end_date), task_description=a.task,
+            allocation_pct=str(a.allocation) if a.allocation is not None else "", emp_name=emp[0] if emp else "Unknown",
+            lead_name=a.lead_name or "Unknown",
             role_name=role[0] if role else "Unknown", dept_name=dept[0] if dept else "Unknown",
-            dom_name=dom[0] if dom else "Unknown", project_name=proj[0] if proj else "Unknown"
+            dom_name=dom[0] if dom else "Unknown", project_name=a.project_name or "Unknown", client_name=a.client_name
         ))
     return res
 
@@ -6100,6 +6143,10 @@ def _parse_date_flexible(date_str: str):
     """
     if not date_str:
         return None
+    if isinstance(date_str, datetime):
+        return date_str.date()
+    if isinstance(date_str, date):
+        return date_str
     date_str = date_str.strip()
     for fmt in ("%Y-%m-%d", "%d-%b-%Y", "%d-%B-%Y"):
         try:
@@ -6113,13 +6160,12 @@ def _parse_date_flexible(date_str: str):
 def get_assigned_projects(emp_id: str, date: Optional[str] = None, db: Session = Depends(get_db)):
     """
     Return projects assigned to emp_id that cover the given date.
-    Queries xxits_aruvi_pro_assign_t joined with xxits_aruvi_project_t.
+    Queries xxits_aruvi_assign_t joined with xxits_aruvi_project_t.
     If no date is provided, all active assignments are returned.
     """
     try:
         query = db.query(models.ProjectAllocation).filter(
-            func.lower(func.trim(models.ProjectAllocation.emp_id)) == func.lower(emp_id.strip()),
-            func.lower(func.trim(models.ProjectAllocation.status)) == "active"
+            func.lower(func.trim(models.ProjectAllocation.emp_id)) == func.lower(emp_id.strip())
         )
         allocations = query.all()
     except Exception as e:
@@ -6128,12 +6174,12 @@ def get_assigned_projects(emp_id: str, date: Optional[str] = None, db: Session =
     target_date = _parse_date_flexible(date) if date else None
 
     result = []
-    seen_pro_ids = set()
+    seen_ref_nos = set()
     for alloc in allocations:
         # Date-range filter when a target date is supplied
         if target_date:
-            from_dt = _parse_date_flexible(alloc.from_date)
-            to_dt = _parse_date_flexible(alloc.to_date)
+            from_dt = _parse_date_flexible(alloc.e_start_date)
+            to_dt = _parse_date_flexible(alloc.e_end_date)
             if from_dt and to_dt:
                 if not (from_dt <= target_date <= to_dt):
                     continue
@@ -6142,11 +6188,11 @@ def get_assigned_projects(emp_id: str, date: Optional[str] = None, db: Session =
                     continue
             # If no from_date, skip date filtering for this record
 
-        if alloc.pro_id in seen_pro_ids:
+        if not alloc.project_ref_no or alloc.project_ref_no in seen_ref_nos:
             continue
-        seen_pro_ids.add(alloc.pro_id)
+        seen_ref_nos.add(alloc.project_ref_no)
 
-        project = db.query(models.Project).filter(models.Project.pro_id == alloc.pro_id).first()
+        project = db.query(models.Project).filter(models.Project.project_ref_no == alloc.project_ref_no).first()
         if project:
             result.append({
                 "pro_id": project.pro_id,
