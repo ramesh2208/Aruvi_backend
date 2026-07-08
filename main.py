@@ -4728,6 +4728,7 @@ def get_employee_assigned_projects(emp_id: str, date: Optional[str] = None, db: 
                 role = db.query(models.Role.role).filter(models.Role.role_id == a.role_id).first()
 
                 result.append({
+                    "assign_id": a.assign_id,
                     "pro_id": project.pro_id if project else None,
                     "project_name": project_name,
                     "project_type": (project.project_type if project else "") or "",
@@ -5316,9 +5317,46 @@ def get_employee_allocations(emp_id: str, db: Session = Depends(get_db)):
             allocation_pct=str(a.allocation) if a.allocation is not None else "", emp_name=emp[0] if emp else "Unknown",
             lead_name=a.lead_name or "Unknown",
             role_name=role[0] if role else "Unknown", dept_name=dept[0] if dept else "Unknown",
-            dom_name=dom[0] if dom else "Unknown", project_name=a.project_name or "Unknown", client_name=a.client_name
+            dom_name=dom[0] if dom else "Unknown", project_name=a.project_name or "Unknown", client_name=a.client_name,
+            manager_name=a.manager_name
         ))
     return res
+
+
+@app.get("/admin/allocations/{assign_id}", response_model=schemas.ProjectAllocationResponse)
+def get_allocation_details(assign_id: int, db: Session = Depends(get_db)):
+    """
+    Fetch a single allocation record's full details straight from
+    xxits_aruvi_assign_t (the Project Assignment table), for the
+    "select a project" detail popup.
+    """
+    a = db.query(models.ProjectAllocation).filter(models.ProjectAllocation.assign_id == assign_id).first()
+    if not a:
+        raise HTTPException(status_code=404, detail="Allocation not found")
+
+    emp = None
+    if a.emp_id:
+        emp = db.query(models.EmpDet.name).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(a.emp_id))
+        ).first()
+    role = db.query(models.Role.role).filter(models.Role.role_id == a.role_id).first()
+    dept = db.query(models.Department.department).filter(models.Department.dpt_id == a.dpt_id).first()
+    dom = db.query(models.Domain.domain).filter(models.Domain.dom_id == a.dom_id).first()
+    project = db.query(models.Project).filter(models.Project.project_ref_no == a.project_ref_no).first()
+    lead_id = a.attribute1 or ""
+
+    return schemas.ProjectAllocationResponse(
+        assign_id=a.assign_id, emp_id=a.emp_id, role_id=a.role_id, dom_id=a.dom_id, dpt_id=a.dpt_id,
+        lead_id=lead_id, from_date=_fmt_alloc_date(a.e_start_date), to_date=_fmt_alloc_date(a.e_end_date),
+        task_description=a.task, allocation_pct=str(a.allocation) if a.allocation is not None else "",
+        emp_name=emp[0] if emp else "Unknown",
+        lead_name=a.lead_name or "Unknown",
+        role_name=role[0] if role else "Unknown", dept_name=dept[0] if dept else "Unknown",
+        dom_name=dom[0] if dom else "Unknown", project_name=a.project_name or "Unknown",
+        client_name=a.client_name, manager_name=a.manager_name,
+        project_type=(project.project_type if project else "") or "",
+        project_status=a.e_status or ""
+    )
 
 
 @app.get("/admin/clients/next-ref")
