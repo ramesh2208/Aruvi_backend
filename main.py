@@ -15,6 +15,7 @@ import string
 import hashlib
 import base64
 import time
+import calendar
 from jose import jwt
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -22,13 +23,23 @@ from sqlalchemy import func
 from pydantic import BaseModel
 from typing import Optional
 import traceback
+import io
+import sys
+print(f"[STARTUP] Python executable: {sys.executable}")
+try:
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+    _OPENPYXL_AVAILABLE = True
+    print(f"[STARTUP] openpyxl loaded OK, version: {openpyxl.__version__}")
+except ImportError as e:
+    _OPENPYXL_AVAILABLE = False
+    print(f"[STARTUP] openpyxl import FAILED: {e}")
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 import pyotp
 from cryptography.fernet import Fernet
 from sqlalchemy import extract
 import sqlalchemy
-import sys
 import os
 import socket
 import requests
@@ -340,6 +351,21 @@ def get_db():
         db.close()
 
 
+def _extract_emp_id(value: Optional[str]) -> str:
+    """
+    Chillax's `requested_by` (and similar fields) are sometimes stored as a
+    composite "EMPID - Name" string rather than a bare emp_id. This pulls out
+    just the emp_id portion so EmpDet lookups and notification recipients
+    resolve correctly.
+    """
+    v = (value or "").strip()
+    if not v:
+        return ""
+    if " - " in v:
+        return v.split(" - ", 1)[0].strip()
+    return v
+
+
 def create_notification(db: Session, emp_id: str, module: str, title: str, message: str, created_by: str):
     if not emp_id:
         return
@@ -364,6 +390,85 @@ def create_notification(db: Session, emp_id: str, module: str, title: str, messa
     except Exception as e:
         db.rollback()
         print(f"❌ Error creating notification: {e}")
+
+
+def resolve_requester_employee(db: Session, requested_by: Optional[str]):
+    """
+    Resolves an EmpDet row from a `requested_by` value that may be a plain
+    emp_id, an email, a name, or a composite "EMPID - Name" string (as sent
+    by the Chillax Create form). Tries the raw value first (covers plain
+    emp_id/email/name via find_employee_reference), then falls back to the
+    emp_id portion of a composite string.
+    """
+    if not requested_by:
+        return None
+    person = find_employee_reference(db, requested_by)
+    if person:
+        return person
+    extracted = _extract_emp_id(requested_by)
+    if extracted and extracted.lower() != requested_by.strip().lower():
+        person = find_employee_reference(db, extracted)
+    return person
+
+
+def get_notification_stakeholders(db: Session, employee) -> list:
+    """
+    Resolves the assigned Manager, Project Manager, HR SPOC, and global Admins
+    for `employee`, as a deduped list of emp_ids — excluding the employee
+    themself, so the person who raised the request never gets notified about
+    their own action.
+    """
+    if not employee:
+        return []
+
+    requester_id = (employee.emp_id or "").strip().lower()
+    stakeholder_ids = set()
+
+    for ref_field in [employee.assign_manager, employee.project_manager, employee.hr_spoc]:
+        ref = (ref_field or "").strip()
+        if not ref:
+            continue
+        person = find_employee_reference(db, ref)
+        if person and person.emp_id:
+            pid = person.emp_id.strip()
+            if pid.lower() != requester_id:
+                stakeholder_ids.add(pid)
+
+    # Global admins — same dom_id convention used elsewhere (login, team-attendance).
+    # dom_id is stored as a String column, so compare in Python rather than via
+    # a SQL .in_() against ints (which would silently match nothing).
+    top_domains = [1, 2, 3, 9]
+    try:
+        all_emps = db.query(models.EmpDet).filter(models.EmpDet.dom_id.isnot(None)).all()
+        for a in all_emps:
+            try:
+                if int(str(a.dom_id).strip()) not in top_domains:
+                    continue
+            except (ValueError, TypeError):
+                continue
+            aid = (a.emp_id or "").strip()
+            if aid and aid.lower() != requester_id:
+                stakeholder_ids.add(aid)
+    except Exception as e:
+        print(f"❌ Error resolving admin stakeholders: {e}")
+
+    return list(stakeholder_ids)
+
+
+def notify_stakeholders(db: Session, employee, module: str, title: str, message: str, created_by: str):
+    """
+    Sends an in-app notification to the requesting employee's Manager, Project
+    Manager, HR SPOC, and Admins — never to the employee who raised the request.
+    """
+    for recipient_id in get_notification_stakeholders(db, employee):
+        create_notification(
+            db=db,
+            emp_id=recipient_id,
+            module=module,
+            title=title,
+            message=message,
+            created_by=created_by
+        )
 
 
 def parse_date(d):
@@ -1086,6 +1191,13 @@ def get_employees(
             if mgr and mgr.name:
                 manager_name = mgr.name
                 
+        delegate_mgr_name = ""
+        if emp.delegate_manager:
+            dlg = db.query(models.EmpDet).filter(
+                func.lower(func.trim(models.EmpDet.emp_id)) == emp.delegate_manager.strip().lower()
+            ).first()
+            delegate_mgr_name = dlg.name if dlg else emp.delegate_manager
+
         results.append({
             "id": emp.emp_id,
             "name": emp.name or "Unknown",
@@ -1099,9 +1211,44 @@ def get_employees(
             "manager": manager_name,
             "location": getattr(emp, "attribute1", "Chennai") or "Chennai",
             "shift": "General (9:30 AM - 6:30 PM)",
-            "address": emp.address or ""
+            "address": emp.address or "",
+            "delegate_manager": emp.delegate_manager or "",
+            "delegate_manager_name": delegate_mgr_name
         })
     return {"total": total, "data": results}
+
+
+@app.post("/admin/employees/{emp_id}/delegate-manager")
+def set_delegate_manager(emp_id: str, payload: dict, db: Session = Depends(get_db)):
+    """Assign or clear the delegate_manager for an employee."""
+    emp = db.query(models.EmpDet).filter(
+        func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.strip().lower()
+    ).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    delegate_id = (payload.get("delegate_manager_id") or "").strip()
+    if delegate_id:
+        delegate_emp = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == delegate_id.lower()
+        ).first()
+        if not delegate_emp:
+            raise HTTPException(status_code=404, detail="Delegate manager not found")
+        if delegate_id.lower() == emp_id.strip().lower():
+            raise HTTPException(status_code=400, detail="Employee cannot be their own delegate manager")
+    emp.delegate_manager = delegate_id if delegate_id else None
+    emp.last_update_date = datetime.now()
+    db.commit()
+    delegate_name = ""
+    if emp.delegate_manager:
+        dlg = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == emp.delegate_manager.lower()
+        ).first()
+        delegate_name = dlg.name if dlg else emp.delegate_manager
+    return {
+        "message": "Delegate manager updated successfully",
+        "delegate_manager": emp.delegate_manager or "",
+        "delegate_manager_name": delegate_name
+    }
 
 
 @app.get("/employee-profile/{emp_id}", response_model=schemas.EmployeeProfileResponse)
@@ -1457,7 +1604,16 @@ def get_leave_stats(emp_id: str, db: Session = Depends(get_db)):
     stats["marriageLeave"] = {"total": wl_total, "availed": wl_availed}
     stats["total"] = cl_total + sl_total + mp_total + wl_total
     stats["availed"] = cl_availed + sl_availed + mp_availed + wl_availed
-    return {**stats, "has_record": len(leave_rows) > 0}
+    leave_types = []
+    for row in leave_rows:
+        try:
+            t_val = float(row.total_leave or 0)
+            a_val = float(row.availed_leave or 0)
+        except:
+            t_val, a_val = 0.0, 0.0
+        if row.leave_type:
+            leave_types.append({"name": row.leave_type, "total": t_val, "availed": a_val})
+    return {**stats, "has_record": len(leave_rows) > 0, "leaveTypes": leave_types}
 
 
 @app.get("/wfh-history/{emp_id}")
@@ -1477,21 +1633,36 @@ def get_wfh_history(emp_id: str, db: Session = Depends(get_db)):
 
 
 @app.put("/update-wfh/{wfh_id}")
-def update_wfh(wfh_id: int, request: schemas.WFHUpdateRequest, db: Session = Depends(get_db)):
+def update_wfh(wfh_id: int, request: schemas.WFHUpdateRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     wfh = db.query(models.WFHDet).filter(models.WFHDet.wfh_id == wfh_id).first()
     if not wfh:
         raise HTTPException(status_code=404, detail="WFH request not found")
     if (wfh.status or "").strip().lower() != "pending":
         raise HTTPException(status_code=400, detail="Only pending WFH requests can be edited")
 
-    from_date = (request.from_date or "").strip()
-    to_date = (request.to_date or from_date).strip()
-    req_from = parse_date(from_date)
-    req_to = parse_date(to_date)
-    if not req_from or not req_to:
-        raise HTTPException(status_code=400, detail="Invalid WFH from/to date format")
-    if req_to < req_from:
-        raise HTTPException(status_code=400, detail="To date must be on or after from date")
+    # Resolve dates list
+    if request.dates:
+        date_list = [d.strip() for d in request.dates.split(',') if d.strip()]
+    else:
+        from_date_leg = (request.from_date or "").strip()
+        to_date_leg = (request.to_date or from_date_leg).strip()
+        req_from_leg = parse_date(from_date_leg)
+        req_to_leg = parse_date(to_date_leg)
+        if not req_from_leg or not req_to_leg:
+            raise HTTPException(status_code=400, detail="Invalid date format")
+        from datetime import timedelta as _td3
+        date_list = []
+        cur = req_from_leg.date()
+        while cur <= req_to_leg.date():
+            date_list.append(cur.strftime("%d-%b-%Y"))
+            cur += _td3(days=1)
+
+    if not date_list:
+        raise HTTPException(status_code=400, detail="At least one date is required")
+
+    date_objects = [parse_date(d) for d in date_list if parse_date(d)]
+    new_dates_set = {dt.date() for dt in date_objects}
+    dates_str = ",".join(date_list)  # stored as "21-Jun-2026,22-Jun-2026,23-Jun-2026"
 
     existing_wfh = db.query(models.WFHDet).filter(
         models.WFHDet.wfh_id != wfh_id,
@@ -1499,36 +1670,150 @@ def update_wfh(wfh_id: int, request: schemas.WFHUpdateRequest, db: Session = Dep
         func.lower(func.trim(models.WFHDet.status)).in_(["pending", "approved"])
     ).all()
     for row in existing_wfh:
-        row_date = parse_date(row.date)
-        if not row_date:
-            continue
-        if req_from.date() <= row_date.date() <= req_to.date():
-            raise HTTPException(status_code=400,
-                detail=f"WFH already applied for {row.date}.")
+        stored_parts = [p.strip() for p in (row.date or "").split(',') if p.strip()]
+        for sd in stored_parts:
+            sd_dt = parse_date(sd)
+            if sd_dt and sd_dt.date() in new_dates_set:
+                raise HTTPException(status_code=400, detail=f"WFH already applied for {sd}.")
 
-    wfh.date = from_date
-    wfh.to_date = to_date
-    wfh.days = str(request.days) if request.days is not None else wfh.days
+    wfh_emp_id = (wfh.emp_id or "").strip()
+    wfh.date = dates_str
+    wfh.to_date = date_list[-1] if date_list else None
+    wfh.days = fmt_days(request.days) if request.days is not None else str(len(date_list))
     wfh.reason = request.reason
     wfh.last_updated_by = wfh.emp_id
     wfh.last_update_date = datetime.now()
     wfh.last_update_login = wfh.emp_id
     db.commit()
+
+    # Send update notification to approvers
+    try:
+        user = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == wfh_emp_id.lower()
+        ).first()
+        if user:
+            approvers = get_approvers(db, user)
+            wfh_days_val = request.days if request.days is not None else len(date_list)
+            wfh_days_fmt = fmt_days(wfh_days_val)
+            wfh_day_label = "Day" if float(wfh_days_val or 0) == 1.0 else "Days"
+            from_str = date_list[0] if date_list else ""
+            to_str = date_list[-1] if date_list else ""
+            subject = f"ITS - {user.name} - WFH Request Updated | {from_str} to {to_str}"
+            for appr in approvers:
+                if appr["email"]:
+                    content = f"""
+                    <p>Good Day!</p>
+                    <p>I have updated my work from home request.</p>
+                    <br>
+                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                    <p style="color: #00008B; font-size: 14px;"><strong>Updated Request Details:</strong></p>
+                    <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                        <thead>
+                            <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Name</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">From Date</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">To Date</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Days</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="background-color: transparent;">
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{user.name}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{from_str}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{to_str}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{wfh_days_fmt} {wfh_day_label}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.reason}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <br>
+                    """
+                    body = get_email_template(appr["name"], "Work From Home Request Updated", content, user.name)
+                    background_tasks.add_task(send_email_notification, appr["email"], subject, body)
+                if appr["token"]:
+                    background_tasks.add_task(send_expo_push_notification, [appr["token"]],
+                        "WFH Request Updated",
+                        f"{user.name} has updated their WFH request on {dates_str}.")
+    except Exception as mail_err:
+        print(f" Non-critical WFH update notification error: {mail_err}")
+
     return {"message": "WFH request updated successfully"}
 
 
 @app.put("/withdraw-wfh/{wfh_id}")
-def withdraw_wfh(wfh_id: int, db: Session = Depends(get_db)):
+def withdraw_wfh(wfh_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     wfh = db.query(models.WFHDet).filter(models.WFHDet.wfh_id == wfh_id).first()
     if not wfh:
         raise HTTPException(status_code=404, detail="WFH request not found")
     if (wfh.status or "").strip().lower() != "pending":
         raise HTTPException(status_code=400, detail="Only pending WFH requests can be withdrawn")
-    wfh.status = "Withdrawn"
-    wfh.last_updated_by = wfh.emp_id
-    wfh.last_update_date = datetime.now()
-    wfh.last_update_login = wfh.emp_id
+
+    # Capture data before deletion for email notification
+    wfh_emp_id = (wfh.emp_id or "").strip()
+    wfh_dates = wfh.date or ""
+    wfh_days = wfh.days or "0"
+    wfh_reason = wfh.reason or ""
+
+    # Fetch user and approvers before deletion
+    user = db.query(models.EmpDet).filter(
+        func.lower(func.trim(models.EmpDet.emp_id)) == wfh_emp_id.lower()
+    ).first()
+    approvers = get_approvers(db, user) if user else []
+
+    db.delete(wfh)
     db.commit()
+
+    # Send withdrawal notification to approvers
+    try:
+        if user and approvers:
+            wfh_days_fmt = fmt_days(wfh_days)
+            days_val = float(wfh_days) if wfh_days else 0
+            wfh_day_label = "Day" if days_val == 1.0 else "Days"
+            # Resolve from/to from comma-separated dates string
+            date_parts = [d.strip() for d in wfh_dates.split(',') if d.strip()]
+            wfh_from = date_parts[0] if date_parts else wfh_dates
+            wfh_to = date_parts[-1] if date_parts else wfh_dates
+            subject = f"ITS - {user.name} - WFH Request Withdrawn | {wfh_from} to {wfh_to}"
+            for appr in approvers:
+                if appr["email"]:
+                    content = f"""
+                    <p>Good Day!</p>
+                    <p>I have withdrawn my work from home request.</p>
+                    <br>
+                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                    <p style="color: #00008B; font-size: 14px;"><strong>Original Request Details:</strong></p>
+                    <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                        <thead>
+                            <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Name</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">From Date</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">To Date</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Days</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="background-color: transparent;">
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{user.name}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{wfh_from}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{wfh_to}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{wfh_days_fmt} {wfh_day_label}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{wfh_reason}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <br>
+                    """
+                    body = get_email_template(appr["name"], "Work From Home Request Withdrawn", content, user.name)
+                    background_tasks.add_task(send_email_notification, appr["email"], subject, body)
+    except Exception as mail_err:
+        print(f" Non-critical WFH withdraw notification error: {mail_err}")
+
     return {"message": "WFH request withdrawn successfully"}
 
 
@@ -1549,16 +1834,33 @@ def get_leave_history(emp_id: str, db: Session = Depends(get_db)):
     ]
 
 
-def send_email_notification(to_email: str, subject: str, body_html: str):
+def send_email_notification(
+    to_email: str,
+    subject: str,
+    body_html: str,
+    attachment_bytes: bytes = None,
+    attachment_filename: str = None
+):
     if not to_email:
         print(" Email_id notification skipped: No recipient email provided")
         return False
     url = "https://devbms.ilantechsolutions.com/attendance/send-mail/"
     api_key = "my_secret_key_123"
     payload = {"to_email": to_email, "subject": subject, "body": body_html, "content_type": "text/html"}
+
+    print(f"[DEBUG-2] attachment_bytes is None: {attachment_bytes is None}, attachment_filename: {attachment_filename}")
+
+    if attachment_bytes and attachment_filename:
+        payload["attachment_base64"] = base64.b64encode(attachment_bytes).decode("utf-8")
+        payload["attachment_filename"] = attachment_filename
+        print(f"[DEBUG-3] Added attachment to payload. base64 length: {len(payload['attachment_base64'])}")
+    else:
+        print(f"[DEBUG-3] SKIPPED attachment — condition failed")
+
     headers = {"x-api-key": api_key, "Content-Type": "application/json"}
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=15)
+        print(f"[DEBUG-4] Response status: {response.status_code}, body: {response.text[:500]}")
         if response.status_code in [200, 201]:
             print(f" EMAIL SENT successfully to {to_email}")
             return True
@@ -1724,6 +2026,64 @@ def get_approvers(db: Session, user: models.EmpDet):
 
     print(f"   Total approvers with email: {sum(1 for a in approvers if a['email'])}/{len(approvers)}")
     return approvers
+
+
+# ── Delegate Manager helpers ─────────────────────────────────────────────────
+
+def is_manager_on_leave(db: Session, manager_id: str, from_date_str: str, to_date_str: Optional[str] = None) -> bool:
+    """Return True if manager has an approved leave overlapping [from_date_str, to_date_str]."""
+    if not manager_id:
+        return False
+    mgr_id = manager_id.strip().lower()
+    req_from = parse_date(from_date_str)
+    if not req_from:
+        return False
+    req_to = parse_date(to_date_str) if to_date_str else req_from
+    req_to = req_to or req_from
+    try:
+        mgr_leaves = db.query(models.EmpLeave).filter(
+            func.lower(func.trim(models.EmpLeave.emp_id)) == mgr_id,
+            func.lower(func.trim(models.EmpLeave.status)) == "approved"
+        ).all()
+    except Exception:
+        return False
+    for leave in mgr_leaves:
+        leave_from = parse_date(leave.from_date)
+        leave_to = parse_date(leave.to_date) if leave.to_date else leave_from
+        if not leave_from:
+            continue
+        leave_to = leave_to or leave_from
+        if leave_from <= req_to and leave_to >= req_from:
+            return True
+    return False
+
+
+def should_show_for_manager(db: Session, emp, manager_id: str, from_date_str: str, to_date_str: Optional[str] = None):
+    """
+    Decides if a pending/history request for `emp` should be visible to `manager_id`.
+    Returns (include: bool, is_delegated: bool, is_read_only: bool).
+
+    Rules:
+    - assign/project manager always sees it; read-only when they are on approved leave during those dates.
+    - delegate_manager sees it (with full action) ONLY when the assign_manager IS on approved leave.
+    """
+    mgr_lower = manager_id.strip().lower()
+    assign_mgr  = (emp.assign_manager  or "").strip().lower()
+    proj_mgr    = (emp.project_manager or "").strip().lower()
+    delegate_mgr = (emp.delegate_manager or "").strip().lower()
+
+    is_direct   = (assign_mgr == mgr_lower or proj_mgr == mgr_lower)
+    is_delegate = (delegate_mgr == mgr_lower and delegate_mgr not in (assign_mgr, proj_mgr))
+
+    if is_direct:
+        on_leave = is_manager_on_leave(db, manager_id.strip(), from_date_str, to_date_str)
+        return True, False, on_leave
+
+    if is_delegate:
+        mgr_on_leave = is_manager_on_leave(db, assign_mgr, from_date_str, to_date_str)
+        return mgr_on_leave, mgr_on_leave, False
+
+    return False, False, False
 
 
 def fmt_days(d):
@@ -2048,6 +2408,248 @@ def send_leave_notification(notification: dict, db: Session = Depends(get_db)):
     return {"message": "Notification endpoint disabled"}
 
 
+@app.put("/withdraw-leave/{l_id}")
+def withdraw_leave(l_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    leave = db.query(models.EmpLeave).filter(models.EmpLeave.l_id == l_id).first()
+    if not leave:
+        raise HTTPException(status_code=404, detail="Leave request not found")
+    if (leave.status or "").strip().lower() not in ("pending",):
+        raise HTTPException(status_code=400, detail="Only pending leave requests can be withdrawn")
+
+    # Capture data before deletion for email notification
+    leave_emp_id = (leave.emp_id or "").strip()
+    leave_type = leave.leave_type or ""
+    leave_from = leave.from_date or ""
+    leave_to = leave.to_date or ""
+    leave_days = leave.days or "0"
+    leave_reason = leave.reason or ""
+
+    cl_days = float(leave.days or 0)
+    if cl_days > 0:
+        l_type_lower = (leave.leave_type or "").strip().lower()
+        if 'casual' in l_type_lower:
+            search_key = 'casual'
+        elif 'sick' in l_type_lower:
+            search_key = 'sick'
+        else:
+            search_key = l_type_lower.split(' ')[0] or 'casual'
+
+        balance_row = db.query(models.LeaveDet).filter(
+            func.lower(func.trim(models.LeaveDet.emp_id)) == (leave.emp_id or "").strip().lower(),
+            func.lower(func.trim(models.LeaveDet.leave_type)).contains(search_key)
+        ).first()
+
+        if balance_row:
+            balance_row.availed_leave = max(0.0, float(balance_row.availed_leave or 0) - cl_days)
+            balance_row.available_leave = float(balance_row.available_leave or 0) + cl_days
+
+    # Fetch user and approvers before deletion (session still valid)
+    user = db.query(models.EmpDet).filter(
+        func.lower(func.trim(models.EmpDet.emp_id)) == leave_emp_id.lower()
+    ).first()
+    approvers = get_approvers(db, user) if user else []
+
+    db.delete(leave)
+    db.commit()
+
+    # Send withdrawal notification to approvers
+    try:
+        if user and approvers:
+            month_str = ""
+            try:
+                from_dt = parse_date(leave_from)
+                if from_dt:
+                    month_str = from_dt.strftime("%b-%y")
+            except Exception:
+                pass
+            subject = f"ITS - {user.name} - {leave_type} Request Withdrawn | {leave_from}"
+            for appr in approvers:
+                if appr["email"]:
+                    content = f"""
+                    <p>Good Day!</p>
+                    <p>I have withdrawn my leave request.</p>
+                    <br>
+                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                    <p style="color: #00008B; font-size: 14px;"><strong>Original Request Details:</strong></p>
+                    <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                        <thead>
+                            <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Month</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff; width: 40%;">Date</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Days</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="background-color: transparent;">
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{month_str}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{leave_from} to {leave_to}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{fmt_days(leave_days)}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{leave_reason}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <br>
+                    """
+                    body = get_email_template(appr["name"], "Leave Request Withdrawn", content, user.name)
+                    background_tasks.add_task(send_email_notification, appr["email"], subject, body)
+    except Exception as mail_err:
+        print(f" Non-critical withdraw notification error: {mail_err}")
+
+    return {"message": "Leave request withdrawn successfully"}
+
+
+@app.put("/update-leave/{l_id}")
+async def update_leave(
+    l_id: int,
+    background_tasks: BackgroundTasks,
+    leave_type: str = Form(...),
+    from_date: str = Form(...),
+    to_date: str = Form(...),
+    days: float = Form(...),
+    reason: str = Form(...),
+    status: str = Form(...),
+    emp_id: str = Form(...),
+    is_half_day: Optional[str] = Form(None),
+    half_day_date: Optional[str] = Form(None),
+    attachments: Optional[List[UploadFile]] = File(None),
+    db: Session = Depends(get_db)
+):
+    leave = db.query(models.EmpLeave).filter(models.EmpLeave.l_id == l_id).first()
+    if not leave:
+        raise HTTPException(status_code=404, detail="Leave request not found")
+    if (leave.status or "").strip().lower() not in ("pending",):
+        raise HTTPException(status_code=400, detail="Only pending leave requests can be updated")
+
+    emp_id = emp_id.strip()
+
+    # Restore old balance
+    old_days = float(leave.days or 0)
+    old_l_type_lower = (leave.leave_type or "").strip().lower()
+    if 'casual' in old_l_type_lower:
+        old_search_key = 'casual'
+    elif 'sick' in old_l_type_lower:
+        old_search_key = 'sick'
+    else:
+        old_search_key = (old_l_type_lower.split(' ')[0] or 'casual')
+
+    old_balance_row = db.query(models.LeaveDet).filter(
+        func.lower(func.trim(models.LeaveDet.emp_id)) == emp_id.lower(),
+        func.lower(func.trim(models.LeaveDet.leave_type)).contains(old_search_key)
+    ).first()
+
+    if old_balance_row and old_days > 0:
+        old_balance_row.availed_leave = max(0.0, float(old_balance_row.availed_leave or 0) - old_days)
+        old_balance_row.available_leave = float(old_balance_row.available_leave or 0) + old_days
+
+    # Deduct new balance
+    new_days = float(days)
+    new_l_type_lower = leave_type.strip().lower()
+    if 'casual' in new_l_type_lower:
+        new_search_key = 'casual'
+    elif 'sick' in new_l_type_lower:
+        new_search_key = 'sick'
+    else:
+        new_search_key = (new_l_type_lower.split(' ')[0] or 'casual')
+
+    if new_search_key == old_search_key and old_balance_row:
+        new_balance_row = old_balance_row
+    else:
+        new_balance_row = db.query(models.LeaveDet).filter(
+            func.lower(func.trim(models.LeaveDet.emp_id)) == emp_id.lower(),
+            func.lower(func.trim(models.LeaveDet.leave_type)).contains(new_search_key)
+        ).first()
+
+    if new_balance_row and new_days > 0:
+        new_balance_row.availed_leave = float(new_balance_row.availed_leave or 0) + new_days
+        new_balance_row.available_leave = max(0.0, float(new_balance_row.available_leave or 0) - new_days)
+
+    # Handle new attachment
+    if attachments:
+        upload_dir = "uploads/leave_attachments"
+        os.makedirs(upload_dir, exist_ok=True)
+        for i, file in enumerate(attachments):
+            if not file.filename:
+                continue
+            file_extension = file.filename.split('.')[-1]
+            file_name = f"{emp_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{i}.{file_extension}"
+            file_path = os.path.join(upload_dir, file_name)
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+            leave.file = f"uploads/leave_attachments/{file_name}"
+
+    leave.leave_type = leave_type
+    leave.from_date = from_date
+    leave.to_date = to_date
+    leave.days = str(new_days)
+    leave.reason = reason
+    leave.status = status
+    leave.last_update_date = datetime.now()
+    leave.last_updated_by = emp_id
+    if half_day_date:
+        leave.half_date = half_day_date
+
+    db.commit()
+
+    # Send update notification to approvers
+    try:
+        user = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()
+        ).first()
+        if user:
+            approvers = get_approvers(db, user)
+            month_str = ""
+            try:
+                from_dt = parse_date(from_date)
+                if from_dt:
+                    month_str = from_dt.strftime("%b-%y")
+            except Exception:
+                pass
+            subject = f"ITS - {user.name} - {leave_type} Request Updated | {from_date}"
+            for appr in approvers:
+                if appr["email"]:
+                    content = f"""
+                    <p>Good Day!</p>
+                    <p>I have updated my leave request.</p>
+                    <br>
+                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                    <p style="color: #00008B; font-size: 14px;"><strong>Updated Request Details:</strong></p>
+                    <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                        <thead>
+                            <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Month</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff; width: 40%;">Date</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Days</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="background-color: transparent;">
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{month_str}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{from_date} to {to_date}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{fmt_days(new_days)}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{reason}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <br>
+                    """
+                    body = get_email_template(appr["name"], "Leave Request Updated", content, user.name)
+                    background_tasks.add_task(send_email_notification, appr["email"], subject, body)
+                if appr["token"]:
+                    background_tasks.add_task(send_expo_push_notification, [appr["token"]],
+                        "Leave Request Updated",
+                        f"{user.name} has updated their {leave_type} request ({from_date} to {to_date}).")
+    except Exception as mail_err:
+        print(f" Non-critical update notification error: {mail_err}")
+
+    return {"message": "Leave request updated successfully"}
+
+
 @app.get("/admin/pending-leaves")
 def get_pending_leaves(manager_id: Optional[str] = None, db: Session = Depends(get_db)):
     try:
@@ -2055,10 +2657,12 @@ def get_pending_leaves(manager_id: Optional[str] = None, db: Session = Depends(g
             models.EmpDet, func.lower(func.trim(models.EmpLeave.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id))
         ).filter(func.lower(func.trim(models.EmpLeave.status)) == "pending")
         if manager_id:
+            mgr_lower = manager_id.strip().lower()
             query = query.filter(
                 or_(
-                    func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower(),
-                    func.lower(func.trim(models.EmpDet.project_manager)) == manager_id.strip().lower()
+                    func.lower(func.trim(models.EmpDet.assign_manager)) == mgr_lower,
+                    func.lower(func.trim(models.EmpDet.project_manager)) == mgr_lower,
+                    func.lower(func.trim(models.EmpDet.delegate_manager)) == mgr_lower
                 )
             )
         pending = query.order_by(models.EmpLeave.creation_date.desc()).all()
@@ -2066,12 +2670,21 @@ def get_pending_leaves(manager_id: Optional[str] = None, db: Session = Depends(g
         handle_db_error(e)
     results = []
     for leave, emp in pending:
+        if manager_id:
+            include, is_delegated, is_read_only = should_show_for_manager(
+                db, emp, manager_id, leave.from_date, leave.to_date)
+            if not include:
+                continue
+        else:
+            is_delegated = False
+            is_read_only = False
         results.append({
             "l_id": leave.l_id, "emp_name": emp.name or "Unknown Employee",
             "emp_id": emp.emp_id.strip() if emp.emp_id else "",
             "leave_type": leave.leave_type, "from_date": leave.from_date, "to_date": leave.to_date,
             "days": leave.days, "reason": leave.reason, "remarks": leave.remarks or "",
-            "status": leave.status, "file": leave.file
+            "status": leave.status, "file": leave.file,
+            "is_delegated": is_delegated, "is_read_only": is_read_only
         })
     return results
 
@@ -2083,10 +2696,12 @@ def get_all_leave_history(manager_id: Optional[str] = None, db: Session = Depend
             models.EmpDet, func.lower(func.trim(models.EmpLeave.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id))
         )
         if manager_id:
+            mgr_lower = manager_id.strip().lower()
             query = query.filter(
                 or_(
-                    func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower(),
-                    func.lower(func.trim(models.EmpDet.project_manager)) == manager_id.strip().lower()
+                    func.lower(func.trim(models.EmpDet.assign_manager)) == mgr_lower,
+                    func.lower(func.trim(models.EmpDet.project_manager)) == mgr_lower,
+                    func.lower(func.trim(models.EmpDet.delegate_manager)) == mgr_lower
                 )
             )
         all_leaves = query.order_by(models.EmpLeave.creation_date.desc()).all()
@@ -2094,12 +2709,21 @@ def get_all_leave_history(manager_id: Optional[str] = None, db: Session = Depend
         handle_db_error(e)
     results = []
     for leave, emp in all_leaves:
+        if manager_id:
+            include, is_delegated, is_read_only = should_show_for_manager(
+                db, emp, manager_id, leave.from_date, leave.to_date)
+            if not include:
+                continue
+        else:
+            is_delegated = False
+            is_read_only = False
         results.append({
             "l_id": leave.l_id, "emp_name": emp.name or "Unknown Employee",
             "emp_id": emp.emp_id.strip() if emp.emp_id else "",
             "leave_type": leave.leave_type, "from_date": leave.from_date, "to_date": leave.to_date,
             "days": leave.days, "reason": leave.reason, "remarks": leave.remarks or "",
-            "status": leave.status, "file": leave.file, "revision": leave.revision
+            "status": leave.status, "file": leave.file, "revision": leave.revision,
+            "is_delegated": is_delegated, "is_read_only": is_read_only
         })
     return results
 
@@ -2387,11 +3011,14 @@ def get_notifications(
     # 1. Admin/Manager/HR View: Pending requests to approve
     if role in ('admin', 'manager', 'hr'):
         def apply_manager_filter(query, emp_model):
+            """Broad SQL pre-filter — includes direct reports and delegate targets."""
             if manager_id and manager_id.strip().lower() not in ('', 'all', 'none'):
+                mgr_lower = manager_id.strip().lower()
                 query = query.filter(
                     or_(
-                        func.lower(func.trim(emp_model.assign_manager)) == manager_id.strip().lower(),
-                        func.lower(func.trim(emp_model.project_manager)) == manager_id.strip().lower()
+                        func.lower(func.trim(emp_model.assign_manager)) == mgr_lower,
+                        func.lower(func.trim(emp_model.project_manager)) == mgr_lower,
+                        func.lower(func.trim(emp_model.delegate_manager)) == mgr_lower
                     )
                 )
             return query
@@ -2404,7 +3031,12 @@ def get_notifications(
                 func.lower(func.trim(models.EmpPermission.status)) == "pending"
             )
             q = apply_manager_filter(q, models.EmpDet)
-            for perm, emp in q.order_by(standard_order(models.EmpPermission.last_update_date, models.EmpPermission.creation_date)).limit(30).all():
+            for perm, emp in q.order_by(standard_order(models.EmpPermission.last_update_date, models.EmpPermission.creation_date)).limit(50).all():
+                if manager_id and emp:
+                    perm_date_str = perm.date.strftime("%d-%b-%Y") if perm.date else ""
+                    include, _, _ro = should_show_for_manager(db, emp, manager_id, perm_date_str, perm_date_str)
+                    if not include:
+                        continue
                 emp_name = (emp.name if emp else None) or "Unknown"
                 st = (perm.status or 'Pending').strip()
                 update_time = perm.last_update_date or perm.creation_date
@@ -2427,7 +3059,11 @@ def get_notifications(
                 func.lower(func.trim(models.EmpLeave.status)) == "pending"
             )
             q = apply_manager_filter(q, models.EmpDet)
-            for leave, emp in q.order_by(standard_order(models.EmpLeave.last_update_date, models.EmpLeave.creation_date)).limit(30).all():
+            for leave, emp in q.order_by(standard_order(models.EmpLeave.last_update_date, models.EmpLeave.creation_date)).limit(50).all():
+                if manager_id and emp:
+                    include, _, _ro = should_show_for_manager(db, emp, manager_id, leave.from_date, leave.to_date)
+                    if not include:
+                        continue
                 emp_name = (emp.name if emp else None) or "Unknown"
                 st = (leave.status or 'Pending').strip()
                 update_time = leave.last_update_date or leave.creation_date
@@ -2450,7 +3086,7 @@ def get_notifications(
                 func.lower(func.trim(models.OverTimeDet.status)) == "pending"
             )
             q = apply_manager_filter(q, models.EmpDet)
-            for ot, emp in q.order_by(standard_order(models.OverTimeDet.last_update_date, models.OverTimeDet.creation_date)).limit(30).all():
+            for ot, emp in q.order_by(standard_order(models.OverTimeDet.last_update_date, models.OverTimeDet.creation_date)).limit(50).all():
                 emp_name = (emp.name if emp else None) or "Unknown"
                 st = (ot.status or 'Pending').strip()
                 update_time = ot.last_update_date or ot.creation_date
@@ -2519,6 +3155,32 @@ def get_notifications(
             })
     except Exception as e:
         print(f"  ❌ Personal notifications error: {e}")
+
+    # 3. Direct notifications (xxits_aruvi_notifications_t) — e.g. Timesheet/Chillax
+    # submit/edit/withdraw/approve/reject, and any other module using create_notification().
+    # Scoped strictly to this employee's own emp_id.
+    try:
+        db_notifs = db.query(models.AruviNotification).filter(
+            func.lower(func.trim(models.AruviNotification.emp_id)) == user_id
+        ).order_by(models.AruviNotification.creation_date.desc()).limit(50).all()
+
+        for n in db_notifs:
+            msg_lower = (n.message or '').lower()
+            if 'approved' in msg_lower:
+                ntype, icon = 'success', 'checkmark-circle'
+            elif 'rejected' in msg_lower:
+                ntype, icon = 'error', 'close-circle'
+            else:
+                ntype, icon = 'info', 'notifications-outline'
+            notifications.append({
+                "id": f"db_notif_{n.id}", "record_id": n.id,
+                "type": ntype, "notification_type": (n.module or '').lower(),
+                "title": n.title or n.module or "Notification",
+                "message": n.message,
+                "time": str(n.creation_date or "Recently"), "icon": icon,
+            })
+    except Exception as e:
+        print(f"  ❌ Direct notifications error: {e}")
 
     print(f"✅ Returning {len(notifications)} notifications for {user_id}")
     return notifications
@@ -2634,10 +3296,12 @@ def get_all_permission_history(manager_id: Optional[str] = None, db: Session = D
             func.lower(func.trim(models.EmpPermission.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id))
         )
         if manager_id:
+            mgr_lower = manager_id.strip().lower()
             query = query.filter(
                 or_(
-                    func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower(),
-                    func.lower(func.trim(models.EmpDet.project_manager)) == manager_id.strip().lower()
+                    func.lower(func.trim(models.EmpDet.assign_manager)) == mgr_lower,
+                    func.lower(func.trim(models.EmpDet.project_manager)) == mgr_lower,
+                    func.lower(func.trim(models.EmpDet.delegate_manager)) == mgr_lower
                 )
             )
         all_perms = query.order_by(models.EmpPermission.creation_date.desc()).all()
@@ -2645,6 +3309,15 @@ def get_all_permission_history(manager_id: Optional[str] = None, db: Session = D
         handle_db_error(e)
     results = []
     for perm, emp in all_perms:
+        if manager_id:
+            perm_date_str = perm.date.strftime("%d-%b-%Y") if perm.date else ""
+            include, is_delegated, is_read_only = should_show_for_manager(
+                db, emp, manager_id, perm_date_str, perm_date_str)
+            if not include:
+                continue
+        else:
+            is_delegated = False
+            is_read_only = False
         try:
             date_str = perm.date.strftime("%d-%b-%Y") if perm.date else ""
         except Exception:
@@ -2662,6 +3335,7 @@ def get_all_permission_history(manager_id: Optional[str] = None, db: Session = D
             "applied_date": str(perm.applied_date) if perm.applied_date else "",
             "creation_date": str(perm.creation_date) if perm.creation_date else "",
             "last_update_date": str(perm.last_update_date) if perm.last_update_date else "",
+            "is_delegated": is_delegated, "is_read_only": is_read_only
         })
     return results
 
@@ -3126,10 +3800,12 @@ def get_pending_wfh(manager_id: Optional[str] = None, db: Session = Depends(get_
             func.lower(func.trim(models.WFHDet.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id))
         ).filter(models.WFHDet.status == "Pending")
         if manager_id:
+            mgr_lower = manager_id.strip().lower()
             query = query.filter(
                 or_(
-                    func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower(),
-                    func.lower(func.trim(models.EmpDet.project_manager)) == manager_id.strip().lower()
+                    func.lower(func.trim(models.EmpDet.assign_manager)) == mgr_lower,
+                    func.lower(func.trim(models.EmpDet.project_manager)) == mgr_lower,
+                    func.lower(func.trim(models.EmpDet.delegate_manager)) == mgr_lower
                 )
             )
         pending = query.order_by(models.WFHDet.creation_date.desc()).all()
@@ -3137,11 +3813,23 @@ def get_pending_wfh(manager_id: Optional[str] = None, db: Session = Depends(get_
         handle_db_error(e)
     results = []
     for wfh, emp in pending:
+        if manager_id:
+            dates = [d.strip() for d in (wfh.date or "").split(",") if d.strip()]
+            wfh_from = dates[0] if dates else ""
+            wfh_to = dates[-1] if dates else wfh_from
+            include, is_delegated, is_read_only = should_show_for_manager(
+                db, emp, manager_id, wfh_from, wfh_to)
+            if not include:
+                continue
+        else:
+            is_delegated = False
+            is_read_only = False
         results.append({
             "wfh_id": wfh.wfh_id, "emp_name": emp.name or "Unknown", "emp_id": emp.emp_id or "N/A",
             "date": wfh.date, "from_date": wfh.date, "to_date": wfh.to_date,
             "reason": wfh.reason or "No reason", "remarks": "", "status": wfh.status or "Pending",
-            "submittedDate": wfh.creation_date.strftime("%d-%b-%Y") if wfh.creation_date else "N/A"
+            "submittedDate": wfh.creation_date.strftime("%d-%b-%Y") if wfh.creation_date else "N/A",
+            "is_delegated": is_delegated, "is_read_only": is_read_only
         })
     return results
 
@@ -3154,21 +3842,35 @@ def get_all_wfh_history(manager_id: Optional[str] = None, db: Session = Depends(
             func.lower(func.trim(models.WFHDet.emp_id)) == func.lower(func.trim(models.EmpDet.emp_id))
         )
         if manager_id:
+            mgr_lower = manager_id.strip().lower()
             query = query.filter(
                 or_(
-                    func.lower(func.trim(models.EmpDet.assign_manager)) == manager_id.strip().lower(),
-                    func.lower(func.trim(models.EmpDet.project_manager)) == manager_id.strip().lower()
+                    func.lower(func.trim(models.EmpDet.assign_manager)) == mgr_lower,
+                    func.lower(func.trim(models.EmpDet.project_manager)) == mgr_lower,
+                    func.lower(func.trim(models.EmpDet.delegate_manager)) == mgr_lower
                 )
             )
         all_wfh = query.order_by(models.WFHDet.creation_date.desc()).all()
         results = []
         for wfh, emp in all_wfh:
+            if manager_id and emp:
+                dates = [d.strip() for d in (wfh.date or "").split(",") if d.strip()]
+                wfh_from = dates[0] if dates else ""
+                wfh_to = dates[-1] if dates else wfh_from
+                include, is_delegated, is_read_only = should_show_for_manager(
+                    db, emp, manager_id, wfh_from, wfh_to)
+                if not include:
+                    continue
+            else:
+                is_delegated = False
+                is_read_only = False
             results.append({
                 "wfh_id": wfh.wfh_id, "emp_name": emp.name if emp else "Unknown",
                 "emp_id": wfh.emp_id, "date": wfh.date, "from_date": wfh.date,
                 "to_date": wfh.to_date, "days": wfh.days, "reason": wfh.reason or "No reason",
                 "remarks": "", "status": wfh.status or "Pending",
-                "submittedDate": wfh.creation_date.strftime("%d-%b-%Y") if wfh.creation_date else "N/A"
+                "submittedDate": wfh.creation_date.strftime("%d-%b-%Y") if wfh.creation_date else "N/A",
+                "is_delegated": is_delegated, "is_read_only": is_read_only
             })
         return results
     except Exception as e:
@@ -3260,39 +3962,62 @@ def get_wfh_stats(emp_id: str, db: Session = Depends(get_db)):
 
 @app.post("/apply-wfh")
 def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    print(f"[apply-wfh] received: emp_id={request.emp_id!r} dates={request.dates!r} days={request.days!r} reason={request.reason!r}")
     try:
         clean_emp_id = request.emp_id.strip()
-        from_date_input = request.from_date or request.date
-        if not from_date_input:
-            raise HTTPException(status_code=400, detail="from_date is required")
-        from_date = from_date_input.strip()
-        to_date = (request.to_date or from_date).strip()
-        days_val = str(request.days) if request.days is not None else "1"
-        req_from = parse_date(from_date)
-        req_to = parse_date(to_date)
-        if not req_from or not req_to:
-            raise HTTPException(status_code=400, detail="Invalid WFH from/to date format")
-        if req_to < req_from:
-            raise HTTPException(status_code=400, detail="To date must be on or after from date")
+
+        # ── Resolve dates list ────────────────────────────────────────────────
+        if request.dates:
+            date_list = [d.strip() for d in request.dates.split(',') if d.strip()]
+        else:
+            from_date_input = request.from_date or request.date
+            if not from_date_input:
+                raise HTTPException(status_code=400, detail="dates is required")
+            from_date_input = from_date_input.strip()
+            to_date_input = (request.to_date or from_date_input).strip()
+            req_from_leg = parse_date(from_date_input)
+            req_to_leg = parse_date(to_date_input)
+            if not req_from_leg or not req_to_leg:
+                raise HTTPException(status_code=400, detail="Invalid date format")
+            from datetime import timedelta as _td2
+            date_list = []
+            cur = req_from_leg.date()
+            while cur <= req_to_leg.date():
+                date_list.append(cur.strftime("%d-%b-%Y"))
+                cur += _td2(days=1)
+
+        if not date_list:
+            raise HTTPException(status_code=400, detail="At least one date is required")
+
+        # Validate and parse each date
+        date_objects = []
+        for d in date_list:
+            dt = parse_date(d)
+            if not dt:
+                raise HTTPException(status_code=400, detail=f"Invalid date format: {d}")
+            date_objects.append(dt)
+
+        new_dates_set = {dt.date() for dt in date_objects}
+        days_val = fmt_days(request.days) if request.days is not None else str(len(date_list))
+        dates_str = ",".join(date_list)  # stored as "26-Jan-2026,27-Jan-2026,28-Jan-2026"
+
+        # ── Duplicate WFH check ───────────────────────────────────────────────
         existing_wfh = db.query(models.WFHDet).filter(
             func.lower(func.trim(models.WFHDet.emp_id)) == clean_emp_id.lower(),
             func.lower(func.trim(models.WFHDet.status)).in_(["pending", "approved"])
         ).all()
         for row in existing_wfh:
-            row_date = parse_date(row.date)
-            if not row_date:
-                continue
-            # Each row is a single day; check if that day falls within the new requested range
-            if req_from.date() <= row_date.date() <= req_to.date():
-                raise HTTPException(status_code=400,
-                    detail=f"WFH already applied for {row.date}.")
+            stored_parts = [p.strip() for p in (row.date or "").split(',') if p.strip()]
+            for sd in stored_parts:
+                sd_dt = parse_date(sd)
+                if sd_dt and sd_dt.date() in new_dates_set:
+                    raise HTTPException(status_code=400, detail=f"WFH already applied for {sd}.")
 
-        # ── ★ NEW: Block WFH if an approved leave exists on overlapping dates ──
+        # ── Approved leave overlap check ──────────────────────────────────────
         approved_leaves = db.query(models.EmpLeave).filter(
             func.lower(func.trim(models.EmpLeave.emp_id)) == clean_emp_id.lower(),
             func.lower(func.trim(models.EmpLeave.status)) == "approved"
         ).all()
-
         for leave in approved_leaves:
             leave_from = parse_date(leave.from_date)
             leave_to = parse_date(leave.to_date) if leave.to_date else leave_from
@@ -3300,37 +4025,34 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
                 continue
             leave_from_date = leave_from.date()
             leave_to_date = leave_to.date() if leave_to else leave_from_date
-
-            if not (req_to.date() < leave_from_date or req_from.date() > leave_to_date):
-                leave_type = leave.leave_type or "Leave"
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"WFH cannot be applied on {from_date} to {to_date} because you have an approved "
-                        f"{leave_type} from {leave.from_date} to {leave.to_date or leave.from_date}. "
-                        f"Please select different dates."
+            for new_dt in date_objects:
+                if leave_from_date <= new_dt.date() <= leave_to_date:
+                    leave_type = leave.leave_type or "Leave"
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"WFH cannot be applied on {new_dt.strftime('%d-%b-%Y')} because you have an approved "
+                            f"{leave_type} from {leave.from_date} to {leave.to_date or leave.from_date}. "
+                            f"Please select different dates."
+                        )
                     )
-                )
-        # ── End approved leave check ────────────────────────────────────────
 
-        # ── ★ NEW: Block WFH if pending/approved Permission exists on overlapping dates ──
+        # ── Permission overlap check ──────────────────────────────────────────
         existing_permissions = db.query(models.EmpPermission).filter(
             func.lower(func.trim(models.EmpPermission.emp_id)) == clean_emp_id.lower(),
             func.lower(func.trim(models.EmpPermission.status)).in_(["pending", "approved"])
         ).all()
-
         for perm in existing_permissions:
             if perm.date:
-                if req_from.date() <= perm.date <= req_to.date():
-                    perm_date_str = perm.date.strftime("%d-%b-%Y")
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            f"WFH cannot be applied from {from_date} to {to_date} because you have a Permission "
-                            f"applied on {perm_date_str}."
+                for new_dt in date_objects:
+                    if perm.date == new_dt.date():
+                        perm_date_str = perm.date.strftime("%d-%b-%Y")
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                f"WFH cannot be applied on {perm_date_str} because you have a Permission applied on that date."
+                            )
                         )
-                    )
-        # ── End Permission overlap check ────────────────────────────────────
 
         submitter = db.query(models.EmpDet).filter(
             func.lower(func.trim(models.EmpDet.emp_id)) == clean_emp_id.lower()
@@ -3339,46 +4061,33 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
         if normalized_status.lower() == "pending":
             normalized_status = "Pending"
 
-        # ── Insert ONE row per date in the from→to range ─────────────────────
-        from datetime import timedelta as _td
-        inserted_ids = []
-        current_day = req_from.date()
-        end_day = req_to.date()
+        # ── Insert ONE row with all dates comma-separated ─────────────────────
         now_ts = datetime.now()
-        while current_day <= end_day:
-            day_str = current_day.strftime("%d-%b-%Y")
-            new_wfh = models.WFHDet(
-                date=day_str,
-                to_date=to_date,
-                emp_id=clean_emp_id,
-                days=days_val,
-                reason=request.reason,
-                status=normalized_status,
-                created_by=clean_emp_id,
-                creation_date=now_ts,
-                last_updated_by=clean_emp_id,
-                last_update_date=now_ts,
-                last_update_login=clean_emp_id
-            )
-            db.add(new_wfh)
-            current_day += _td(days=1)
+        last_date_str = date_list[-1] if date_list else date_list[0]
+        print(f"[apply-wfh] inserting: emp_id={clean_emp_id!r} dates={dates_str!r} days={days_val!r} status={normalized_status!r}")
+        new_wfh = models.WFHDet(
+            date=dates_str,
+            to_date=last_date_str,
+            emp_id=clean_emp_id,
+            days=days_val,
+            reason=request.reason,
+            status=normalized_status,
+            created_by=clean_emp_id,
+            creation_date=now_ts,
+            last_updated_by=clean_emp_id,
+            last_update_date=now_ts,
+            last_update_login=clean_emp_id
+        )
+        db.add(new_wfh)
         db.commit()
-        # Grab the last inserted record for the return value
-        last_wfh = db.query(models.WFHDet).filter(
-            func.lower(func.trim(models.WFHDet.emp_id)) == clean_emp_id.lower()
-        ).order_by(models.WFHDet.wfh_id.desc()).first()
-        # ── End per-date insert ───────────────────────────────────────────────
+        db.refresh(new_wfh)
+
         user = submitter
         try:
             if user:
                 approvers = get_approvers(db, user)
-                try:
-                    from_dt = parse_date(from_date)
-                    to_dt = parse_date(to_date)
-                    from_str = from_dt.strftime("%d-%b-%Y") if from_dt else from_date
-                    to_str = to_dt.strftime("%d-%b-%Y") if to_dt else to_date
-                except:
-                    from_str = from_date; to_str = to_date
+                from_str = date_list[0] if date_list else ""
+                to_str = date_list[-1] if date_list else ""
                 wfh_days_fmt = fmt_days(days_val)
                 wfh_day_label = "Day" if float(days_val or 0) == 1.0 else "Days"
                 subject = f"ITS - {user.name} - WFH | {from_str} to {to_str} ({wfh_days_fmt} {wfh_day_label})"
@@ -3395,8 +4104,7 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
                                 <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
                                     <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
                                     <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Name</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">From Date</th>
-                                    <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">To Date</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Date(s)</th>
                                     <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Days</th>
                                     <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
                                 </tr>
@@ -3405,8 +4113,7 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
                                 <tr style="background-color: transparent;">
                                     <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
                                     <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{user.name}</td>
-                                    <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{from_str}</td>
-                                    <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{to_str}</td>
+                                    <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{dates_str}</td>
                                     <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{wfh_days_fmt} {wfh_day_label}</td>
                                     <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.reason}</td>
                                 </tr>
@@ -3418,7 +4125,7 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
                         background_tasks.add_task(send_email_notification, appr["email"], subject, body)
                     if appr["token"]:
                         background_tasks.add_task(send_expo_push_notification, [appr["token"]],
-                            "New WFH Request", f"{user.name} requested WFH from {from_str} to {to_str}.")
+                            "New WFH Request", f"{user.name} requested WFH on {dates_str}.")
                 if not approvers:
                     print(f"   ⚠️ [WFH EMAIL] No approvers found for emp_id={clean_emp_id}. Email NOT sent.")
         except Exception as mail_err:
@@ -3435,7 +4142,7 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
                 created_by=clean_emp_id
             )
 
-        return {"message": "WFH request submitted successfully", "wfh_id": last_wfh.wfh_id if last_wfh else None}
+        return {"message": "WFH request submitted successfully", "wfh_id": new_wfh.wfh_id}
     except HTTPException:
         db.rollback(); raise
     except Exception as e:
@@ -3503,6 +4210,245 @@ def get_permission_history(emp_id: str, db: Session = Depends(get_db)):
         print(f"permission-history error: {e}")
         traceback.print_exc()
         return []
+
+
+@app.put("/withdraw-permission/{p_id}")
+def withdraw_permission(p_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    perm = db.query(models.EmpPermission).filter(models.EmpPermission.p_id == p_id).first()
+    if not perm:
+        raise HTTPException(status_code=404, detail="Permission request not found")
+    if (perm.status or "").strip().lower() not in ("pending",):
+        raise HTTPException(status_code=400, detail="Only pending permission requests can be withdrawn")
+
+    # Capture data before deletion for email notification
+    perm_emp_id = (perm.emp_id or "").strip()
+    perm_date_str = perm.date.strftime("%d-%b-%Y") if perm.date else ""
+    perm_f_time = format_time_safe(perm.f_time)
+    perm_t_time = format_time_safe(perm.t_time)
+    perm_total_hours = str(perm.total_hours or "0")
+    perm_reason = perm.reason or ""
+
+    # Fetch user and approvers before deletion
+    user = db.query(models.EmpDet).filter(
+        func.lower(func.trim(models.EmpDet.emp_id)) == perm_emp_id.lower()
+    ).first()
+    approvers = get_approvers(db, user) if user else []
+
+    db.delete(perm)
+    db.commit()
+
+    # Send withdrawal notification to approvers
+    try:
+        if user and approvers:
+            subject = f"ITS - {user.name} - Permission Request Withdrawn | {perm_date_str}"
+            for appr in approvers:
+                if appr["email"]:
+                    content = f"""
+                    <p>Good Day!</p>
+                    <p>I have withdrawn my permission request.</p>
+                    <br>
+                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                    <p style="color: #00008B; font-size: 14px;"><strong>Original Request Details:</strong></p>
+                    <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                        <thead>
+                            <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Date</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">From time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">To Time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Total Hours</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="background-color: transparent;">
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{perm_date_str}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{perm_f_time}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{perm_t_time}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{perm_total_hours} hrs</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{perm_reason}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <br>
+                    """
+                    body = get_email_template(appr["name"], "Permission Request Withdrawn", content, user.name)
+                    background_tasks.add_task(send_email_notification, appr["email"], subject, body)
+    except Exception as mail_err:
+        print(f" Non-critical permission withdraw notification error: {mail_err}")
+
+    return {"message": "Permission request withdrawn successfully"}
+
+
+@app.put("/update-permission/{p_id}")
+def update_permission_by_id(p_id: int, request: schemas.PermissionApplyRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    perm = db.query(models.EmpPermission).filter(models.EmpPermission.p_id == p_id).first()
+    if not perm:
+        raise HTTPException(status_code=404, detail="Permission request not found")
+    if (perm.status or "").strip().lower() not in ("pending",):
+        raise HTTPException(status_code=400, detail="Only pending permission requests can be updated")
+
+    p_date_dt = parse_date(request.date)
+    if not p_date_dt:
+        raise HTTPException(status_code=400, detail=f"Invalid date: {request.date}")
+    f_time_dt = parse_time_str(request.f_time)
+    t_time_dt = parse_time_str(request.t_time)
+    if not f_time_dt:
+        raise HTTPException(status_code=400, detail="Invalid from time")
+    if not t_time_dt:
+        raise HTTPException(status_code=400, detail="Invalid to time")
+
+    perm_emp_id = (perm.emp_id or "").strip()
+    perm.date = p_date_dt.date()
+    perm.f_time = f_time_dt
+    perm.t_time = t_time_dt
+    perm.total_hours = str(request.total_hours or '')
+    perm.dis_total_hours = str(request.dis_total_hours or '')
+    perm.reason = request.reason
+    perm.status = request.status or 'Pending'
+    perm.last_update_date = datetime.now()
+
+    db.commit()
+
+    # Send update notification to approvers
+    try:
+        user = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == perm_emp_id.lower()
+        ).first()
+        if user:
+            approvers = get_approvers(db, user)
+            f_display = f_time_dt.strftime("%I:%M %p").lstrip('0')
+            t_display = t_time_dt.strftime("%I:%M %p").lstrip('0')
+            date_str = p_date_dt.strftime("%d-%b-%Y")
+            subject = f"ITS - {user.name} - Permission Request Updated | {date_str} | {f_display} to {t_display}"
+            for appr in approvers:
+                if appr["email"]:
+                    content = f"""
+                    <p>Good Day!</p>
+                    <p>I have updated my permission request.</p>
+                    <div style="font-size: 20px; font-weight: 700; color: #00008B; margin: 20px 0;">Updated</div>                    <br>
+                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                    <p style="color: #00008B; font-size: 14px;"><strong>Updated Request Details:</strong></p>
+                    <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                        <thead>
+                            <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Date</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">From time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">To Time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Total Hours</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="background-color: transparent;">
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{date_str}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{f_display}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{t_display}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.total_hours or 0} hrs</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.reason}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <br>
+                    """
+                    body = get_email_template(appr["name"], "Permission Request Updated", content, user.name)
+                    background_tasks.add_task(send_email_notification, appr["email"], subject, body)
+                if appr["token"]:
+                    background_tasks.add_task(send_expo_push_notification, [appr["token"]],
+                        "Permission Request Updated",
+                        f"{user.name} has updated their permission request for {date_str} ({f_display} to {t_display}).")
+    except Exception as mail_err:
+        print(f" Non-critical permission update notification error: {mail_err}")
+
+    return {"message": "Permission request updated successfully"}
+
+
+@app.post("/update-permission")
+def update_permission_post(request: schemas.PermissionUpdateRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    perm = db.query(models.EmpPermission).filter(models.EmpPermission.p_id == request.p_id).first()
+    if not perm:
+        raise HTTPException(status_code=404, detail="Permission request not found")
+    if (perm.status or "").strip().lower() not in ("pending",):
+        raise HTTPException(status_code=400, detail="Only pending permission requests can be updated")
+
+    p_date_dt = parse_date(request.date)
+    if not p_date_dt:
+        raise HTTPException(status_code=400, detail=f"Invalid date: {request.date}")
+    f_time_dt = parse_time_str(request.f_time)
+    t_time_dt = parse_time_str(request.t_time)
+    if not f_time_dt:
+        raise HTTPException(status_code=400, detail="Invalid from time")
+    if not t_time_dt:
+        raise HTTPException(status_code=400, detail="Invalid to time")
+
+    perm_emp_id = (perm.emp_id or "").strip()
+    perm.date = p_date_dt.date()
+    perm.f_time = f_time_dt
+    perm.t_time = t_time_dt
+    perm.total_hours = str(request.total_hours or '')
+    perm.dis_total_hours = str(request.dis_total_hours or '')
+    perm.reason = request.reason
+    perm.status = 'Pending'
+    perm.last_update_date = datetime.now()
+
+    db.commit()
+
+    # Send update notification to approvers
+    try:
+        user = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == perm_emp_id.lower()
+        ).first()
+        if user:
+            approvers = get_approvers(db, user)
+            f_display = f_time_dt.strftime("%I:%M %p").lstrip('0')
+            t_display = t_time_dt.strftime("%I:%M %p").lstrip('0')
+            date_str = p_date_dt.strftime("%d-%b-%Y")
+            subject = f"ITS - {user.name} - Permission Request Updated | {date_str} | {f_display} to {t_display}"
+            for appr in approvers:
+                if appr["email"]:
+                    content = f"""
+                    <p>Good Day!</p>
+                    <p>I have updated my permission request.</p>
+                    <br>
+                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                    <p style="color: #00008B; font-size: 14px;"><strong>Updated Request Details:</strong></p>
+                    <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                        <thead>
+                            <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Date</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">From time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">To Time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Total Hours</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="background-color: transparent;">
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{date_str}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{f_display}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{t_display}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.total_hours or 0} hrs</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.reason}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <br>
+                    """
+                    body = get_email_template(appr["name"], "Permission Request Updated", content, user.name)
+                    background_tasks.add_task(send_email_notification, appr["email"], subject, body)
+                if appr["token"]:
+                    background_tasks.add_task(send_expo_push_notification, [appr["token"]],
+                        "Permission Request Updated",
+                        f"{user.name} has updated their permission request for {date_str} ({f_display} to {t_display}).")
+    except Exception as mail_err:
+        print(f" Non-critical permission update notification error: {mail_err}")
+
+    return {"message": "Permission request updated successfully"}
 
 
 @app.get("/dashboard/{emp_id}", response_model=schemas.DashboardResponse)
@@ -3687,158 +4633,31 @@ def get_birthdays_this_month(db: Session = Depends(get_db)):
         raise HTTPException(status_code=503, detail=f"Database error or format mismatch. Error: {str(e)}")
 
 
-@app.get("/timesheet-month/{emp_id}", response_model=List[schemas.TimesheetResponse])
-def get_timesheet_month(emp_id: str, month: Optional[str] = None, year: Optional[str] = None, requester_id: Optional[str] = None, db: Session = Depends(get_db)):
-    from sqlalchemy import or_, func
-    clean_id = emp_id.replace(" ", "")
-    
-    # 1. Authorization check
-    if requester_id and requester_id.strip().lower() != emp_id.strip().lower():
-        req_id = requester_id.strip()
-        is_authorized = False
-        requester = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == req_id.lower()).first()
-        if requester:
-            top_domains = [1, 2, 3, 9]
+@app.get("/all-birthdays")
+def get_all_birthdays(db: Session = Depends(get_db)):
+    try:
+        all_emps = db.query(models.EmpDet).all()
+        birthdays = []
+        for emp in all_emps:
             try:
-                if requester.dom_id and int(str(requester.dom_id).strip()) in top_domains:
-                    is_authorized = True
-            except: pass
-            
-            if not is_authorized and requester.rpd_id:
-                try:
-                    r_id = int(str(requester.rpd_id).strip())
-                    role_priv = db.query(models.RolePrivilege).filter(models.RolePrivilege.rpd_id == r_id).first()
-                    if role_priv and role_priv.role_prv_name:
-                        top_roles = ["Admin", "Management", "Executive", "Project Management"]
-                        if any(tr.lower() in role_priv.role_prv_name.lower() for tr in top_roles):
-                            is_authorized = True
-                except: pass
-        
-        if not is_authorized:
-            # Check if requester is the assigned manager or project manager
-            target_emp = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.strip().lower()).first()
-            if target_emp:
-                if (target_emp.assign_manager and target_emp.assign_manager.strip().lower() == req_id.lower()) or \
-                   (target_emp.project_manager and target_emp.project_manager.strip().lower() == req_id.lower()):
-                    is_authorized = True
-            
-        if not is_authorized:
-            raise HTTPException(status_code=403, detail="Not authorized to view this timesheet")
+                is_active = not emp.end_date or str(emp.end_date).strip().lower() in ("", "none", "0000-00-00", "0000-00-00 00:00:00", "00-00-0000", "00-00-0000 00:00:00")
+                if is_active and emp.dob and emp.name:
+                    dob = parse_date(emp.dob)
+                    if dob:
+                        birthdays.append({
+                            "emp_id": emp.emp_id,
+                            "name": emp.name,
+                            "day": dob.day,
+                            "month": dob.month
+                        })
+            except Exception as inner_e:
+                continue
+        birthdays.sort(key=lambda x: (x["month"], x["day"]))
+        return birthdays
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=503, detail=f"Database error. Error: {str(e)}")
 
-    query = db.query(models.TimesheetDet).filter(func.lower(func.trim(models.TimesheetDet.emp_id)) == clean_id.lower())
-    if month:
-        month_map = {"January": "01", "February": "02", "March": "03", "April": "04", "May": "05", "June": "06",
-                    "July": "07", "August": "08", "September": "09", "October": "10", "November": "11", "December": "12"}
-        m_num = month_map.get(month)
-        if m_num:
-            query = query.filter(or_(models.TimesheetDet.month.ilike(f"%{month}%"), models.TimesheetDet.month.ilike(f"%{m_num}%"), models.TimesheetDet.date.ilike(f"%-{month[:3]}-%")))
-        else:
-            query = query.filter(models.TimesheetDet.month.ilike(f"%{month}%"))
-    if year:
-        query = query.filter(models.TimesheetDet.date.ilike(f"%{year}%"))
-    return query.all()
-
-
-@app.get("/admin/timesheet-employees")
-def get_admin_timesheet_employees(month: Optional[str] = None, year: Optional[str] = None, requester_id: Optional[str] = None, db: Session = Depends(get_db)):
-    # 1. Determine if requester is global admin
-    is_global = False
-    if requester_id:
-        requester_id = requester_id.strip()
-        user = db.query(models.EmpDet).filter(func.lower(func.trim(models.EmpDet.emp_id)) == requester_id.lower()).first()
-        if user:
-            top_domains = [1, 2, 3, 9]
-            try:
-                if user.dom_id and int(str(user.dom_id).strip()) in top_domains:
-                    is_global = True
-            except: pass
-            
-            if not is_global and user.rpd_id:
-                try:
-                    r_id = int(str(user.rpd_id).strip())
-                    role_priv = db.query(models.RolePrivilege).filter(models.RolePrivilege.rpd_id == r_id).first()
-                    if role_priv and role_priv.role_prv_name:
-                        top_roles = ["Admin", "Management", "Executive", "Project Management"]
-                        if any(tr.lower() in role_priv.role_prv_name.lower() for tr in top_roles):
-                            is_global = True
-                except: pass
-
-    # 2. Start building employee query
-    emp_query = db.query(models.EmpDet).filter(
-        (models.EmpDet.end_date == None) |
-        (models.EmpDet.end_date == "") |
-        (func.lower(func.trim(models.EmpDet.end_date)) == "none") |
-        (models.EmpDet.end_date.like("0000-00-00%")) |
-        (models.EmpDet.end_date.like("00-00-0000%"))
-    )
-    if not is_global and requester_id:
-        emp_query = emp_query.filter(
-            or_(
-                func.lower(func.trim(models.EmpDet.assign_manager)) == requester_id.lower(),
-                func.lower(func.trim(models.EmpDet.project_manager)) == requester_id.lower()
-            )
-        )
-    
-    employees = emp_query.all()
-    if not employees:
-        return []
-
-    # 3. Filter by those who have timesheets in the given month/year
-    emp_ids = [e.emp_id for e in employees if e.emp_id]
-    
-    ts_query = db.query(models.TimesheetDet.emp_id).filter(models.TimesheetDet.emp_id.in_(emp_ids))
-    month_filter = None
-    if month:
-        month_map = {"January": "01", "February": "02", "March": "03", "April": "04", "May": "05", "June": "06",
-                    "July": "07", "August": "08", "September": "09", "October": "10", "November": "11", "December": "12"}
-        m_num = month_map.get(month)
-        if m_num:
-            month_filter = or_(models.TimesheetDet.month.ilike(f"%{month}%"), models.TimesheetDet.month.ilike(f"%{m_num}%"), models.TimesheetDet.date.ilike(f"%-{month[:3]}-%"))
-        else:
-            month_filter = models.TimesheetDet.month.ilike(f"%{month}%")
-    if month_filter is not None:
-        ts_query = ts_query.filter(month_filter)
-    if year:
-        ts_query = ts_query.filter(models.TimesheetDet.date.ilike(f"%{year}%"))
-    
-    ts_results = ts_query.distinct().all()
-    matched_ids = {r.emp_id.replace(" ", "") for r in ts_results if r.emp_id}
-
-    if not matched_ids:
-        return []
-
-    # 4. Filter employees list to those with timesheets
-    final_employees = [e for e in employees if e.emp_id and e.emp_id.replace(" ", "") in matched_ids]
-
-    # 5. Get pending counts
-    pending_query = db.query(models.TimesheetDet.emp_id, func.count(models.TimesheetDet.t_id).label('pending_count')).filter(
-        models.TimesheetDet.status.ilike('Pending'),
-        models.TimesheetDet.emp_id.in_(list(matched_ids))
-    )
-    if month_filter is not None:
-        pending_query = pending_query.filter(month_filter)
-    if year:
-        pending_query = pending_query.filter(models.TimesheetDet.date.ilike(f"%{year}%"))
-    
-    pending_results = pending_query.group_by(models.TimesheetDet.emp_id).all()
-    pending_map = {r.emp_id.replace(" ", ""): r.pending_count for r in pending_results}
-
-    # 6. Format results
-    results = []
-    for emp in final_employees:
-        domain_name = "Employee"
-        if emp.dom_id:
-            domain = db.query(models.Domain).filter(models.Domain.dom_id == emp.dom_id).first()
-            if domain:
-                domain_name = domain.domain
-        cid = emp.emp_id.replace(" ", "")
-        results.append({
-            "id": emp.emp_id, 
-            "name": emp.name or "Unknown", 
-            "department": domain_name, 
-            "requests": pending_map.get(cid, 0)
-        })
-    return results
 
 
 @app.get("/holidays")
@@ -3851,125 +4670,50 @@ def get_holidays(db: Session = Depends(get_db)):
     return [{"id": h.holiday_id, "date": h.Office_Holiday_Date, "name": h.Holiday_Name, "year": h.year, "month": h.Month} for h in holidays]
 
 
-@app.post("/timesheet/create")
-def create_timesheet(ts_req: schemas.TimesheetCreate, db: Session = Depends(get_db)):
-    try:
-        # Validate reason field: required if total_hours != 9
-        total_hours = float(ts_req.total_hours)
-        if total_hours != 9 and not ts_req.reason:
-            raise HTTPException(status_code=400, detail="Reason is required when hours are not exactly 9")
-        
-        # Create new timesheet entry
-        new_timesheet = models.TimesheetDet(
-            date=ts_req.date,
-            day=ts_req.day,
-            type=ts_req.type,
-            project=ts_req.project,
-            total_hours=ts_req.total_hours,
-            activity=ts_req.activity,
-            reason=ts_req.reason,
-            emp_id=ts_req.emp_id,
-            month=ts_req.month,
-            working_hours=ts_req.working_hours,
-            status="Pending",
-            remarks=ts_req.remarks,
-            created_by=ts_req.emp_id,
-            creation_date=datetime.now(),
-            last_updated_by=ts_req.emp_id,
-            last_update_date=datetime.now()
-        )
-        db.add(new_timesheet)
-        db.commit()
-        db.refresh(new_timesheet)
-        return {
-            "success": True,
-            "message": "Timesheet created successfully",
-            "t_id": new_timesheet.t_id
-        }
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        db.rollback()
-        handle_db_error(e)
-        raise HTTPException(status_code=500, detail=f"Error creating timesheet: {str(e)}")
 
+@app.get("/employee/{emp_id}/assigned-projects")
+def get_employee_assigned_projects(emp_id: str, date: Optional[str] = None, db: Session = Depends(get_db)):
+    try:
+        allocs = db.query(models.ProjectAllocation).filter(
+            func.lower(func.trim(models.ProjectAllocation.emp_id)) == emp_id.strip().lower(),
+            models.ProjectAllocation.status == "Active"
+        ).all()
 
-@app.put("/timesheet/update/{t_id}")
-def update_timesheet(t_id: int, ts_req: schemas.TimesheetUpdate, db: Session = Depends(get_db)):
-    try:
-        ts = db.query(models.TimesheetDet).filter(models.TimesheetDet.t_id == t_id).first()
-    except Exception as e:
-        handle_db_error(e)
-    
-    if not ts:
-        raise HTTPException(status_code=404, detail="Timesheet record not found")
-    
-    try:
-        # Validate reason field: required if total_hours != 9
-        total_hours = float(ts_req.total_hours)
-        if total_hours != 9 and not ts_req.reason:
-            raise HTTPException(status_code=400, detail="Reason is required when hours are not exactly 9")
-        
-        # Update timesheet entry
-        ts.date = ts_req.date
-        ts.day = ts_req.day
-        ts.type = ts_req.type
-        ts.project = ts_req.project
-        ts.total_hours = ts_req.total_hours
-        ts.activity = ts_req.activity
-        ts.reason = ts_req.reason
-        ts.month = ts_req.month
-        ts.working_hours = ts_req.working_hours
-        ts.remarks = ts_req.remarks
-        ts.last_update_date = datetime.now()
-        
-        db.commit()
-        db.refresh(ts)
-        return {
-            "success": True,
-            "message": "Timesheet updated successfully",
-            "t_id": ts.t_id
-        }
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        db.rollback()
-        handle_db_error(e)
-        raise HTTPException(status_code=500, detail=f"Error updating timesheet: {str(e)}")
+        result = []
+        seen_pro_ids = set()
+        for a in allocs:
+            if date:
+                try:
+                    sel_dt = parse_date(date)
+                    from_dt = parse_date(a.from_date) if a.from_date else None
+                    to_dt = parse_date(a.to_date) if a.to_date else None
+                    if sel_dt and from_dt and to_dt:
+                        if not (from_dt <= sel_dt <= to_dt):
+                            continue
+                    elif sel_dt and from_dt:
+                        if sel_dt < from_dt:
+                            continue
+                    elif sel_dt and to_dt:
+                        if sel_dt > to_dt:
+                            continue
+                except Exception:
+                    pass
 
+            if a.pro_id in seen_pro_ids:
+                continue
+            seen_pro_ids.add(a.pro_id)
 
-@app.post("/admin/timesheet/action")
-def timesheet_action(action_req: schemas.TimesheetApprovalAction, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    try:
-        ts = db.query(models.TimesheetDet).filter(models.TimesheetDet.t_id == action_req.t_id).first()
+            project = db.query(models.Project).filter(models.Project.pro_id == a.pro_id).first()
+            if project and project.project_name:
+                result.append({
+                    "pro_id": project.pro_id,
+                    "project_name": project.project_name,
+                    "project_type": project.project_type or ""
+                })
+
+        return result
     except Exception as e:
-        handle_db_error(e)
-    if not ts:
-        raise HTTPException(status_code=404, detail="Timesheet record not found")
-    ts.status = action_req.action
-    ts.approved_by = action_req.admin_id
-    ts.approved_on = datetime.now()
-    ts.remarks = action_req.remarks
-    ts.last_update_date = datetime.now()
-    ts.last_updated_by = action_req.admin_id
-    db.commit()
-    try:
-        emp_user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == ts.emp_id).first()
-        if emp_user and emp_user.p_mail:
-            admin_user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == action_req.admin_id.strip()).first()
-            manager_name = admin_user.name if admin_user else "Manager"
-            subject = f"Timesheet {action_req.action.upper()} - {ts.date}"
-            body = f"""<html><body style="font-family: 'Times New Roman', Times, serif; color: #00008B;">
-                <p>Dear {emp_user.name},</p>
-                <p>Your Timesheet for <strong>{ts.date}</strong> ({ts.project or 'N/A'}) has been <strong>{action_req.action.upper()}</strong>.</p>
-                <p><strong>Remarks:</strong> {action_req.remarks or 'N/A'}</p>
-                <p><strong>Action By:</strong> {manager_name}</p>
-                <br><p>Thanks & Regards,<br>Ilan Tech Solutions</p>
-            </body></html>"""
-            background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
-    except Exception as e:
-        print(f" Email_id notification failed: {e}")
-    return {"message": f"Timesheet {action_req.action} successfully"}
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/admin/projects/next-ref")
@@ -4211,7 +4955,7 @@ def get_ot_history(emp_id: str, db: Session = Depends(get_db)):
 
 
 @app.put("/update-ot/{ot_id}")
-def update_ot(ot_id: int, request: schemas.OTUpdateRequest, db: Session = Depends(get_db)):
+def update_ot(ot_id: int, request: schemas.OTUpdateRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     ot = db.query(models.OverTimeDet).filter(models.OverTimeDet.ot_id == ot_id).first()
     if not ot:
         raise HTTPException(status_code=404, detail="OT request not found")
@@ -4228,6 +4972,7 @@ def update_ot(ot_id: int, request: schemas.OTUpdateRequest, db: Session = Depend
     if duplicate:
         raise HTTPException(status_code=400, detail=f"OT already applied for {ot_date_clean}.")
 
+    ot_emp_id = (ot.emp_id or "").strip()
     ot.ot_date = ot_date_clean
     ot.from_time = request.from_time
     ot.to_time = request.to_time
@@ -4237,21 +4982,127 @@ def update_ot(ot_id: int, request: schemas.OTUpdateRequest, db: Session = Depend
     ot.last_update_date = datetime.now()
     ot.last_update_login = ot.emp_id
     db.commit()
+
+    # Send update notification to approvers
+    try:
+        user = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == ot_emp_id.lower()
+        ).first()
+        if user:
+            approvers = get_approvers(db, user)
+            duration_display = request.duration.replace("h", "Hr").replace("m", "Min")
+            subject = f"ITS - {user.name} - OT Request Updated | {ot_date_clean} | {request.from_time} to {request.to_time}"
+            for appr in approvers:
+                if appr["email"]:
+                    content = f"""
+                    <p>Good Day!</p>
+                    <p>I have updated my overtime request.</p>
+                    <br>
+                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                    <p style="color: #00008B; font-size: 14px;"><strong>Updated Request Details:</strong></p>
+                    <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                        <thead>
+                            <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Name</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">In time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Out time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">OT Hours(Duration)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="background-color: transparent;">
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{user.name}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.reason}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.from_time}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.to_time}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{duration_display}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <br>
+                    """
+                    body = get_email_template(appr["name"], "Overtime Request Updated", content, user.name)
+                    background_tasks.add_task(send_email_notification, appr["email"], subject, body)
+                if appr["token"]:
+                    background_tasks.add_task(send_expo_push_notification, [appr["token"]],
+                        "OT Request Updated",
+                        f"{user.name} has updated their OT request for {ot_date_clean} ({request.duration}).")
+    except Exception as mail_err:
+        print(f" Non-critical OT update notification error: {mail_err}")
+
     return {"message": "OT request updated successfully"}
 
 
 @app.put("/withdraw-ot/{ot_id}")
-def withdraw_ot(ot_id: int, db: Session = Depends(get_db)):
+def withdraw_ot(ot_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     ot = db.query(models.OverTimeDet).filter(models.OverTimeDet.ot_id == ot_id).first()
     if not ot:
         raise HTTPException(status_code=404, detail="OT request not found")
     if (ot.status or "").strip().lower() != "pending":
         raise HTTPException(status_code=400, detail="Only pending OT requests can be withdrawn")
-    ot.status = "Withdrawn"
-    ot.last_updated_by = ot.emp_id
-    ot.last_update_date = datetime.now()
-    ot.last_update_login = ot.emp_id
+
+    # Capture data before deletion for email notification
+    ot_emp_id = (ot.emp_id or "").strip()
+    ot_date_str = ot.ot_date or ""
+    ot_from_time = ot.from_time or ""
+    ot_to_time = ot.to_time or ""
+    ot_duration = ot.duration or ""
+    ot_reason = ot.reason or ""
+
+    # Fetch user and approvers before deletion
+    user = db.query(models.EmpDet).filter(
+        func.lower(func.trim(models.EmpDet.emp_id)) == ot_emp_id.lower()
+    ).first()
+    approvers = get_approvers(db, user) if user else []
+
+    db.delete(ot)
     db.commit()
+
+    # Send withdrawal notification to approvers
+    try:
+        if user and approvers:
+            duration_display = ot_duration.replace("h", "Hr").replace("m", "Min")
+            subject = f"ITS - {user.name} - OT Request Withdrawn | {ot_date_str} | {ot_from_time} to {ot_to_time}"
+            for appr in approvers:
+                if appr["email"]:
+                    content = f"""
+                    <p>Good Day!</p>
+                    <p>I have withdrawn my overtime request.</p>
+                    <br>
+                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                    <p style="color: #00008B; font-size: 14px;"><strong>Original Request Details:</strong></p>
+                    <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                        <thead>
+                            <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Name</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">In time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Out time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">OT Hours(Duration)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="background-color: transparent;">
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{user.name}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{ot_reason}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{ot_from_time}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{ot_to_time}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{duration_display}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <br>
+                    """
+                    body = get_email_template(appr["name"], "Overtime Request Withdrawn", content, user.name)
+                    background_tasks.add_task(send_email_notification, appr["email"], subject, body)
+    except Exception as mail_err:
+        print(f" Non-critical OT withdraw notification error: {mail_err}")
+
     return {"message": "OT request withdrawn successfully"}
 
 
@@ -5236,4 +6087,1495 @@ def mark_halfday_auto(background_tasks: BackgroundTasks, db: Session = Depends(g
     }
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIMESHEET ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _parse_date_flexible(date_str: str):
+    """
+    Parse a date string in multiple formats:
+      - YYYY-MM-DD
+      - DD-Mon-YYYY  (e.g. 01-Jan-2026)
+    Returns a datetime.date object or None on failure.
+    """
+    if not date_str:
+        return None
+    date_str = date_str.strip()
+    for fmt in ("%Y-%m-%d", "%d-%b-%Y", "%d-%B-%Y"):
+        try:
+            return datetime.strptime(date_str, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+@app.get("/employee/{emp_id}/assigned-projects")
+def get_assigned_projects(emp_id: str, date: Optional[str] = None, db: Session = Depends(get_db)):
+    """
+    Return projects assigned to emp_id that cover the given date.
+    Queries xxits_aruvi_pro_assign_t joined with xxits_aruvi_project_t.
+    If no date is provided, all active assignments are returned.
+    """
+    try:
+        query = db.query(models.ProjectAllocation).filter(
+            func.lower(func.trim(models.ProjectAllocation.emp_id)) == func.lower(emp_id.strip()),
+            func.lower(func.trim(models.ProjectAllocation.status)) == "active"
+        )
+        allocations = query.all()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    target_date = _parse_date_flexible(date) if date else None
+
+    result = []
+    seen_pro_ids = set()
+    for alloc in allocations:
+        # Date-range filter when a target date is supplied
+        if target_date:
+            from_dt = _parse_date_flexible(alloc.from_date)
+            to_dt = _parse_date_flexible(alloc.to_date)
+            if from_dt and to_dt:
+                if not (from_dt <= target_date <= to_dt):
+                    continue
+            elif from_dt:
+                if target_date < from_dt:
+                    continue
+            # If no from_date, skip date filtering for this record
+
+        if alloc.pro_id in seen_pro_ids:
+            continue
+        seen_pro_ids.add(alloc.pro_id)
+
+        project = db.query(models.Project).filter(models.Project.pro_id == alloc.pro_id).first()
+        if project:
+            result.append({
+                "pro_id": project.pro_id,
+                "project_name": project.project_name or "",
+                "project_type": project.project_type or ""
+            })
+
+    return result
+
+
+@app.get("/holiday-details")
+def get_holiday_details(db: Session = Depends(get_db)):
+    """
+    Returns holiday records as [{date, name}] objects.
+    Used by the timesheet month-view to display holiday names.
+    """
+    try:
+        holidays = db.query(
+            models.HolidayDet.Office_Holiday_Date,
+            models.HolidayDet.Holiday_Name
+        ).all()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    return [
+        {"date": h[0], "name": h[1] or "Holiday"}
+        for h in holidays
+        if h[0]
+    ]
+
+
+@app.get("/leave-month/{emp_id}")
+def get_leave_month(emp_id: str, year: int, month: int, db: Session = Depends(get_db)):
+    """
+    Returns approved one-day leave records for an employee for a given year/month,
+    as [{date, leave_type}] objects. Used by the timesheet month-view to auto-display
+    the Leave Type against the matching timesheet date.
+    """
+    try:
+        leaves = db.query(models.EmpLeave).filter(
+            func.lower(func.trim(models.EmpLeave.emp_id)) == emp_id.strip().lower(),
+            func.lower(func.trim(models.EmpLeave.status)) == "approved"
+        ).all()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    result = []
+    for lv in leaves:
+        from_dt = parse_date(lv.from_date)
+        to_dt = parse_date(lv.to_date)
+        if not from_dt or not to_dt:
+            continue
+        # Only one-day leaves (from_date == to_date)
+        if from_dt.date() != to_dt.date():
+            continue
+        if from_dt.year != year or from_dt.month != month:
+            continue
+        result.append({"date": lv.from_date, "leave_type": lv.leave_type or "Leave"})
+    return result
+
+
+def _is_global_admin_user(db: Session, emp: Optional["models.EmpDet"]) -> bool:
+    """True only for the literal "Admin" domain.
+
+    Note: login's is_global_admin flag is broader (dom_id in [1,2,3,9], which
+    also includes Management/Executive/Project Management) because those
+    domains get full app-wide bypass by design. But an Assign Manager, Project
+    Manager, or HR SPOC can easily belong to one of those non-Admin domains
+    (e.g. "Project Management") purely because of their day job — that must
+    NOT make them count as Admin for timesheet actions like Send Mail. So this
+    check is intentionally narrower: exact domain name "Admin" only."""
+    if not emp or not emp.dom_id:
+        return False
+    try:
+        d_id = int(str(emp.dom_id).strip())
+    except (TypeError, ValueError):
+        return False
+    domain = db.query(models.Domain).filter(models.Domain.dom_id == d_id).first()
+    return bool(domain and (domain.domain or "").strip().lower() == "admin")
+
+
+def _can_view_employee_timesheet(db: Session, requester_id: Optional[str], emp_id: str) -> bool:
+    """True when requester_id is the employee themself, a global admin, or the
+    employee's assign_manager / project_manager / hr_spoc."""
+    if not requester_id:
+        # Backward-compatible: no requester supplied (e.g. legacy callers).
+        return True
+    requester_id = requester_id.strip()
+    emp_id = (emp_id or "").strip()
+    if requester_id.lower() == emp_id.lower():
+        return True
+
+    requester = db.query(models.EmpDet).filter(
+        func.lower(func.trim(models.EmpDet.emp_id)) == requester_id.lower()
+    ).first()
+    if _is_global_admin_user(db, requester):
+        return True
+
+    req_lower = requester_id.lower()
+    target = db.query(models.EmpDet).filter(
+        func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()
+    ).first()
+    if not target:
+        return False
+    for ref_field in [target.assign_manager, target.project_manager, target.hr_spoc]:
+        if ref_field and ref_field.strip().lower() == req_lower:
+            return True
+    return False
+
+
+@app.get("/employee/{emp_id}/timesheet-access")
+def get_timesheet_access(emp_id: str, db: Session = Depends(get_db)):
+    """
+    Tells the app whether emp_id should see the "Employee Record" timesheet
+    tab: true for a global admin, or for anyone listed as an assign_manager,
+    project_manager, or hr_spoc on at least one employee.
+
+    Also reports is_global_admin separately — Assign Manager / Project Manager /
+    HR SPOC can view employee timesheets but must NOT see the Send Mail
+    (approve/reject) action, which stays Admin-only.
+    """
+    emp_id = (emp_id or "").strip()
+    requester = db.query(models.EmpDet).filter(
+        func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()
+    ).first()
+    if _is_global_admin_user(db, requester):
+        return {"can_view_employee_records": True, "is_global_admin": True}
+
+    req_lower = emp_id.lower()
+    has_reports = db.query(models.EmpDet).filter(
+        or_(
+            func.lower(func.trim(models.EmpDet.assign_manager)) == req_lower,
+            func.lower(func.trim(models.EmpDet.project_manager)) == req_lower,
+            func.lower(func.trim(models.EmpDet.hr_spoc)) == req_lower
+        )
+    ).first() is not None
+    return {"can_view_employee_records": has_reports, "is_global_admin": False}
+
+
+@app.get("/timesheet-month/{emp_id}")
+def get_timesheet_month(
+    emp_id: str,
+    year: Optional[int] = None,
+    month: Optional[str] = None,
+    requester_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Returns all timesheet entries for an employee for a given year (and optionally month).
+    Supports both YYYY-MM month format and month name string.
+    """
+    if requester_id and not _can_view_employee_timesheet(db, requester_id, emp_id):
+        raise HTTPException(status_code=403, detail="Not authorized to view this employee's timesheet.")
+
+    try:
+        query = db.query(models.TimesheetDet).filter(
+            func.lower(func.trim(models.TimesheetDet.emp_id)) == func.lower(emp_id.strip())
+        )
+
+        if year:
+            # Filter by year — month field is stored as YYYY-MM
+            year_prefix = f"{year}-"
+            query = query.filter(models.TimesheetDet.month.like(f"{year_prefix}%"))
+
+        if month:
+            # month can be a name like "January" or "Jan" — convert to number
+            month_map = {
+                "january": "01", "february": "02", "march": "03", "april": "04",
+                "may": "05", "june": "06", "july": "07", "august": "08",
+                "september": "09", "october": "10", "november": "11", "december": "12",
+                "jan": "01", "feb": "02", "mar": "03", "apr": "04",
+                "jun": "06", "jul": "07", "aug": "08", "sep": "09",
+                "oct": "10", "nov": "11", "dec": "12"
+            }
+            month_lower = month.lower().strip()
+            month_num = month_map.get(month_lower)
+            if month_num:
+                if year:
+                    query = query.filter(models.TimesheetDet.month == f"{year}-{month_num}")
+                else:
+                    query = query.filter(models.TimesheetDet.month.like(f"%-{month_num}"))
+
+        entries = query.order_by(models.TimesheetDet.t_id.asc()).all()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    return [
+        {
+            "t_id": e.t_id,
+            "bulk_id": e.bulk_id,
+            "date": e.date,
+            "day": e.day,
+            "type": e.type,
+            "project": e.project,
+            "total_hours": e.total_hours,
+            "activity": e.activity,
+            "reason": e.reason,
+            "emp_id": e.emp_id,
+            "month": e.month,
+            "status": e.status,
+            "remarks": e.remarks,
+            "working_hours": e.working_hours,
+            "approved_by": e.approved_by or "",
+            "approved_on": e.approved_on.strftime("%d-%b-%Y") if e.approved_on else ""
+        }
+        for e in entries
+    ]
+
+
+@app.post("/timesheet/create")
+def create_timesheet(ts: schemas.TimesheetCreate, db: Session = Depends(get_db)):
+    """
+    Creates a new timesheet entry.
+    bulk_id logic:
+      - If the employee already has entries for this month → reuse their existing bulk_id.
+      - If this is the first entry for this employee+month → increment global max bulk_id by 1.
+    Status is always set to 'Pending'.
+    month must be in YYYY-MM format.
+    """
+    try:
+        now = datetime.now()
+        emp_id_clean = ts.emp_id.strip()
+        month_clean = ts.month.strip()  # Expected: YYYY-MM
+
+        # ── Determine bulk_id ──────────────────────────────────────────────────
+        # Check if this employee already has a bulk_id for this month
+        existing = db.query(models.TimesheetDet.bulk_id).filter(
+            func.lower(func.trim(models.TimesheetDet.emp_id)) == func.lower(emp_id_clean),
+            models.TimesheetDet.month == month_clean,
+            models.TimesheetDet.bulk_id.isnot(None)
+        ).first()
+
+        if existing and existing[0] is not None:
+            # Reuse the employee's existing bulk_id for this month
+            bulk_id = existing[0]
+        else:
+            # First entry for this emp+month — increment global max
+            max_bulk = db.query(func.max(models.TimesheetDet.bulk_id)).scalar()
+            bulk_id = (max_bulk or 0) + 1
+
+        # ── Insert record ──────────────────────────────────────────────────────
+        new_entry = models.TimesheetDet(
+            bulk_id=bulk_id,
+            date=ts.date,
+            day=ts.day,
+            type=ts.type,
+            project=ts.project,
+            total_hours=ts.total_hours,
+            activity=ts.activity,
+            reason=ts.reason or "",
+            emp_id=emp_id_clean,
+            month=month_clean,
+            working_hours=ts.working_hours or "9",
+            status="Pending",
+            remarks=ts.remarks or "",
+            revision="0",
+            created_by=emp_id_clean,
+            creation_date=now,
+            last_updated_by=emp_id_clean,
+            last_update_date=now,
+            last_update_login=emp_id_clean
+        )
+        db.add(new_entry)
+        db.commit()
+        db.refresh(new_entry)
+
+        return {"success": True, "t_id": new_entry.t_id, "bulk_id": bulk_id}
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to create timesheet: {str(e)}")
+
+
+@app.put("/timesheet/update/{t_id}")
+def update_timesheet(t_id: int, ts: schemas.TimesheetUpdate, db: Session = Depends(get_db)):
+    """
+    Updates an existing timesheet entry identified by t_id.
+    Pending entries can be edited. Rejected entries can be edited and are
+    resubmitted (status reset to 'Pending') for re-approval.
+    """
+    try:
+        entry = db.query(models.TimesheetDet).filter(models.TimesheetDet.t_id == t_id).first()
+        if not entry:
+            raise HTTPException(status_code=404, detail="Timesheet entry not found")
+
+        if entry.status and entry.status.lower() not in ("pending", "rejected", ""):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot edit a timesheet with status '{entry.status}'. Only Pending or Rejected entries can be edited."
+            )
+
+        was_rejected = entry.status and entry.status.lower() == "rejected"
+
+        now = datetime.now()
+        entry.date = ts.date
+        entry.day = ts.day
+        entry.type = ts.type
+        entry.project = ts.project
+        entry.total_hours = ts.total_hours
+        entry.activity = ts.activity
+        entry.reason = ts.reason or entry.reason
+        entry.month = ts.month
+        entry.working_hours = ts.working_hours or entry.working_hours
+        entry.remarks = ts.remarks or entry.remarks
+        entry.last_update_date = now
+
+        if was_rejected:
+            entry.status = "Pending"
+            entry.approved_by = None
+            entry.approved_on = None
+
+        db.commit()
+
+        emp = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == (entry.emp_id or "").strip().lower()
+        ).first()
+        if emp:
+            notify_stakeholders(
+                db=db,
+                employee=emp,
+                module="Timesheet",
+                title="Timesheet",
+                message=f"Timesheet updated by {emp.name}.",
+                created_by=entry.emp_id
+            )
+
+        return {"success": True, "t_id": t_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to update timesheet: {str(e)}")
+
+
+@app.get("/admin/timesheet-employees")
+def get_timesheet_employees(
+    month: Optional[str] = None,
+    year: Optional[int] = None,
+    requester_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Returns a list of employees who have submitted timesheets for the given month/year.
+    month can be a month name (e.g. 'January') or YYYY-MM.
+
+    Scoping: a global admin sees every employee. Anyone else (Assign Manager,
+    Project Manager, HR SPOC) only sees employees who list them as such —
+    never the full employee list.
+    """
+    allowed_emp_ids = None
+    if requester_id:
+        requester = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == requester_id.strip().lower()
+        ).first()
+        if not _is_global_admin_user(db, requester):
+            req_lower = requester_id.strip().lower()
+            managed = db.query(models.EmpDet.emp_id).filter(
+                or_(
+                    func.lower(func.trim(models.EmpDet.assign_manager)) == req_lower,
+                    func.lower(func.trim(models.EmpDet.project_manager)) == req_lower,
+                    func.lower(func.trim(models.EmpDet.hr_spoc)) == req_lower
+                )
+            ).all()
+            allowed_emp_ids = {row.emp_id.strip().lower() for row in managed if row.emp_id}
+
+    try:
+        query = db.query(
+            models.TimesheetDet.emp_id,
+            func.count(models.TimesheetDet.t_id).label("requests")
+        )
+
+        month_map = {
+            "january": "01", "february": "02", "march": "03", "april": "04",
+            "may": "05", "june": "06", "july": "07", "august": "08",
+            "september": "09", "october": "10", "november": "11", "december": "12",
+            "jan": "01", "feb": "02", "mar": "03", "apr": "04",
+            "jun": "06", "jul": "07", "aug": "08", "sep": "09",
+            "oct": "10", "nov": "11", "dec": "12"
+        }
+
+        month_num = None
+        if month:
+            month_num = month_map.get(month.lower().strip())
+
+        if month_num and year:
+            month_filter = f"{year}-{month_num}"
+            query = query.filter(models.TimesheetDet.month == month_filter)
+        elif year:
+            query = query.filter(models.TimesheetDet.month.like(f"{year}-%"))
+        elif month_num:
+            query = query.filter(models.TimesheetDet.month.like(f"%-{month_num}"))
+
+        results = query.group_by(models.TimesheetDet.emp_id).all()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    if allowed_emp_ids is not None:
+        results = [row for row in results if row.emp_id and row.emp_id.strip().lower() in allowed_emp_ids]
+
+    employees = []
+    for row in results:
+        emp = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(row.emp_id.strip())
+        ).first()
+        dept_name = ""
+        if emp and emp.dpt_id:
+            dept = db.query(models.Department.department).filter(
+                models.Department.dpt_id == emp.dpt_id
+            ).first()
+            dept_name = dept[0] if dept else ""
+
+        # Fetch actual timesheet entries for this employee to aggregate hours, projects and status
+        ts_query = db.query(models.TimesheetDet).filter(
+            func.lower(func.trim(models.TimesheetDet.emp_id)) == func.lower(row.emp_id.strip())
+        )
+        if month_num and year:
+            ts_query = ts_query.filter(models.TimesheetDet.month == f"{year}-{month_num}")
+        elif year:
+            ts_query = ts_query.filter(models.TimesheetDet.month.like(f"{year}-%"))
+        elif month_num:
+            ts_query = ts_query.filter(models.TimesheetDet.month.like(f"%-{month_num}"))
+
+        ts_entries = ts_query.all()
+
+        total_hours_sum = 0.0
+        statuses = set()
+        projects = set()
+
+        for e in ts_entries:
+            try:
+                if e.total_hours:
+                    total_hours_sum += float(e.total_hours)
+            except ValueError:
+                pass
+            
+            if e.status:
+                statuses.add(e.status.strip().lower())
+            else:
+                statuses.add("pending")
+                
+            if e.project:
+                projects.add(e.project.strip())
+
+        # Determine final status
+        if not statuses:
+            final_status = "Pending"
+        elif "pending" in statuses:
+            final_status = "Pending"
+        elif "rejected" in statuses:
+            final_status = "Rejected"
+        else:
+            final_status = "Approved"
+
+        project_type_str = ", ".join(list(projects)[:2]) if projects else "General"
+        if len(projects) > 2:
+            project_type_str += "..."
+
+        employees.append({
+            "id": row.emp_id,
+            "name": emp.name if emp else row.emp_id,
+            "department": dept_name,
+            "requests": row.requests,
+            "projectType": project_type_str,
+            "totalHours": f"{total_hours_sum}h",
+            "status": final_status
+        })
+
+    return employees
+
+
+@app.post("/admin/timesheet/action")
+def admin_timesheet_action(action_req: schemas.TimesheetApprovalAction, db: Session = Depends(get_db)):
+    """
+    Approve or Reject a timesheet entry.
+    action: 'Approved' or 'Rejected'
+    """
+    try:
+        entry = db.query(models.TimesheetDet).filter(
+            models.TimesheetDet.t_id == action_req.t_id
+        ).first()
+        if not entry:
+            raise HTTPException(status_code=404, detail="Timesheet entry not found")
+
+        now = datetime.now()
+        entry.status = action_req.action
+        entry.approved_by = action_req.admin_id
+        entry.approved_on = now
+        entry.remarks = action_req.remarks or entry.remarks
+        entry.last_updated_by = action_req.admin_id
+        entry.last_update_date = now
+
+        db.commit()
+
+        return {"success": True, "t_id": action_req.t_id, "status": action_req.action}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to process action: {str(e)}")
+
+
+def _build_timesheet_excel(entries: list, emp_name: str, month_label: str, reviewer_name: str = None, remarks: str = None, approved_on: str = None) -> bytes:
+    """Generate an Excel workbook in the ITS format:
+    Title: EmpName - Timesheet - Month - Year
+    Columns: S.No | Date | Type | Daily Activity | No Of Hours Worked | Remarks
+    Color coding: Leave/Week-Off = Orange, Internal/External = White
+    Right panel: Total days, Days Worked, Days Absent, Holidays
+    """
+    if not _OPENPYXL_AVAILABLE:
+        return None
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+
+    # ── Color constants ──────────────────────────────────────────────────────
+    DARK_NAVY   = "1F3864"   # Title/header background (dark blue)
+    ORANGE_TXT  = "FFC000"   # Title text (orange/gold)
+    WHITE_TXT   = "FFFFFF"
+    ORANGE_ROW  = "FFC000"   # Leave / Week-Off row background
+    ALT_ROW     = "DEEAF1"   # Light blue for summary boxes
+    BORDER_CLR  = "000000"
+
+    # ── Parse month_label → "Month - Year" ──────────────────────────────────
+    # month_label is like "June 2026" or "April 2026"
+    try:
+        parts = month_label.split()
+        month_name_str = parts[0]   # e.g. "June"
+        year_str       = parts[1]   # e.g. "2026"
+        year_int       = int(year_str)
+        month_names_list = ["January","February","March","April","May","June",
+                            "July","August","September","October","November","December"]
+        month_idx_0  = next((i for i, m in enumerate(month_names_list) if m == month_name_str), 0)
+        total_days_in_month = calendar.monthrange(year_int, month_idx_0 + 1)[1]
+        # Short year for date display  e.g. "26"
+        year_short = year_str[-2:]
+        month_short_abbr = month_name_str[:3]   # "Jun"
+    except Exception:
+        month_name_str = month_label
+        year_str = ""
+        year_int = 2026
+        month_idx_0 = 0
+        total_days_in_month = 30
+        year_short = "26"
+        month_short_abbr = month_label[:3]
+
+    title_text = f"{emp_name} - Timesheet - {month_name_str} - {year_str}"
+
+    # ── Worksheet name: ITS_<EmpName>_Timesheet_<Month>_<Year> (Excel caps sheet
+    # names at 31 characters, so truncate safely if the full name is longer) ────
+    ws.title = f"ITS_{emp_name.strip()}_Timesheet_{month_name_str}_{year_str}"[:31]
+
+    # ── Shared styles ────────────────────────────────────────────────────────
+    FONT_NAME = "Times New Roman"
+    FONT_SIZE = 12
+    thin = Side(style="thin", color=BORDER_CLR)
+    thin_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    title_fill   = PatternFill(start_color=DARK_NAVY, end_color=DARK_NAVY, fill_type="solid")
+    title_font   = Font(name=FONT_NAME, size=FONT_SIZE, bold=True, color=ORANGE_TXT)
+    header_fill  = PatternFill(start_color=DARK_NAVY, end_color=DARK_NAVY, fill_type="solid")
+    header_font  = Font(name=FONT_NAME, size=FONT_SIZE, bold=True, color=WHITE_TXT)
+    orange_fill  = PatternFill(start_color=ORANGE_ROW, end_color=ORANGE_ROW, fill_type="solid")
+    orange_font  = Font(name=FONT_NAME, size=FONT_SIZE, bold=True, color="000000")
+    normal_font  = Font(name=FONT_NAME, size=FONT_SIZE, color="000000")
+    bold_font    = Font(name=FONT_NAME, size=FONT_SIZE, bold=True, color="000000")
+    total_font   = Font(name=FONT_NAME, size=FONT_SIZE, bold=True, color="000000")
+    summary_lbl_fill = PatternFill(start_color=ALT_ROW, end_color=ALT_ROW, fill_type="solid")
+    summary_val_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    left   = Alignment(horizontal="left",   vertical="center", wrap_text=True)
+    right  = Alignment(horizontal="right",  vertical="center", wrap_text=True)
+
+    # ── ROW 1: Merged Title ──────────────────────────────────────────────────
+    ws.merge_cells("A1:F1")
+    t = ws["A1"]
+    t.value     = title_text
+    t.fill      = title_fill
+    t.font      = title_font
+    t.alignment = center
+    t.border    = thin_border
+    ws.row_dimensions[1].height = 28
+
+    # ── ROW 2: Column Headers ────────────────────────────────────────────────
+    headers = ["S.No", "Date", "Type", "Daily Activity", "No Of Hours Worked", "Remarks"]
+    for col, hdr in enumerate(headers, start=1):
+        cell = ws.cell(row=2, column=col, value=hdr)
+        cell.fill      = header_fill
+        cell.font      = header_font
+        cell.alignment = center
+        cell.border    = thin_border
+    ws.row_dimensions[2].height = 22
+
+    # ── DATA ROWS ────────────────────────────────────────────────────────────
+    total_hours_sum = 0.0
+    days_worked     = 0
+    days_absent     = 0
+    weekend_holiday = 0
+
+    WEEKEND_TYPES  = {"week-off", "weekend", "saturday", "sunday", "weekly-off", "weekoff"}
+    LEAVE_TYPES    = {"leave", "casual leave", "sick leave", "annual leave",
+                      "earned leave", "maternity leave", "paternity leave", "cl", "sl", "el"}
+    HOLIDAY_TYPES  = {"holiday", "public holiday", "national holiday", "optional holiday"}
+
+    for sno, e in enumerate(entries, start=1):
+        excel_row = sno + 2   # data starts at row 3
+
+        # ── Format date: "01-Jun-26" ──────────────────────────────────────
+        raw_date = (e.date or "").strip()
+        # raw_date examples: "27-Apr-2026", "27-Apr-26", "2026-04-27"
+        display_date = raw_date
+        try:
+            # Try YYYY-MM-DD
+            if re.match(r"\d{4}-\d{2}-\d{2}", raw_date):
+                dt = datetime.strptime(raw_date, "%Y-%m-%d")
+                display_date = dt.strftime(f"%d-{month_short_abbr}-{year_short}")
+            # Try DD-Mon-YYYY
+            elif re.match(r"\d{2}-[A-Za-z]{3}-\d{4}", raw_date):
+                dt = datetime.strptime(raw_date, "%d-%b-%Y")
+                display_date = dt.strftime(f"%d-%b-{year_short}")
+            # Already short (DD-Mon-YY) — keep as-is
+        except Exception:
+            pass
+
+        entry_type       = (e.type or "").strip()
+        entry_type_lower = entry_type.lower()
+
+        # ── Build Daily Activity: project + activity ──────────────────────
+        project_str  = (e.project  or "").strip()
+        activity_str = (e.activity or "").strip()
+        if project_str and activity_str:
+            daily_activity = f"{project_str} – {activity_str}"
+        elif activity_str:
+            daily_activity = activity_str
+        elif project_str:
+            daily_activity = project_str
+        else:
+            daily_activity = entry_type   # fallback for Leave/Week-Off
+
+        # ── Hours ─────────────────────────────────────────────────────────
+        try:
+            hours_val = float(e.total_hours or 0)
+        except Exception:
+            hours_val = 0.0
+        total_hours_sum += hours_val
+
+        # ── Statistics ────────────────────────────────────────────────────
+        is_weekend = entry_type_lower in WEEKEND_TYPES
+        is_leave   = entry_type_lower in LEAVE_TYPES
+        is_holiday = entry_type_lower in HOLIDAY_TYPES
+
+        if is_weekend or is_holiday:
+            weekend_holiday += 1
+        elif is_leave:
+            days_absent += 1
+        elif hours_val > 0:
+            days_worked += 1
+
+        # ── Row data ──────────────────────────────────────────────────────
+        row_data = [
+            sno,
+            display_date,
+            entry_type,
+            daily_activity,
+            hours_val if hours_val > 0 else 0,
+            (e.remarks or "").strip()
+        ]
+
+        is_orange = is_weekend or is_leave or is_holiday
+
+        for col, value in enumerate(row_data, start=1):
+            cell = ws.cell(row=excel_row, column=col, value=value)
+            cell.border = thin_border
+            if is_orange:
+                cell.fill = orange_fill
+                cell.font = orange_font
+            else:
+                cell.font = bold_font if col == 1 else normal_font
+            # Alignment: Daily Activity is always left-aligned. For Week-Off/Holiday/
+            # Leave rows every other column (including Remarks) is center-aligned;
+            # for regular rows, Remarks is left-aligned and the rest are centered.
+            if col == 4:   # Daily Activity – left aligned
+                cell.alignment = left
+            elif col == 6 and not is_orange:   # Remarks – left aligned (regular rows only)
+                cell.alignment = left
+            else:
+                cell.alignment = center
+
+        # Row height: taller if long activity text
+        ws.row_dimensions[excel_row].height = 50 if len(daily_activity) > 80 else (35 if len(daily_activity) > 40 else 20)
+
+    # ── TOTAL ROWS: No. of Total Hours / No. of Working Days ─────────────────
+    total_row = len(entries) + 3
+    ws.merge_cells(f"A{total_row}:D{total_row}")
+    lbl = ws[f"A{total_row}"]
+    lbl.value     = "No. of Total Hours:"
+    lbl.font      = total_font
+    lbl.alignment = right
+    lbl.border    = thin_border
+
+    val_cell = ws.cell(row=total_row, column=5, value=round(total_hours_sum, 1))
+    val_cell.font      = total_font
+    val_cell.alignment = center
+    val_cell.border    = thin_border
+
+    ws.cell(row=total_row, column=6).border = thin_border
+    ws.row_dimensions[total_row].height = 22
+
+    working_days_row = total_row + 1
+    ws.merge_cells(f"A{working_days_row}:D{working_days_row}")
+    wd_lbl = ws[f"A{working_days_row}"]
+    wd_lbl.value     = "No. of Working Days:"
+    wd_lbl.font      = total_font
+    wd_lbl.alignment = right
+    wd_lbl.border    = thin_border
+
+    wd_val_cell = ws.cell(row=working_days_row, column=5, value=days_worked)
+    wd_val_cell.font      = total_font
+    wd_val_cell.alignment = center
+    wd_val_cell.border    = thin_border
+
+    ws.cell(row=working_days_row, column=6).border = thin_border
+    ws.row_dimensions[working_days_row].height = 22
+
+    # ── SUMMARY PANEL (right side, columns H & I) ────────────────────────────
+    summary_items = [
+        ("Total days in the month:", total_days_in_month),
+        ("Days Worked:",             days_worked),
+        ("Days Absent:",             days_absent),
+        ("Holidays (Inclusive weekend):", weekend_holiday),
+    ]
+    for i, (lbl_text, lbl_val) in enumerate(summary_items):
+        sr = i + 3   # Start at row 3 alongside data rows
+        # Label cell (col H = 8)
+        lc = ws.cell(row=sr, column=8, value=lbl_text)
+        lc.font      = Font(name=FONT_NAME, size=FONT_SIZE, bold=True)
+        lc.fill      = summary_lbl_fill
+        lc.border    = thin_border
+        lc.alignment = left
+        # Value cell (col I = 9)
+        vc = ws.cell(row=sr, column=9, value=lbl_val)
+        vc.font      = Font(name=FONT_NAME, size=FONT_SIZE, bold=True)
+        vc.fill      = summary_val_fill
+        vc.border    = thin_border
+        vc.alignment = center
+        current_height = ws.row_dimensions[sr].height or 0
+        ws.row_dimensions[sr].height = max(current_height, 22)
+
+    # ── COLUMN WIDTHS ────────────────────────────────────────────────────────
+    col_widths = {
+        "A": 6,    # S.No
+        "B": 13,   # Date
+        "C": 15,   # Type
+        "D": 65,   # Daily Activity
+        "E": 20,   # No Of Hours Worked
+        "F": 28,   # Remarks
+        "G": 3,    # Spacer
+        "H": 32,   # Summary labels
+        "I": 12,   # Summary values
+    }
+    for col_letter, width in col_widths.items():
+        ws.column_dimensions[col_letter].width = width
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _build_timesheet_submission_content(emp_name: str, month_label: str) -> str:
+    """Build the timesheet submission email content (Employee -> HR)."""
+    return f"""
+        <p style="margin:0 0 14px 0;"><strong>Dear HR Team,</strong></p>
+        <p style="margin:0 0 14px 0;">Good Day!</p>
+        <p style="margin:0 0 14px 0;">I hope you're doing well.</p>
+        <p style="margin:0 0 14px 0;">Please find the attachment timesheet report for {month_label}.</p>
+        <p style="margin:0 0 14px 0;">Kindly let me know if any adjustments are required or if you need additional information.</p>
+        <p style="margin:0 0 4px 0;">Thanks &amp; Regards,</p>
+        <p style="margin:0 0 4px 0;"><strong>{emp_name}</strong></p>
+        <p style="margin:0 0 4px 0;">Ilan Tech Solutions Pvt. Ltd.,</p>
+        <p style="margin:0;">Website: <a href="http://www.ilantechsolutions.com">www.ilantechsolutions.com</a></p>
+    """
+
+
+def _build_timesheet_approval_content(emp_name: str, action_label: str, remarks: str, reviewer_name: str, month_label: str) -> str:
+    """Build the timesheet approval/rejection email content (Admin/HR -> Employee)."""
+    remarks_line = ""
+    if remarks and remarks.strip():
+        remarks_line = f'<p style="margin:0 0 14px 0;"><strong>Remarks</strong> : {remarks.strip()}</p>'
+    return f"""
+        <p style="margin:0 0 14px 0;"><strong>Dear {emp_name},</strong></p>
+        <p style="margin:0 0 14px 0;">Good Day!</p>
+        <p style="margin:0 0 14px 0;">Your Timesheet has been {action_label}.</p>
+        {remarks_line}
+        <p style="margin:0 0 4px 0;">Thanks &amp; Regards,</p>
+        <p style="margin:0 0 4px 0;"><strong>{reviewer_name}</strong></p>
+        <p style="margin:0 0 4px 0;">Ilan Tech Solutions Pvt. Ltd.,</p>
+        <p style="margin:0;">Website: <a href="http://www.ilantechsolutions.com">www.ilantechsolutions.com</a></p>
+
+        <p>---------------------------------------------------------------------------------------------------------------------------------------------------------------</p>
+ 
+        <p style="margin:14px 0 14px 0;"><strong>Dear HR Team,</strong></p>
+        <p style="margin:0 0 14px 0;">Good Day!</p>
+        <p style="margin:0 0 14px 0;">I hope you're doing well.</p>
+        <p style="margin:0 0 14px 0;">Please find the attachment timesheet report for {month_label}.</p>
+        <p style="margin:0 0 14px 0;">Kindly let me know if any adjustments are required or if you need additional information.</p>
+        <p style="margin:0 0 4px 0;">Thanks &amp; Regards,</p>
+        <p style="margin:0 0 4px 0;"><strong>{emp_name}</strong></p>
+        <p style="margin:0 0 4px 0;">Ilan Tech Solutions Pvt. Ltd.,</p>
+        <p style="margin:0;">Website: <a href="http://www.ilantechsolutions.com">www.ilantechsolutions.com</a></p>
+    """
+
+
+def _wrap_timesheet_email_html(inner_html: str) -> str:
+    """Wrap timesheet email content with the standard HTML envelope."""
+    return f"""
+    <html>
+    <head>
+        <style>
+            body {{ font-family: 'Times New Roman', Times, serif; line-height: 1.6; color: #00008B; margin: 0; padding: 15px; }}
+        </style>
+    </head>
+    <body style="font-family: 'Times New Roman', Times, serif; color: #00008B; padding: 15px;">
+        {inner_html}
+    </body>
+    </html>
+    """
+
+
+
+@app.post("/timesheet/send-mail")
+def timesheet_send_mail(req: schemas.TimesheetSendMailRequest, db: Session = Depends(get_db)):
+    """
+    Send timesheet notification email.
+    sender_type='employee': employee submits timesheet for review →
+        To: assign_manager's p_mail, CC: project_manager, hr_spoc
+    sender_type='manager': manager notifies employee of approval/rejection →
+        To: employee's p_mail, CC: assign_manager, project_manager, hr_spoc
+    """
+    try:
+        emp_id_clean = req.emp_id.strip()
+        month_clean = req.month.strip()   # YYYY-MM
+
+        # Fetch employee
+        emp = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id_clean.lower()
+        ).first()
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found")
+
+        # Fetch timesheet entries for the month
+        entries = db.query(models.TimesheetDet).filter(
+            func.lower(func.trim(models.TimesheetDet.emp_id)) == emp_id_clean.lower(),
+            models.TimesheetDet.month == month_clean
+        ).order_by(models.TimesheetDet.t_id.asc()).all()
+
+        # Merge in approved one-day leave records, and Week-Off/Holiday dates from the
+        # Holiday table, for this month that don't already have a timesheet row for
+        # that date, so ALL dates in the period appear in the Excel export.
+        class _SyntheticTimesheetRow:
+            def __init__(self, date_str, entry_type, hours="0", activity=""):
+                self.date = date_str
+                self.type = entry_type
+                self.project = ""
+                self.activity = activity
+                self.total_hours = hours
+                self.remarks = ""
+
+        try:
+            yr_int, mm_int = int(month_clean.split("-")[0]), int(month_clean.split("-")[1])
+        except Exception:
+            yr_int, mm_int = None, None
+
+        if yr_int and mm_int:
+            existing_dates = set()
+            for e in entries:
+                dt = parse_date(e.date)
+                if dt:
+                    existing_dates.add(dt.date())
+
+            # One-day approved leaves — counted as 9 hours, per the Leave Type
+            # from xxits_aruvi_emp_leave_t.
+            leaves = db.query(models.EmpLeave).filter(
+                func.lower(func.trim(models.EmpLeave.emp_id)) == emp_id_clean.lower(),
+                func.lower(func.trim(models.EmpLeave.status)) == "approved"
+            ).all()
+            for lv in leaves:
+                from_dt = parse_date(lv.from_date)
+                to_dt = parse_date(lv.to_date)
+                if not from_dt or not to_dt or from_dt.date() != to_dt.date():
+                    continue
+                if from_dt.year != yr_int or from_dt.month != mm_int:
+                    continue
+                if from_dt.date() in existing_dates:
+                    continue
+                entries.append(_SyntheticTimesheetRow(lv.from_date, lv.leave_type or "Leave", hours="9"))
+                existing_dates.add(from_dt.date())
+
+            # Week-Off / Holiday dates from xxits_holiday_det_t — 0-hour non-working days.
+            holidays = db.query(models.HolidayDet).all()
+            for hol in holidays:
+                hol_dt = parse_date(hol.Office_Holiday_Date)
+                if not hol_dt:
+                    continue
+                if hol_dt.year != yr_int or hol_dt.month != mm_int:
+                    continue
+                if hol_dt.date() in existing_dates:
+                    continue
+                hol_name = (hol.Holiday_Name or "Holiday").strip()
+                is_week_off = hol_name.lower() == "week-off"
+                entries.append(_SyntheticTimesheetRow(
+                    hol.Office_Holiday_Date,
+                    "Week-off" if is_week_off else "Holiday",
+                    hours="0",
+                    activity="" if is_week_off else hol_name
+                ))
+                existing_dates.add(hol_dt.date())
+
+            entries.sort(key=lambda e: parse_date(e.date) or datetime.min)
+
+        if not entries:
+            raise HTTPException(status_code=404, detail="No timesheet entries found for this month")
+
+        # Build month label (e.g. "January 2026")
+        try:
+            yr, mm = month_clean.split("-")
+            month_names = ["January","February","March","April","May","June",
+                           "July","August","September","October","November","December"]
+            month_label = f"{month_names[int(mm)-1]} {yr}"
+        except Exception:
+            month_label = month_clean
+
+        emp_name = emp.name or emp_id_clean
+        emp_p_mail = (emp.p_mail or "").strip()
+
+        # Resolve CC recipients: assign_manager, project_manager, hr_spoc
+        cc_emails: list[str] = []
+        for ref_field in [emp.assign_manager, emp.project_manager, emp.hr_spoc]:
+            ref = (ref_field or "").strip()
+            if not ref:
+                continue
+            if looks_like_email(ref):
+                if ref.lower() not in [c.lower() for c in cc_emails]:
+                    cc_emails.append(ref)
+            else:
+                person = find_employee_reference(db, ref)
+                if person:
+                    email = get_employee_email(person)
+                    if email and email.lower() not in [c.lower() for c in cc_emails]:
+                        cc_emails.append(email)
+
+        # Resolve reviewer name for manager flow
+        reviewer_name = None
+        approved_on_str = None
+        if req.sender_type == "manager" and req.requester_id:
+            reviewer_emp = db.query(models.EmpDet).filter(
+                func.lower(func.trim(models.EmpDet.emp_id)) == req.requester_id.strip().lower()
+            ).first()
+            if reviewer_emp:
+                reviewer_name = reviewer_emp.name or req.requester_id
+            approved_on_str = datetime.now().strftime("%d-%b-%Y")
+
+        # Build Excel attachment (only for selected month entries)
+        excel_bytes = _build_timesheet_excel(
+            entries, emp_name, month_label,
+            reviewer_name=reviewer_name,
+            remarks=req.remarks,
+            approved_on=approved_on_str
+        )
+        print(f"[DEBUG-1] excel_bytes type: {type(excel_bytes)}, is None: {excel_bytes is None}, size: {len(excel_bytes) if excel_bytes else 'N/A'}")
+        try:
+            yr, mm = month_clean.split("-")
+            month_names = ["January", "February", "March", "April", "May", "June",
+                           "July", "August", "September", "October", "November", "December"]
+            month_name = month_names[int(mm) - 1]
+            excel_filename = f"ITS_{emp_name.strip()}_Timesheet_{month_name}_{yr}.xlsx"
+        except Exception:
+            excel_filename = f"ITS_{emp_name.strip()}_Timesheet_{month_clean}.xlsx"
+
+
+        if req.sender_type == "employee":
+            # Employee sends their timesheet for review → To: assign_manager
+            to_email = ""
+            if emp.assign_manager:
+                ref = emp.assign_manager.strip()
+                if looks_like_email(ref):
+                    to_email = ref
+                else:
+                    mgr = find_employee_reference(db, ref)
+                    if mgr:
+                        to_email = get_employee_email(mgr)
+
+            if not to_email:
+                raise HTTPException(status_code=400, detail="No assign manager email found for employee")
+
+            try:
+                subj_yr, subj_mm = month_clean.split("-")
+                subj_month_names = ["January", "February", "March", "April", "May", "June",
+                                     "July", "August", "September", "October", "November", "December"]
+                subj_month_name = subj_month_names[int(subj_mm) - 1]
+            except Exception:
+                subj_month_name, subj_yr = month_label, ""
+            subject = f"ITS_Timesheet_{subj_month_name}_{subj_yr}_{emp_name.strip()}"
+            body = _wrap_timesheet_email_html(_build_timesheet_submission_content(emp_name, month_label))
+
+        else:
+            # Manager notifies employee of approval/rejection
+            action_label = req.action or "Updated"
+            if not emp_p_mail:
+                raise HTTPException(status_code=400, detail="Employee has no professional email (p_mail)")
+
+            to_email = emp_p_mail
+            try:
+                subj_yr, subj_mm = month_clean.split("-")
+                subj_month_names = ["January", "February", "March", "April", "May", "June",
+                                     "July", "August", "September", "October", "November", "December"]
+                subj_month_name = subj_month_names[int(subj_mm) - 1]
+            except Exception:
+                subj_month_name, subj_yr = month_label, ""
+            subject = f"ITS_Timesheet_{subj_month_name}_{subj_yr}_{emp_name.strip()}"
+            body = _wrap_timesheet_email_html(_build_timesheet_approval_content(
+                emp_name, action_label, req.remarks or "", reviewer_name or req.requester_id or "HR Team", month_label
+            ))
+
+        # Send to primary recipient with Excel attachment
+        primary_sent = send_email_notification(to_email, subject, body, excel_bytes, excel_filename)
+
+        # Send to CC recipients (same content with CC note)
+        cc_subject = f"[CC] {subject}"
+        for cc_addr in cc_emails:
+            if cc_addr.lower() != to_email.lower():
+                send_email_notification(cc_addr, cc_subject, body, excel_bytes, excel_filename)
+
+        if not primary_sent:
+            raise HTTPException(status_code=502, detail="Failed to send email. Please try again.")
+
+        if req.sender_type == "employee":
+            notify_stakeholders(
+                db=db,
+                employee=emp,
+                module="Timesheet",
+                title="Timesheet",
+                message=f"Timesheet submitted by {emp_name}.",
+                created_by=emp_id_clean
+            )
+        else:
+            if req.action in ("Approved", "Rejected"):
+                create_notification(
+                    db=db,
+                    emp_id=emp_id_clean,
+                    module="Timesheet",
+                    title="Timesheet",
+                    message=f"Your timesheet has been {req.action.lower()}.",
+                    created_by=req.requester_id or ""
+                )
+
+        return {"success": True, "message": f"Email sent to {to_email}", "cc_count": len(cc_emails)}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[timesheet/send-mail] Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ANNOUNCEMENTS ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.post("/announcements/create")
+def create_announcement_endpoint(request: schemas.AnnouncementCreate, db: Session = Depends(get_db)):
+    try:
+        from datetime import timezone
+        ist_now = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=5, minutes=30)
+        today = ist_now.date()
+
+        start_dt = parse_date(request.start_date)
+        end_dt = parse_date(request.end_date)
+
+        if not start_dt:
+            raise HTTPException(status_code=400, detail="Invalid start date format. Use DD-MMM-YY.")
+        if not end_dt:
+            raise HTTPException(status_code=400, detail="Invalid end date format. Use DD-MMM-YY.")
+
+        start_val = start_dt.date()
+        end_val = end_dt.date()
+
+        # Validation: start date select panna current date than varanum
+        if start_val != today:
+            raise HTTPException(status_code=400, detail="Start date must be the current date (today).")
+
+        # Validation: end date start date before poga koodathu
+        if end_val < start_val:
+            raise HTTPException(status_code=400, detail="End date cannot be before start date.")
+
+        # Status: active/inactive depending on date range
+        computed_status = "Active" if (start_val <= today <= end_val) else "Inactive"
+
+        new_ann = models.AruviAnnouncement(
+            title=request.title.strip(),
+            message=request.message.strip(),
+            start_date=start_val,
+            end_date=end_val,
+            priority=request.priority,
+            created_by=request.created_by.strip(),
+            target_audience=request.target_audience or "all",
+            target_value=request.target_value,
+            status=computed_status,
+            created_at=ist_now,
+            updated_at=ist_now
+        )
+        db.add(new_ann)
+        db.commit()
+        db.refresh(new_ann)
+        
+        return {"success": True, "id": new_ann.id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to create announcement: {str(e)}")
+
+
+@app.get("/announcements", response_model=List[schemas.AnnouncementResponse])
+def get_announcements_endpoint(db: Session = Depends(get_db)):
+    try:
+        from datetime import timezone
+        ist_now = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=5, minutes=30)
+        today = ist_now.date()
+
+        # Update status dynamically
+        db.query(models.AruviAnnouncement).filter(
+            models.AruviAnnouncement.status != "Deleted",
+            models.AruviAnnouncement.start_date <= today,
+            models.AruviAnnouncement.end_date >= today
+        ).update({"status": "Active", "updated_at": ist_now}, synchronize_session=False)
+
+        db.query(models.AruviAnnouncement).filter(
+            models.AruviAnnouncement.status != "Deleted",
+            or_(
+                models.AruviAnnouncement.start_date > today,
+                models.AruviAnnouncement.end_date < today
+            )
+        ).update({"status": "Inactive", "updated_at": ist_now}, synchronize_session=False)
+
+        db.commit()
+
+        # Query announcements
+        announcements = db.query(models.AruviAnnouncement).filter(
+            models.AruviAnnouncement.status != "Deleted"
+        ).order_by(models.AruviAnnouncement.id.desc()).all()
+
+        results = []
+        for ann in announcements:
+            s_date = ann.start_date.strftime("%d-%b-%y") if ann.start_date else None
+            e_date = ann.end_date.strftime("%d-%b-%y") if ann.end_date else None
+            c_at = ann.created_at.strftime("%Y-%m-%dT%H:%M:%S") if ann.created_at else None
+
+            results.append(schemas.AnnouncementResponse(
+                id=ann.id,
+                title=ann.title,
+                message=ann.message,
+                startDate=s_date,
+                endDate=e_date,
+                priority=ann.priority,
+                status=ann.status,
+                created_by=ann.created_by,
+                target_audience=ann.target_audience,
+                target_value=ann.target_value,
+                createdAt=c_at
+            ))
+
+        return results
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch announcements: {str(e)}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PLAY ZONE CONFIG
+# ═══════════════════════════════════════════════════════════════════════════════
+
+PLAYZONE_FACILITIES = ("Meeting Pod", "Rest Area")
+
+
+def _get_or_create_playzone_config(db: Session) -> models.AruviPlayzoneConfig:
+    config = db.query(models.AruviPlayzoneConfig).filter(models.AruviPlayzoneConfig.id == 1).first()
+    if not config:
+        config = models.AruviPlayzoneConfig(id=1, is_enabled=True, updated_at=datetime.now())
+        db.add(config)
+        db.commit()
+        db.refresh(config)
+    return config
+
+
+def _is_admin_or_management(db: Session, emp: Optional["models.EmpDet"]) -> bool:
+    """Broad admin/management check (mirrors the login endpoint's is_global_admin
+    computation: dom_id in [1,2,3,9] = Admin/Management/Executive/Project Management),
+    used to gate Play Zone approve/reject actions."""
+    if not emp or not emp.dom_id:
+        return False
+    try:
+        d_id = int(str(emp.dom_id).strip())
+    except (TypeError, ValueError):
+        return False
+    return d_id in (1, 2, 3, 9)
+
+
+@app.get("/playzone/config", response_model=schemas.PlayzoneConfigResponse)
+def get_playzone_config(db: Session = Depends(get_db)):
+    return _get_or_create_playzone_config(db)
+
+
+@app.put("/playzone/config", response_model=schemas.PlayzoneConfigResponse)
+def update_playzone_config(req: schemas.PlayzoneConfigUpdate, db: Session = Depends(get_db)):
+    config = _get_or_create_playzone_config(db)
+    config.is_enabled = req.is_enabled
+    config.updated_by = req.updated_by
+    config.updated_at = datetime.now()
+    db.commit()
+    db.refresh(config)
+    return config
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CHILLAX MODULE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/chillax", response_model=List[schemas.AruviChillaxResponse])
+def get_chillax_requests(db: Session = Depends(get_db)):
+    records = db.query(models.AruviChillax).order_by(models.AruviChillax.id.desc()).all()
+    return records
+
+
+@app.get("/chillax/{chillax_id}", response_model=schemas.AruviChillaxResponse)
+def get_chillax_request(chillax_id: int, db: Session = Depends(get_db)):
+    record = db.query(models.AruviChillax).filter(models.AruviChillax.id == chillax_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Chillax record not found")
+    return record
+
+
+@app.post("/chillax", response_model=schemas.AruviChillaxResponse)
+def create_chillax_request(req: schemas.AruviChillaxCreate, db: Session = Depends(get_db)):
+    if req.request_type in PLAYZONE_FACILITIES:
+        config = _get_or_create_playzone_config(db)
+        if not config.is_enabled:
+            raise HTTPException(
+                status_code=403,
+                detail="Play Zone is currently disabled by the administrator."
+            )
+
+    # Overlap check: new_start < existing_end AND new_end > existing_start
+    # Only active bookings (not Withdrawn/Rejected) block new ones
+    conflict = db.query(models.AruviChillax).filter(
+        models.AruviChillax.request_type == req.request_type,
+        models.AruviChillax.requested_date == req.requested_date,
+        models.AruviChillax.status.notin_(["Withdrawn", "Rejected"]),
+        models.AruviChillax.requested_from_time < req.requested_to_time,
+        models.AruviChillax.requested_to_time > req.requested_from_time,
+    ).first()
+    if conflict:
+        ft = conflict.requested_from_time
+        tt = conflict.requested_to_time
+        from_str = ft.strftime("%I:%M %p") if hasattr(ft, "strftime") else str(ft)
+        to_str = tt.strftime("%I:%M %p") if hasattr(tt, "strftime") else str(tt)
+        raise HTTPException(
+            status_code=409,
+            detail=f"This time slot is already booked. Please select a different time ({from_str} – {to_str})."
+        )
+
+    if req.request_type in PLAYZONE_FACILITIES:
+        self_conflict = db.query(models.AruviChillax).filter(
+            models.AruviChillax.requested_by == req.requested_by,
+            models.AruviChillax.request_type.in_(PLAYZONE_FACILITIES),
+            models.AruviChillax.requested_date == req.requested_date,
+            models.AruviChillax.status.notin_(["Withdrawn", "Rejected"]),
+            models.AruviChillax.requested_from_time < req.requested_to_time,
+            models.AruviChillax.requested_to_time > req.requested_from_time,
+        ).first()
+        if self_conflict:
+            raise HTTPException(
+                status_code=409,
+                detail="You already have a booking for this time slot."
+            )
+
+    now = datetime.now()
+    last = db.query(models.AruviChillax).order_by(models.AruviChillax.id.desc()).first()
+    next_num = 1
+    if last and last.ref_no:
+        try:
+            next_num = int(last.ref_no.split('-')[-1]) + 1
+        except (ValueError, IndexError):
+            next_num = (db.query(models.AruviChillax).count() or 0) + 1
+    ref_no = f"ITS-CHL-{str(next_num).zfill(4)}"
+    new_rec = models.AruviChillax(
+        ref_no=ref_no,
+        requested_by=req.requested_by,
+        request_type=req.request_type,
+        activity_type=req.activity_type,
+        requested_date=req.requested_date,
+        requested_from_time=req.requested_from_time,
+        requested_to_time=req.requested_to_time,
+        remarks=req.remarks,
+        status=req.status or "Pending",
+        approver_remarks='',
+        created_by=req.requested_by,
+        creation_date=now,
+        last_updated_by=req.requested_by,
+        last_update_date=now,
+    )
+    db.add(new_rec)
+    db.commit()
+    db.refresh(new_rec)
+
+    try:
+        emp = resolve_requester_employee(db, req.requested_by)
+        print(f"[Chillax notify] submit: requested_by='{req.requested_by}' -> resolved emp={emp.emp_id if emp else None}")
+        if emp:
+            stakeholders = get_notification_stakeholders(db, emp)
+            print(f"[Chillax notify] submit: stakeholders={stakeholders}")
+            notify_stakeholders(
+                db=db,
+                employee=emp,
+                module="Chillax",
+                title="Chillax",
+                message=f"Chillax request submitted by {emp.name}.",
+                created_by=req.requested_by
+            )
+        else:
+            print(f"[Chillax notify] submit: could not resolve employee for requested_by='{req.requested_by}' — no notification created")
+    except Exception as e:
+        print(f"❌ Chillax submit notification error: {e}")
+
+    return new_rec
+
+
+@app.put("/chillax/{chillax_id}", response_model=schemas.AruviChillaxResponse)
+def update_chillax_request(chillax_id: int, req: schemas.AruviChillaxUpdate, db: Session = Depends(get_db)):
+    record = db.query(models.AruviChillax).filter(models.AruviChillax.id == chillax_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Chillax record not found")
+    if record.status != "Pending":
+        raise HTTPException(status_code=400, detail="Only pending requests can be updated")
+    if req.activity_type is not None:
+        record.activity_type = req.activity_type
+    if req.remarks is not None:
+        record.remarks = req.remarks
+    record.last_updated_by = record.requested_by
+    record.last_update_date = datetime.now()
+    db.commit()
+    db.refresh(record)
+
+    try:
+        emp = resolve_requester_employee(db, record.requested_by)
+        if emp:
+            notify_stakeholders(
+                db=db,
+                employee=emp,
+                module="Chillax",
+                title="Chillax",
+                message=f"Chillax request updated by {emp.name}.",
+                created_by=record.requested_by
+            )
+        else:
+            print(f"[Chillax notify] update: could not resolve employee for requested_by='{record.requested_by}' — no notification created")
+    except Exception as e:
+        print(f"❌ Chillax update notification error: {e}")
+
+    return record
+
+
+@app.put("/chillax/{chillax_id}/withdraw", response_model=schemas.AruviChillaxResponse)
+def withdraw_chillax_request(chillax_id: int, db: Session = Depends(get_db)):
+    record = db.query(models.AruviChillax).filter(models.AruviChillax.id == chillax_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Chillax record not found")
+    if record.status != "Pending":
+        raise HTTPException(status_code=400, detail="Only pending requests can be withdrawn")
+    record.status = "Withdrawn"
+    record.last_updated_by = record.requested_by
+    record.last_update_date = datetime.now()
+    db.commit()
+    db.refresh(record)
+
+    emp = db.query(models.EmpDet).filter(
+        func.lower(func.trim(models.EmpDet.emp_id)) == _extract_emp_id(record.requested_by).lower()
+    ).first()
+    if emp:
+        notify_stakeholders(
+            db=db,
+            employee=emp,
+            module="Chillax",
+            title="Chillax",
+            message=f"Chillax request withdrawn by {emp.name}.",
+            created_by=record.requested_by
+        )
+
+    return record
+
+
+@app.put("/chillax/{chillax_id}/admin", response_model=schemas.AruviChillaxResponse)
+def admin_update_chillax(chillax_id: int, req: schemas.AruviChillaxAdminUpdate, db: Session = Depends(get_db)):
+    record = db.query(models.AruviChillax).filter(models.AruviChillax.id == chillax_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Chillax record not found")
+
+    admin_emp = resolve_requester_employee(db, req.admin_id)
+    if not _is_admin_or_management(db, admin_emp):
+        raise HTTPException(status_code=403, detail="Only admins can approve or reject Play Zone bookings.")
+
+    record.status = req.status
+    record.approver_remarks = req.approver_remarks
+    record.last_updated_by = req.admin_id
+    record.last_update_date = datetime.now()
+    db.commit()
+    db.refresh(record)
+
+    if req.status in ("Approved", "Rejected"):
+        create_notification(
+            db=db,
+            emp_id=_extract_emp_id(record.requested_by),
+            module="Chillax",
+            title="Chillax",
+            message=f"Your Chillax request has been {req.status.lower()}.",
+            created_by=req.admin_id or ""
+        )
+
+    return record
+
+
 app.include_router(router)
+
