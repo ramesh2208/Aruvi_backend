@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Date, DateTime, DECIMAL, Time, Text
+from sqlalchemy import Column, Integer, String, Date, DateTime, DECIMAL, Time, Text, Boolean
 from database import Base
 
 class EmpDet(Base):
@@ -64,6 +64,7 @@ class EmpDet(Base):
     device_id = Column(String(240))
     assign_manager = Column(String(240))
     project_manager = Column(String(240))
+    delegate_manager = Column(String(240))
     hr_spoc = Column(String(240))
     auth_key = Column(String(240))
     skill_id = Column(String(240))
@@ -197,9 +198,6 @@ class EmpPermission(Base):
     created_by = Column(String(100))
     last_updated_by = Column(String(100))
 
-
-
-
 class LeaveDet(Base):
     __tablename__ = "xxits_leave_det_t"
 
@@ -251,7 +249,7 @@ class WFHDet(Base):
     last_updated_by = Column(String(250))
     last_update_date = Column(DateTime)
     last_update_login = Column(String(250))
-    to_date = Column(String(20))        # end-date of the original range (informational)
+    to_date = Column(String(20))      
 
 
 
@@ -719,3 +717,67 @@ class AruviNotification(Base):
     attribute13 = Column(String(240))
     attribute14 = Column(String(240))
     attribute15 = Column(String(240))
+
+
+class AruviAnnouncement(Base):
+    __tablename__ = "xxits_aruvi_announcements_t"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    title = Column(String(255), nullable=False)
+    message = Column(Text, nullable=False)
+    start_date = Column(Date)
+    end_date = Column(Date)
+    priority = Column(String(50), default="Normal") # 'Normal', 'High', 'Urgent'
+    created_by = Column(String(50))
+    target_audience = Column(String(50), default="all") # 'all', 'department', 'domain', 'specific'
+    target_value = Column(String(100))
+    status = Column(String(50), default="Active") # 'Active', 'Inactive', 'Deleted'
+    created_at = Column(DateTime)
+    updated_at = Column(DateTime)
+
+
+class AruviPlayzoneConfig(Base):
+    __tablename__ = "xxits_aruvi_playzone_config_t"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    is_enabled = Column(Boolean, default=True, nullable=False)
+    updated_by = Column(String(240))
+    updated_at = Column(DateTime)
+
+
+class AruviChillax(Base):
+    __tablename__ = "xxits_aruvi_chillax_t"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ref_no = Column(String(240))
+    requested_by = Column(String(240))
+    requested_date = Column(Date)
+    requested_from_time = Column(Time)
+    requested_to_time = Column(Time)
+    request_type = Column(String(240))
+    activity_type = Column(String(240))
+    status = Column(String(240), default="Pending")
+    close_time = Column(Time)
+    remarks = Column(String(4000))
+    approver_remarks = Column(String(4000))
+    attribute_category = Column(String(240))
+    attribute1 = Column(String(240))
+    attribute2 = Column(String(240))
+    attribute3 = Column(String(240))
+    attribute4 = Column(String(240))
+    attribute5 = Column(String(240))
+    attribute6 = Column(String(240))
+    attribute7 = Column(String(240))
+    attribute8 = Column(String(240))
+    attribute9 = Column(String(240))
+    attribute10 = Column(String(240))
+    attribute11 = Column(String(240))
+    attribute12 = Column(String(240))
+    attribute13 = Column(String(240))
+    attribute14 = Column(String(240))
+    attribute15 = Column(String(240))
+    created_by = Column(String(240))
+    creation_date = Column(DateTime)
+    last_updated_by = Column(String(240))
+    last_update_date = Column(DateTime)
+    last_update_login = Column(String(240))
