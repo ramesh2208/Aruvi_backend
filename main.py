@@ -7576,6 +7576,22 @@ def _is_admin_or_management(db: Session, emp: Optional["models.EmpDet"]) -> bool
     return d_id in (1, 2, 3, 9)
 
 
+def _has_chillax_update_privilege(db: Session, requester: Optional["models.EmpDet"]) -> bool:
+    """True when the requester has Update privilege on module 6 (Chillax) or is global admin."""
+    if not requester:
+        return False
+    if _is_global_admin_user(db, requester):
+        return True
+    privileges = get_user_privileges(requester, db)
+    priv = next((p for p in privileges if p.get("mod_id") == 6), None)
+    if not priv:
+        return False
+    try:
+        return int(priv.get("update_prv", 0)) == 1
+    except (TypeError, ValueError):
+        return False
+
+
 @app.get("/playzone/config", response_model=schemas.PlayzoneConfigResponse)
 def get_playzone_config(db: Session = Depends(get_db)):
     return _get_or_create_playzone_config(db)
@@ -7776,8 +7792,8 @@ def admin_update_chillax(chillax_id: int, req: schemas.AruviChillaxAdminUpdate, 
         raise HTTPException(status_code=404, detail="Chillax record not found")
 
     admin_emp = resolve_requester_employee(db, req.admin_id)
-    if not _is_admin_or_management(db, admin_emp):
-        raise HTTPException(status_code=403, detail="Only admins can approve or reject Play Zone bookings.")
+    if not _has_chillax_update_privilege(db, admin_emp):
+        raise HTTPException(status_code=403, detail="Only users with Update privilege can approve or reject Play Zone bookings.")
 
     record.status = req.status
     record.approver_remarks = req.approver_remarks
