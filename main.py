@@ -73,6 +73,7 @@ MODULE_NAMES = {
     2: "Leave",
     3: "Timesheet",
     4: "Permission",
+    6: "Chillax",
     11: "Employee List",
     12: "Timesheet (Global)",
     13: "HR Leave",
@@ -770,6 +771,13 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         print(f" Privileges: {len(privileges)} modules loaded")
         print("=" * 60)
 
+        dom_id_val = None
+        if user.dom_id:
+            try:
+                dom_id_val = int(str(user.dom_id).strip())
+            except (TypeError, ValueError):
+                pass
+
         return {
             "access_token": access_token,
             "token_type": "bearer",
@@ -782,6 +790,7 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
             "requires_2fa": has_2fa and not otp_verified,
             "privileges": privileges,
             "auth_timer": user.auth_timer if (user.auth_timer and user.auth_timer > 0) else 30,
+            "dom_id": dom_id_val,
         }
 
     except HTTPException:
@@ -1086,6 +1095,13 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
     print(f" Privileges: {len(privileges)} modules loaded")
     print("=" * 60)
 
+    dom_id_val = None
+    if user.dom_id:
+        try:
+            dom_id_val = int(str(user.dom_id).strip())
+        except (TypeError, ValueError):
+            pass
+
     return {
         "access_token": "REAL_TOKEN_HERE",
         "token_type": "bearer",
@@ -1097,6 +1113,7 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
         "requires_2fa": False,
         "privileges": privileges,
         "auth_timer": user.auth_timer if (user.auth_timer and user.auth_timer > 0) else 30,
+        "dom_id": dom_id_val,
         # "has_device_registered": bool(user.device_id and str(user.device_id).strip())  # DEVICE ID DISABLED
     }
 
