@@ -5204,9 +5204,23 @@ def get_project_allocations(pro_id: int, db: Session = Depends(get_db)):
             allocation_pct=str(a.allocation) if a.allocation is not None else "", emp_name=emp[0] if emp else "Unknown",
             lead_name=a.lead_name or ("—" if not lead_id or lead_id.lower() == "none" else "Unknown"),
             role_name=role[0] if role else "Unknown", dept_name=dept[0] if dept else "Unknown",
-            dom_name=dom[0] if dom else "Unknown", project_name=a.project_name, client_name=a.client_name
+            dom_name=dom[0] if dom else "Unknown", project_name=a.project_name, client_name=a.client_name,
+            manager_name=a.manager_name
         ))
     return res
+
+
+def _resolve_manager_name(project, db: Session) -> str:
+    """
+    Project.project_manager stores the manager's emp_id (see _get_project_with_names),
+    not a display name, so it must be resolved through xxits_emp_det_t.
+    """
+    if not project or not project.project_manager:
+        return ""
+    mgr = db.query(models.EmpDet.name).filter(
+        func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(project.project_manager))
+    ).first()
+    return mgr[0] if mgr else project.project_manager
 
 
 @app.post("/admin/projects/{pro_id}/allocations", response_model=schemas.ProjectAllocationResponse)
@@ -5216,6 +5230,7 @@ def create_project_allocation(pro_id: int, alloc_req: schemas.ProjectAllocationC
         raise HTTPException(status_code=404, detail="Project not found")
 
     client = db.query(models.CompanyClient).filter(models.CompanyClient.client_ref_no == project.client_ref_no).first()
+    manager_name = _resolve_manager_name(project, db)
 
     lead_name = None
     if alloc_req.lead_id and alloc_req.lead_id.strip() and alloc_req.lead_id.lower() != "none":
@@ -5238,7 +5253,7 @@ def create_project_allocation(pro_id: int, alloc_req: schemas.ProjectAllocationC
     new_alloc = models.ProjectAllocation(
         project_ref_no=project.project_ref_no, client_ref_no=project.client_ref_no,
         emp_id=alloc_req.emp_id, role_id=alloc_req.role_id, dom_id=alloc_req.dom_id, dpt_id=alloc_req.dpt_id,
-        manager_name=project.project_manager or "", lead_name=lead_name or "",
+        manager_name=manager_name or "", lead_name=lead_name or "",
         e_start_date=start_dt.date(), e_end_date=end_dt.date(),
         task=alloc_req.task_description or "", allocation=allocation_value,
         e_status="Active", button="", client_name=(client.client_name if client else "") or "",
@@ -5268,7 +5283,8 @@ def create_project_allocation(pro_id: int, alloc_req: schemas.ProjectAllocationC
         emp_name=emp[0] if emp else "Unknown",
         lead_name=new_alloc.lead_name or ("—" if not alloc_req.lead_id or alloc_req.lead_id.lower() == "none" else "Unknown"),
         role_name=role[0] if role else "Unknown", dept_name=dept[0] if dept else "Unknown",
-        dom_name=dom[0] if dom else "Unknown", project_name=new_alloc.project_name, client_name=new_alloc.client_name
+        dom_name=dom[0] if dom else "Unknown", project_name=new_alloc.project_name, client_name=new_alloc.client_name,
+        manager_name=new_alloc.manager_name
     )
 
 
@@ -5292,7 +5308,8 @@ def get_all_allocations(db: Session = Depends(get_db)):
             allocation_pct=str(a.allocation) if a.allocation is not None else "", emp_name=emp[0] if emp else "Unknown",
             lead_name=a.lead_name or ("—" if not lead_id or lead_id.lower() == "none" else "Unknown"),
             role_name=role[0] if role else "Unknown", dept_name=dept[0] if dept else "Unknown",
-            dom_name=dom[0] if dom else "Unknown", project_name=a.project_name or "Unknown", client_name=a.client_name
+            dom_name=dom[0] if dom else "Unknown", project_name=a.project_name or "Unknown", client_name=a.client_name,
+            manager_name=a.manager_name
         ))
     return res
 
@@ -5344,6 +5361,7 @@ def get_allocation_details(assign_id: int, db: Session = Depends(get_db)):
     dom = db.query(models.Domain.domain).filter(models.Domain.dom_id == a.dom_id).first()
     project = db.query(models.Project).filter(models.Project.project_ref_no == a.project_ref_no).first()
     lead_id = a.attribute1 or ""
+    manager_name = a.manager_name or _resolve_manager_name(project, db)
 
     return schemas.ProjectAllocationResponse(
         assign_id=a.assign_id, emp_id=a.emp_id, role_id=a.role_id, dom_id=a.dom_id, dpt_id=a.dpt_id,
@@ -5353,7 +5371,7 @@ def get_allocation_details(assign_id: int, db: Session = Depends(get_db)):
         lead_name=a.lead_name or "Unknown",
         role_name=role[0] if role else "Unknown", dept_name=dept[0] if dept else "Unknown",
         dom_name=dom[0] if dom else "Unknown", project_name=a.project_name or "Unknown",
-        client_name=a.client_name, manager_name=a.manager_name,
+        client_name=a.client_name, manager_name=manager_name,
         project_type=(project.project_type if project else "") or "",
         project_status=a.e_status or ""
     )
