@@ -5205,7 +5205,7 @@ def get_project_allocations(pro_id: int, db: Session = Depends(get_db)):
             lead_name=a.lead_name or ("—" if not lead_id or lead_id.lower() == "none" else "Unknown"),
             role_name=role[0] if role else "Unknown", dept_name=dept[0] if dept else "Unknown",
             dom_name=dom[0] if dom else "Unknown", project_name=a.project_name, client_name=a.client_name,
-            manager_name=a.manager_name
+            manager_name=a.manager_name or _resolve_manager_name(project, db)
         ))
     return res
 
@@ -5302,6 +5302,12 @@ def get_all_allocations(db: Session = Depends(get_db)):
         dept = db.query(models.Department.department).filter(models.Department.dpt_id == a.dpt_id).first()
         dom = db.query(models.Domain.domain).filter(models.Domain.dom_id == a.dom_id).first()
         lead_id = a.attribute1 or ""
+        manager_name = a.manager_name
+        if not manager_name and a.project_ref_no:
+            alloc_project = db.query(models.Project).filter(
+                func.lower(func.trim(models.Project.project_ref_no)) == func.lower(func.trim(a.project_ref_no))
+            ).first()
+            manager_name = _resolve_manager_name(alloc_project, db)
         res.append(schemas.ProjectAllocationResponse(
             assign_id=a.assign_id, emp_id=a.emp_id, role_id=a.role_id, dom_id=a.dom_id, dpt_id=a.dpt_id,
             lead_id=lead_id, from_date=_fmt_alloc_date(a.e_start_date), to_date=_fmt_alloc_date(a.e_end_date), task_description=a.task,
@@ -5309,7 +5315,7 @@ def get_all_allocations(db: Session = Depends(get_db)):
             lead_name=a.lead_name or ("—" if not lead_id or lead_id.lower() == "none" else "Unknown"),
             role_name=role[0] if role else "Unknown", dept_name=dept[0] if dept else "Unknown",
             dom_name=dom[0] if dom else "Unknown", project_name=a.project_name or "Unknown", client_name=a.client_name,
-            manager_name=a.manager_name
+            manager_name=manager_name
         ))
     return res
 
@@ -5328,6 +5334,12 @@ def get_employee_allocations(emp_id: str, db: Session = Depends(get_db)):
         dept = db.query(models.Department.department).filter(models.Department.dpt_id == a.dpt_id).first()
         dom = db.query(models.Domain.domain).filter(models.Domain.dom_id == a.dom_id).first()
         lead_id = a.attribute1 or ""
+        manager_name = a.manager_name
+        if not manager_name and a.project_ref_no:
+            alloc_project = db.query(models.Project).filter(
+                func.lower(func.trim(models.Project.project_ref_no)) == func.lower(func.trim(a.project_ref_no))
+            ).first()
+            manager_name = _resolve_manager_name(alloc_project, db)
         res.append(schemas.ProjectAllocationResponse(
             assign_id=a.assign_id, emp_id=a.emp_id, role_id=a.role_id, dom_id=a.dom_id, dpt_id=a.dpt_id,
             lead_id=lead_id, from_date=_fmt_alloc_date(a.e_start_date), to_date=_fmt_alloc_date(a.e_end_date), task_description=a.task,
@@ -5335,7 +5347,7 @@ def get_employee_allocations(emp_id: str, db: Session = Depends(get_db)):
             lead_name=a.lead_name or "Unknown",
             role_name=role[0] if role else "Unknown", dept_name=dept[0] if dept else "Unknown",
             dom_name=dom[0] if dom else "Unknown", project_name=a.project_name or "Unknown", client_name=a.client_name,
-            manager_name=a.manager_name
+            manager_name=manager_name
         ))
     return res
 
@@ -5359,7 +5371,9 @@ def get_allocation_details(assign_id: int, db: Session = Depends(get_db)):
     role = db.query(models.Role.role).filter(models.Role.role_id == a.role_id).first()
     dept = db.query(models.Department.department).filter(models.Department.dpt_id == a.dpt_id).first()
     dom = db.query(models.Domain.domain).filter(models.Domain.dom_id == a.dom_id).first()
-    project = db.query(models.Project).filter(models.Project.project_ref_no == a.project_ref_no).first()
+    project = db.query(models.Project).filter(
+        func.lower(func.trim(models.Project.project_ref_no)) == func.lower(func.trim(a.project_ref_no or ""))
+    ).first()
     lead_id = a.attribute1 or ""
     manager_name = a.manager_name or _resolve_manager_name(project, db)
 
