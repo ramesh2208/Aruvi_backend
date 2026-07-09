@@ -6362,6 +6362,41 @@ def _is_global_admin_user(db: Session, emp: Optional["models.EmpDet"]) -> bool:
     return bool(domain and (domain.domain or "").strip().lower() == "admin")
 
 
+TIMESHEET_APPROVAL_DOMAINS = [1, 2, 9]
+
+
+def _can_approve_timesheet(db: Session, approver_id: Optional[str]) -> bool:
+    """The Approve/Reject action on the Timesheet View page is restricted to
+    users whose dom_id is in TIMESHEET_APPROVAL_DOMAINS (1, 2, 9), or the
+    literal "Admin" domain, or whose domain name contains 'admin', 'executive', or 'management'."""
+    if not approver_id:
+        return False
+    approver = db.query(models.EmpDet).filter(
+        func.lower(func.trim(models.EmpDet.emp_id)) == approver_id.strip().lower()
+    ).first()
+    if not approver:
+        return False
+    if _is_global_admin_user(db, approver):
+        return True
+    if not approver.dom_id:
+        return False
+    try:
+        d_id = int(str(approver.dom_id).strip())
+        if d_id in TIMESHEET_APPROVAL_DOMAINS:
+            return True
+    except (TypeError, ValueError):
+        pass
+
+    # Also check by domain name (admin, executive, management)
+    domain = db.query(models.Domain).filter(models.Domain.dom_id == approver.dom_id).first()
+    if domain and domain.domain:
+        dom_name = domain.domain.strip().lower()
+        if any(name in dom_name for name in ["admin", "executive", "management"]):
+            return True
+
+    return False
+
+
 def _has_timesheet_view_global(db: Session, requester: Optional["models.EmpDet"]) -> bool:
     """True when the requester's Role Privilege grants View (Own=1) or View
     (Global=5) on module 12 (Timesheet). A relationship to the target employee
@@ -6658,7 +6693,28 @@ def get_timesheet_employees(
         requester = db.query(models.EmpDet).filter(
             func.lower(func.trim(models.EmpDet.emp_id)) == requester_id.strip().lower()
         ).first()
-        if not _is_global_admin_user(db, requester):
+        
+        # Check if the requester belongs to Admin/Executive/Management domain
+        is_top_domain = False
+        if requester:
+            if _is_global_admin_user(db, requester):
+                is_top_domain = True
+            elif requester.dom_id:
+                try:
+                    d_id = int(str(requester.dom_id).strip())
+                    if d_id in TIMESHEET_APPROVAL_DOMAINS:
+                        is_top_domain = True
+                except (TypeError, ValueError):
+                    pass
+                
+                if not is_top_domain:
+                    domain = db.query(models.Domain).filter(models.Domain.dom_id == requester.dom_id).first()
+                    if domain and domain.domain:
+                        dom_name = domain.domain.strip().lower()
+                        if any(name in dom_name for name in ["admin", "executive", "management"]):
+                            is_top_domain = True
+
+        if not is_top_domain:
             if not _has_timesheet_view_global(db, requester):
                 allowed_emp_ids = set()
             else:
@@ -6782,7 +6838,10 @@ def admin_timesheet_action(action_req: schemas.TimesheetApprovalAction, db: Sess
     """
     Approve or Reject a timesheet entry.
     action: 'Approved' or 'Rejected'
+    Restricted to approvers in TIMESHEET_APPROVAL_DOMAINS (dom_id 1, 2, 9) or Admin.
     """
+    if not _can_approve_timesheet(db, action_req.admin_id):
+        raise HTTPException(status_code=403, detail="Not authorized to approve or reject timesheets.")
     try:
         entry = db.query(models.TimesheetDet).filter(
             models.TimesheetDet.t_id == action_req.t_id
@@ -7145,7 +7204,10 @@ def timesheet_send_mail(req: schemas.TimesheetSendMailRequest, db: Session = Dep
         To: assign_manager's p_mail, CC: project_manager, hr_spoc
     sender_type='manager': manager notifies employee of approval/rejection →
         To: employee's p_mail, CC: assign_manager, project_manager, hr_spoc
+        Restricted to approvers in TIMESHEET_APPROVAL_DOMAINS (dom_id 1, 2, 9) or Admin.
     """
+    if req.sender_type == "manager" and req.action and not _can_approve_timesheet(db, req.requester_id):
+        raise HTTPException(status_code=403, detail="Not authorized to approve or reject timesheets.")
     try:
         emp_id_clean = req.emp_id.strip()
         month_clean = req.month.strip()   # YYYY-MM
