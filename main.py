@@ -7492,6 +7492,55 @@ def create_announcement_endpoint(request: schemas.AnnouncementCreate, db: Sessio
         raise HTTPException(status_code=500, detail=f"Failed to create announcement: {str(e)}")
 
 
+
+@app.put("/announcements/{ann_id}")
+def update_announcement_endpoint(ann_id: int, request: schemas.AnnouncementCreate, db: Session = Depends(get_db)):
+    try:
+        from datetime import timezone
+        ist_now = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=5, minutes=30)
+        today = ist_now.date()
+
+        ann = db.query(models.AruviAnnouncement).filter(models.AruviAnnouncement.id == ann_id).first()
+        if not ann:
+            raise HTTPException(status_code=404, detail="Announcement not found")
+
+        start_dt = parse_date(request.start_date)
+        end_dt = parse_date(request.end_date)
+
+        if not start_dt:
+            raise HTTPException(status_code=400, detail="Invalid start date format. Use DD-MMM-YY.")
+        if not end_dt:
+            raise HTTPException(status_code=400, detail="Invalid end date format. Use DD-MMM-YY.")
+
+        start_val = start_dt.date()
+        end_val = end_dt.date()
+
+        if end_val < start_val:
+            raise HTTPException(status_code=400, detail="End date cannot be before start date.")
+
+        computed_status = "Active" if (start_val <= today <= end_val) else "Inactive"
+        if request.status in ("Active", "Inactive"):
+            computed_status = request.status
+
+        ann.title = request.title.strip()
+        ann.message = request.message.strip()
+        ann.start_date = start_val
+        ann.end_date = end_val
+        ann.priority = request.priority
+        ann.status = computed_status
+        ann.updated_at = ist_now
+
+        db.commit()
+        db.refresh(ann)
+        
+        return {"success": True, "id": ann.id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to update announcement: {str(e)}")
+
+
 @app.get("/announcements", response_model=List[schemas.AnnouncementResponse])
 def get_announcements_endpoint(db: Session = Depends(get_db)):
     try:
