@@ -6421,12 +6421,16 @@ def _has_timesheet_view_global(db: Session, requester: Optional["models.EmpDet"]
 
 
 def _can_view_employee_timesheet(db: Session, requester_id: Optional[str], emp_id: str) -> bool:
-    """True when requester_id is the employee themself, a global admin, or —
-    only when BOTH conditions hold — the employee's assign_manager /
-    project_manager / hr_spoc AND has the Timesheet View (Global) privilege.
-    A manager relationship alone is not sufficient: a department-wide role
-    privilege grant must not let every peer in that role see each other's
-    timesheets just because one of them happens to manage someone."""
+    """True when requester_id is the employee themself, a global admin, a
+    requester in a top domain (dom_id in TIMESHEET_APPROVAL_DOMAINS, or a
+    domain named/containing admin, executive, or management — same blanket
+    visibility already granted on the employee list at
+    /admin/timesheet-employees), or — only when BOTH conditions hold — the
+    employee's assign_manager / project_manager / hr_spoc AND has the
+    Timesheet View (Global) privilege. A manager relationship alone is not
+    sufficient: a department-wide role privilege grant must not let every
+    peer in that role see each other's timesheets just because one of them
+    happens to manage someone."""
     if not requester_id:
         # Backward-compatible: no requester supplied (e.g. legacy callers).
         return True
@@ -6440,6 +6444,19 @@ def _can_view_employee_timesheet(db: Session, requester_id: Optional[str], emp_i
     ).first()
     if _is_global_admin_user(db, requester):
         return True
+
+    if requester and requester.dom_id:
+        try:
+            d_id = int(str(requester.dom_id).strip())
+            if d_id in TIMESHEET_APPROVAL_DOMAINS:
+                return True
+        except (TypeError, ValueError):
+            pass
+        domain = db.query(models.Domain).filter(models.Domain.dom_id == requester.dom_id).first()
+        if domain and domain.domain:
+            dom_name = domain.domain.strip().lower()
+            if any(name in dom_name for name in ["admin", "executive", "management"]):
+                return True
 
     if not _has_timesheet_view_global(db, requester):
         return False
