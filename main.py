@@ -772,9 +772,13 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
         print("=" * 60)
 
         dom_id_val = None
+        domain_name_val = ""
         if user.dom_id:
             try:
                 dom_id_val = int(str(user.dom_id).strip())
+                domain_obj_login = db.query(models.Domain).filter(models.Domain.dom_id == dom_id_val).first()
+                if domain_obj_login and domain_obj_login.domain:
+                    domain_name_val = domain_obj_login.domain.lower()
             except (TypeError, ValueError):
                 pass
 
@@ -791,6 +795,7 @@ def login(request: schemas.LoginRequest, db: Session = Depends(get_db)):
             "privileges": privileges,
             "auth_timer": user.auth_timer if (user.auth_timer and user.auth_timer > 0) else 30,
             "dom_id": dom_id_val,
+            "domain_name": domain_name_val,
         }
 
     except HTTPException:
@@ -1096,9 +1101,13 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
     print("=" * 60)
 
     dom_id_val = None
+    domain_name_val2 = ""
     if user.dom_id:
         try:
             dom_id_val = int(str(user.dom_id).strip())
+            domain_obj_2fa = db.query(models.Domain).filter(models.Domain.dom_id == dom_id_val).first()
+            if domain_obj_2fa and domain_obj_2fa.domain:
+                domain_name_val2 = domain_obj_2fa.domain.lower()
         except (TypeError, ValueError):
             pass
 
@@ -1114,6 +1123,7 @@ def verify_2fa(request: schemas.Verify2FARequest, db: Session = Depends(get_db))
         "privileges": privileges,
         "auth_timer": user.auth_timer if (user.auth_timer and user.auth_timer > 0) else 30,
         "dom_id": dom_id_val,
+        "domain_name": domain_name_val2,
         # "has_device_registered": bool(user.device_id and str(user.device_id).strip())  # DEVICE ID DISABLED
     }
 
