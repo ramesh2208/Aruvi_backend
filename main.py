@@ -7653,10 +7653,17 @@ def _is_admin_or_management(db: Session, emp: Optional["models.EmpDet"]) -> bool
 
 
 def _has_chillax_update_privilege(db: Session, requester: Optional["models.EmpDet"]) -> bool:
-    """True when the requester has Update privilege on module 6 (Chillax) or is global admin."""
+    """True when the requester has Update privilege on module 6 (Chillax) or is global admin.
+
+    Uses the broad _is_admin_or_management check (dom_id in [1,2,3,9]) rather
+    than the narrow _is_global_admin_user (literal "Admin" domain only) because
+    that broad flag is what the mobile app's `userData.is_global_admin` is
+    computed from at login, and the Chillax screen shows the Approve/Reject
+    controls whenever that flag is true. Using the narrower check here caused
+    users who could see the buttons to be rejected on submit."""
     if not requester:
         return False
-    if _is_global_admin_user(db, requester):
+    if _is_admin_or_management(db, requester):
         return True
     privileges = get_user_privileges(requester, db)
     priv = next((p for p in privileges if p.get("mod_id") == 6), None)
