@@ -742,7 +742,6 @@ class AruviNotification(Base):
     attribute14 = Column(String(240))
     attribute15 = Column(String(240))
 
-
 class AruviAnnouncement(Base):
     __tablename__ = "xxits_aruvi_announcements_t"
 
@@ -758,16 +757,6 @@ class AruviAnnouncement(Base):
     status = Column(String(50), default="Active") # 'Active', 'Inactive', 'Deleted'
     created_at = Column(DateTime)
     updated_at = Column(DateTime)
-
-
-class AruviPlayzoneConfig(Base):
-    __tablename__ = "xxits_aruvi_playzone_config_t"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    is_enabled = Column(Boolean, default=True, nullable=False)
-    updated_by = Column(String(240))
-    updated_at = Column(DateTime)
-
 
 class AruviChillax(Base):
     __tablename__ = "xxits_aruvi_chillax_t"
