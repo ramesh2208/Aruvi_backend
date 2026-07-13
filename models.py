@@ -5,10 +5,10 @@ class EmpDet(Base):
     __tablename__ = "xxits_emp_det_t"
 
     emp_id = Column(String(50), primary_key=True)
-    name = Column(String(50))
+    name = Column(String(50), index=True)
     role_id = Column(String(100))
     dpt_id = Column(String(100))
-    dom_id = Column(String(100))
+    dom_id = Column(String(100), index=True)
     father_name = Column(String(50))
     mother_name = Column(String(50))
     dob = Column(String(100))
@@ -62,9 +62,9 @@ class EmpDet(Base):
     attribute7 = Column(String(255))
     push_notification = Column(String(240))
     device_id = Column(String(240))
-    assign_manager = Column(String(240))
-    project_manager = Column(String(240))
-    delegate_manager = Column(String(240))
+    assign_manager = Column(String(240), index=True)
+    project_manager = Column(String(240), index=True)
+    delegate_manager = Column(String(240), index=True)
     hr_spoc = Column(String(240))
     auth_key = Column(String(240))
     skill_id = Column(String(240))
@@ -81,11 +81,11 @@ class CheckIn(Base):
     __tablename__ = "xxits_aruvi_check_in_t"
 
     check_in_id = Column(Integer, primary_key=True, autoincrement=True)
-    emp_id = Column(String(20))
+    emp_id = Column(String(20), index=True)
     in_time = Column(String(15))
     out_time = Column(String(15))
     Total_hours = Column(String(15))
-    t_date = Column(Date)
+    t_date = Column(Date, index=True)
     t_day = Column(String(15))
     month = Column(String(150))
     status = Column(String(150))
@@ -113,7 +113,7 @@ class EmpLeave(Base):
 
     l_id = Column(Integer, primary_key=True, autoincrement=True)
     l_det_id = Column(Integer)
-    emp_id = Column(String(100))
+    emp_id = Column(String(100), index=True)
     leave_type = Column(String(100))
     from_date = Column(String(240))
     to_date = Column(String(240))
@@ -122,7 +122,7 @@ class EmpLeave(Base):
     file = Column(String(240))
     reason = Column(String(1000))
     remarks = Column(String(240))
-    status = Column(String(100))
+    status = Column(String(100), index=True)
     hr_action = Column(String(50))
     hr_approval = Column(String(100))
     admin_approval = Column(String(100))
@@ -160,7 +160,7 @@ class EmpPermission(Base):
     __tablename__ = "xxits_aruvi_emp_permission_t"
 
     p_id = Column(Integer, primary_key=True, autoincrement=True)
-    emp_id = Column(String(50))
+    emp_id = Column(String(50), index=True)
     date = Column(Date)
     f_time = Column(Time)
     t_time = Column(Time)
@@ -169,7 +169,7 @@ class EmpPermission(Base):
     total_hours = Column(String(100))
     dis_total_hours = Column(String(100)) # LOP Hours
     available_hours = Column(String(100))
-    status = Column(String(50), default="Pending")
+    status = Column(String(50), default="Pending", index=True)
     hr_approval = Column(String(100))
     admin_approval = Column(String(100))
     applied_date = Column(String(100))
@@ -238,10 +238,10 @@ class WFHDet(Base):
 
     wfh_id = Column(Integer, primary_key=True, autoincrement=True)
     date = Column(String(500))          # stores the individual WFH date (one row per day)
-    emp_id = Column(String(50), nullable=False)
+    emp_id = Column(String(50), nullable=False, index=True)
     days = Column(String(15))
     reason = Column(String(2000))
-    status = Column(String(20))
+    status = Column(String(20), index=True)
     approved_by = Column(String(250))
     remarks = Column(String(2000))
     created_by = Column(String(250))
@@ -257,7 +257,7 @@ class OverTimeDet(Base):
     __tablename__ = "xxits_over_time_det_t"
 
     ot_id = Column(Integer, primary_key=True, autoincrement=True)
-    emp_id = Column(String(50))
+    emp_id = Column(String(50), index=True)
     ot_date = Column(String(20))
     from_time = Column(String(20))
     to_time = Column(String(20))
@@ -286,7 +286,7 @@ class OverTimeDet(Base):
     last_updated_by = Column(String(100))
     last_update_date = Column(DateTime, nullable=False)
     last_update_login = Column(String(250), nullable=False)
-    status = Column(String(50))
+    status = Column(String(50), index=True)
     remarks = Column(String(400))
     reason = Column(String(400))
     update_count = Column(Integer)
@@ -553,9 +553,9 @@ class ProjectAllocation(Base):
     __tablename__ = "xxits_aruvi_assign_t"
 
     assign_id = Column(Integer, primary_key=True, autoincrement=True)
-    project_ref_no = Column(String(150))
+    project_ref_no = Column(String(150), index=True)
     client_ref_no = Column(String(100))
-    emp_id = Column(String(100))
+    emp_id = Column(String(100), index=True)
     role_id = Column(Integer)
     manager_name = Column(String(100))
     lead_name = Column(String(100))
@@ -599,7 +599,7 @@ class DailyAttendanceReport(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     Date = Column(Text)
-    Employee_Code = Column(Integer)
+    Employee_Code = Column(Integer, index=True)
     Employee_Name = Column(Text)
     Company = Column(Text)
     Department = Column(Text)
@@ -756,6 +756,14 @@ class AruviAnnouncement(Base):
     target_value = Column(String(100))
     status = Column(String(50), default="Active") # 'Active', 'Inactive', 'Deleted'
     created_at = Column(DateTime)
+    updated_at = Column(DateTime)
+
+class AruviPlayzoneConfig(Base):
+    __tablename__ = "xxits_aruvi_playzone_config_t"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    is_enabled = Column(Boolean, default=True)
+    updated_by = Column(String(240))
     updated_at = Column(DateTime)
 
 class AruviChillax(Base):
