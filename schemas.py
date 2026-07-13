@@ -23,6 +23,7 @@ class Token(BaseModel):
     privileges: Optional[List[dict]] = []
     has_device_registered: Optional[bool] = False
     auth_timer: Optional[int] = 30
+    dom_id: Optional[int] = None
 
 class CheckInRequest(BaseModel):
     emp_id: str
@@ -436,6 +437,7 @@ class ProjectAllocationResponse(BaseModel):
     project_type: Optional[str] = None
     project_status: Optional[str] = None
     project_priority: Optional[str] = None
+    manager_name: Optional[str] = None
 
 class PushTokenRegisterRequest(BaseModel):
     user_id: str
@@ -591,6 +593,34 @@ class AruviChillaxCreate(BaseModel):
     requested_to_time: str
     remarks: Optional[str] = None
     status: Optional[str] = "Pending"
+
+    @field_validator('requested_by', 'request_type', 'activity_type',
+                      'requested_date', 'requested_from_time', 'requested_to_time', mode='before')
+    @classmethod
+    def not_blank(cls, v: Any, info) -> Any:
+        if v is None or not str(v).strip():
+            raise ValueError(f"{info.field_name} is required")
+        return str(v).strip()
+
+    @field_validator('requested_date')
+    @classmethod
+    def valid_date_format(cls, v: str) -> str:
+        try:
+            datetime.strptime(v, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError("requested_date must be in YYYY-MM-DD format")
+        return v
+
+    @field_validator('requested_from_time', 'requested_to_time')
+    @classmethod
+    def valid_time_format(cls, v: str) -> str:
+        for fmt in ("%H:%M:%S", "%H:%M"):
+            try:
+                datetime.strptime(v, fmt)
+                return v
+            except ValueError:
+                continue
+        raise ValueError("Time must be in HH:MM or HH:MM:SS 24-hour format")
 
 
 class AruviChillaxUpdate(BaseModel):
