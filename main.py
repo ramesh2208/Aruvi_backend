@@ -1213,27 +1213,48 @@ def get_employees(
         employees = query.order_by(models.EmpDet.name).offset(skip).limit(limit).all()
     except Exception as e:
         handle_db_error(e)
+
+    dom_ids = {emp.dom_id for emp in employees if emp.dom_id}
+    domain_by_id = {}
+    if dom_ids:
+        for d in db.query(models.Domain).filter(models.Domain.dom_id.in_(dom_ids)).all():
+            domain_by_id[d.dom_id] = d.domain
+
+    emp_id_lookup = set()
+    for emp in employees:
+        if emp.assign_manager:
+            emp_id_lookup.add(emp.assign_manager)
+        if emp.delegate_manager:
+            emp_id_lookup.add(emp.delegate_manager.strip().lower())
+    emp_by_id = {}
+    emp_by_lower_id = {}
+    if emp_id_lookup:
+        related = db.query(models.EmpDet).filter(
+            or_(
+                models.EmpDet.emp_id.in_(emp_id_lookup),
+                func.lower(func.trim(models.EmpDet.emp_id)).in_(emp_id_lookup)
+            )
+        ).all()
+        for r in related:
+            emp_by_id[r.emp_id] = r
+            if r.emp_id:
+                emp_by_lower_id[r.emp_id.strip().lower()] = r
+
     results = []
     for emp in employees:
         if not emp:
             continue
-        domain_name = "Employee"
-        if emp.dom_id:
-            domain = db.query(models.Domain).filter(models.Domain.dom_id == emp.dom_id).first()
-            if domain:
-                domain_name = domain.domain
-                
+        domain_name = domain_by_id.get(emp.dom_id, "Employee")
+
         manager_name = emp.assign_manager or "N/A"
         if emp.assign_manager:
-            mgr = db.query(models.EmpDet).filter(models.EmpDet.emp_id == emp.assign_manager).first()
+            mgr = emp_by_id.get(emp.assign_manager)
             if mgr and mgr.name:
                 manager_name = mgr.name
-                
+
         delegate_mgr_name = ""
         if emp.delegate_manager:
-            dlg = db.query(models.EmpDet).filter(
-                func.lower(func.trim(models.EmpDet.emp_id)) == emp.delegate_manager.strip().lower()
-            ).first()
+            dlg = emp_by_lower_id.get(emp.delegate_manager.strip().lower())
             delegate_mgr_name = dlg.name if dlg else emp.delegate_manager
 
         results.append({
@@ -2068,8 +2089,14 @@ def get_approvers(db: Session, user: models.EmpDet):
 
 # ── Delegate Manager helpers ─────────────────────────────────────────────────
 
-def is_manager_on_leave(db: Session, manager_id: str, from_date_str: str, to_date_str: Optional[str] = None) -> bool:
-    """Return True if manager has an approved leave overlapping [from_date_str, to_date_str]."""
+def is_manager_on_leave(db: Session, manager_id: str, from_date_str: str, to_date_str: Optional[str] = None,
+                         _leave_cache: Optional[dict] = None) -> bool:
+    """Return True if manager has an approved leave overlapping [from_date_str, to_date_str].
+
+    `_leave_cache`, when supplied by the caller, memoizes each manager's approved-leave
+    rows for the lifetime of a single request so repeated calls (e.g. once per history
+    row) don't re-query the same manager's leaves.
+    """
     if not manager_id:
         return False
     mgr_id = manager_id.strip().lower()
@@ -2078,13 +2105,20 @@ def is_manager_on_leave(db: Session, manager_id: str, from_date_str: str, to_dat
         return False
     req_to = parse_date(to_date_str) if to_date_str else req_from
     req_to = req_to or req_from
-    try:
-        mgr_leaves = db.query(models.EmpLeave).filter(
-            func.lower(func.trim(models.EmpLeave.emp_id)) == mgr_id,
-            func.lower(func.trim(models.EmpLeave.status)) == "approved"
-        ).all()
-    except Exception:
-        return False
+
+    if _leave_cache is not None and mgr_id in _leave_cache:
+        mgr_leaves = _leave_cache[mgr_id]
+    else:
+        try:
+            mgr_leaves = db.query(models.EmpLeave).filter(
+                func.lower(func.trim(models.EmpLeave.emp_id)) == mgr_id,
+                func.lower(func.trim(models.EmpLeave.status)) == "approved"
+            ).all()
+        except Exception:
+            mgr_leaves = []
+        if _leave_cache is not None:
+            _leave_cache[mgr_id] = mgr_leaves
+
     for leave in mgr_leaves:
         leave_from = parse_date(leave.from_date)
         leave_to = parse_date(leave.to_date) if leave.to_date else leave_from
@@ -2096,7 +2130,8 @@ def is_manager_on_leave(db: Session, manager_id: str, from_date_str: str, to_dat
     return False
 
 
-def should_show_for_manager(db: Session, emp, manager_id: str, from_date_str: str, to_date_str: Optional[str] = None):
+def should_show_for_manager(db: Session, emp, manager_id: str, from_date_str: str, to_date_str: Optional[str] = None,
+                             _leave_cache: Optional[dict] = None):
     """
     Decides if a pending/history request for `emp` should be visible to `manager_id`.
     Returns (include: bool, is_delegated: bool, is_read_only: bool).
@@ -2114,11 +2149,11 @@ def should_show_for_manager(db: Session, emp, manager_id: str, from_date_str: st
     is_delegate = (delegate_mgr == mgr_lower and delegate_mgr not in (assign_mgr, proj_mgr))
 
     if is_direct:
-        on_leave = is_manager_on_leave(db, manager_id.strip(), from_date_str, to_date_str)
+        on_leave = is_manager_on_leave(db, manager_id.strip(), from_date_str, to_date_str, _leave_cache)
         return True, False, on_leave
 
     if is_delegate:
-        mgr_on_leave = is_manager_on_leave(db, assign_mgr, from_date_str, to_date_str)
+        mgr_on_leave = is_manager_on_leave(db, assign_mgr, from_date_str, to_date_str, _leave_cache)
         return mgr_on_leave, mgr_on_leave, False
 
     return False, False, False
@@ -2707,10 +2742,11 @@ def get_pending_leaves(manager_id: Optional[str] = None, db: Session = Depends(g
     except Exception as e:
         handle_db_error(e)
     results = []
+    _leave_cache = {}
     for leave, emp in pending:
         if manager_id:
             include, is_delegated, is_read_only = should_show_for_manager(
-                db, emp, manager_id, leave.from_date, leave.to_date)
+                db, emp, manager_id, leave.from_date, leave.to_date, _leave_cache)
             if not include:
                 continue
         else:
@@ -2746,10 +2782,11 @@ def get_all_leave_history(manager_id: Optional[str] = None, db: Session = Depend
     except Exception as e:
         handle_db_error(e)
     results = []
+    _leave_cache = {}
     for leave, emp in all_leaves:
         if manager_id:
             include, is_delegated, is_read_only = should_show_for_manager(
-                db, emp, manager_id, leave.from_date, leave.to_date)
+                db, emp, manager_id, leave.from_date, leave.to_date, _leave_cache)
             if not include:
                 continue
         else:
@@ -3048,6 +3085,8 @@ def get_notifications(
 
     # 1. Admin/Manager/HR View: Pending requests to approve
     if role in ('admin', 'manager', 'hr'):
+        _leave_cache = {}
+
         def apply_manager_filter(query, emp_model):
             """Broad SQL pre-filter — includes direct reports and delegate targets."""
             if manager_id and manager_id.strip().lower() not in ('', 'all', 'none'):
@@ -3072,7 +3111,7 @@ def get_notifications(
             for perm, emp in q.order_by(standard_order(models.EmpPermission.last_update_date, models.EmpPermission.creation_date)).limit(50).all():
                 if manager_id and emp:
                     perm_date_str = perm.date.strftime("%d-%b-%Y") if perm.date else ""
-                    include, _, _ro = should_show_for_manager(db, emp, manager_id, perm_date_str, perm_date_str)
+                    include, _, _ro = should_show_for_manager(db, emp, manager_id, perm_date_str, perm_date_str, _leave_cache)
                     if not include:
                         continue
                 emp_name = (emp.name if emp else None) or "Unknown"
@@ -3099,7 +3138,7 @@ def get_notifications(
             q = apply_manager_filter(q, models.EmpDet)
             for leave, emp in q.order_by(standard_order(models.EmpLeave.last_update_date, models.EmpLeave.creation_date)).limit(50).all():
                 if manager_id and emp:
-                    include, _, _ro = should_show_for_manager(db, emp, manager_id, leave.from_date, leave.to_date)
+                    include, _, _ro = should_show_for_manager(db, emp, manager_id, leave.from_date, leave.to_date, _leave_cache)
                     if not include:
                         continue
                 emp_name = (emp.name if emp else None) or "Unknown"
@@ -3347,12 +3386,13 @@ def get_all_permission_history(manager_id: Optional[str] = None, db: Session = D
         handle_db_error(e)
     
     results = []
+    _leave_cache = {}
 
     for perm, emp in all_perms:
         if manager_id:
             perm_date_str = perm.date.strftime("%d-%b-%Y") if perm.date else ""
             include, is_delegated, is_read_only = should_show_for_manager(
-                db, emp, manager_id, perm_date_str, perm_date_str)
+                db, emp, manager_id, perm_date_str, perm_date_str, _leave_cache)
             if not include:
                 continue
         else:
@@ -3852,13 +3892,14 @@ def get_pending_wfh(manager_id: Optional[str] = None, db: Session = Depends(get_
     except Exception as e:
         handle_db_error(e)
     results = []
+    _leave_cache = {}
     for wfh, emp in pending:
         if manager_id:
             dates = [d.strip() for d in (wfh.date or "").split(",") if d.strip()]
             wfh_from = dates[0] if dates else ""
             wfh_to = dates[-1] if dates else wfh_from
             include, is_delegated, is_read_only = should_show_for_manager(
-                db, emp, manager_id, wfh_from, wfh_to)
+                db, emp, manager_id, wfh_from, wfh_to, _leave_cache)
             if not include:
                 continue
         else:
@@ -3892,13 +3933,14 @@ def get_all_wfh_history(manager_id: Optional[str] = None, db: Session = Depends(
             )
         all_wfh = query.order_by(models.WFHDet.creation_date.desc()).all()
         results = []
+        _leave_cache = {}
         for wfh, emp in all_wfh:
             if manager_id and emp:
                 dates = [d.strip() for d in (wfh.date or "").split(",") if d.strip()]
                 wfh_from = dates[0] if dates else ""
                 wfh_to = dates[-1] if dates else wfh_from
                 include, is_delegated, is_read_only = should_show_for_manager(
-                    db, emp, manager_id, wfh_from, wfh_to)
+                    db, emp, manager_id, wfh_from, wfh_to, _leave_cache)
                 if not include:
                     continue
             else:
@@ -4491,27 +4533,14 @@ def update_permission_post(request: schemas.PermissionUpdateRequest, background_
     return {"message": "Permission request updated successfully"}
 
 
-@app.get("/dashboard/{emp_id}", response_model=schemas.DashboardResponse)
-def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
-    emp_id = emp_id.strip()
-    try:
-        user = db.query(models.EmpDet).filter(
-            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()).first()
-    except Exception as e:
-        handle_db_error(e)
-    if not user:
-        raise HTTPException(status_code=404, detail=f"User {emp_id} not found")
-    today = datetime.now()
-    domain_name = "Employee"
-    if user.dom_id:
-        try:
-            d_id = int(str(user.dom_id).strip())
-            domain = db.query(models.Domain).filter(models.Domain.dom_id == d_id).first()
-            if domain:
-                domain_name = domain.domain
-        except:
-            pass
-    all_emps = db.query(models.EmpDet).filter(
+_UPCOMING_EVENTS_CACHE = {"data": None, "computed_at": None}
+_UPCOMING_EVENTS_CACHE_TTL = timedelta(minutes=5)
+
+
+def _compute_upcoming_events(db: Session, today: datetime):
+    all_emps = db.query(
+        models.EmpDet.emp_id, models.EmpDet.name, models.EmpDet.dob, models.EmpDet.date_of_joining
+    ).filter(
         (models.EmpDet.end_date == None) |
         (models.EmpDet.end_date == "") |
         (func.lower(func.trim(models.EmpDet.end_date)) == "none") |
@@ -4568,6 +4597,41 @@ def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
     upcoming_events.sort(key=lambda x: x["raw_date"])
     for event in upcoming_events:
         del event["raw_date"]
+    return upcoming_events
+
+
+def _get_cached_upcoming_events(db: Session, today: datetime):
+    cached = _UPCOMING_EVENTS_CACHE
+    if cached["data"] is not None and cached["computed_at"] is not None and \
+            (today - cached["computed_at"]) < _UPCOMING_EVENTS_CACHE_TTL:
+        return cached["data"]
+    events = _compute_upcoming_events(db, today)
+    cached["data"] = events
+    cached["computed_at"] = today
+    return events
+
+
+@app.get("/dashboard/{emp_id}", response_model=schemas.DashboardResponse)
+def get_dashboard(emp_id: str, db: Session = Depends(get_db)):
+    emp_id = emp_id.strip()
+    try:
+        user = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()).first()
+    except Exception as e:
+        handle_db_error(e)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User {emp_id} not found")
+    today = datetime.now()
+    domain_name = "Employee"
+    if user.dom_id:
+        try:
+            d_id = int(str(user.dom_id).strip())
+            domain = db.query(models.Domain).filter(models.Domain.dom_id == d_id).first()
+            if domain:
+                domain_name = domain.domain
+        except:
+            pass
+    upcoming_events = _get_cached_upcoming_events(db, today)
 
     notifications = []
     is_admin = False
@@ -5862,18 +5926,24 @@ def get_team_attendance(requester_id: str, start_date: str, end_date: str, db: S
         if not employees:
             return {"message": "No employees found", "team_attendance": []}
             
+        emp_codes = [emp.emp_id for emp in employees]
+        all_reports = db.query(models.DailyAttendanceReport).filter(
+            models.DailyAttendanceReport.Employee_Code.in_(emp_codes),
+            models.DailyAttendanceReport.Date >= start_date,
+            models.DailyAttendanceReport.Date <= end_date
+        ).all()
+        reports_by_emp = {}
+        for r in all_reports:
+            reports_by_emp.setdefault(r.Employee_Code, []).append(r)
+
         team_attendance = []
         for emp in employees:
-            attendance_reports = db.query(models.DailyAttendanceReport).filter(
-                models.DailyAttendanceReport.Employee_Code == emp.emp_id,
-                models.DailyAttendanceReport.Date >= start_date,
-                models.DailyAttendanceReport.Date <= end_date
-            ).all()
-            
+            attendance_reports = reports_by_emp.get(emp.emp_id, [])
+
             present = len([r for r in attendance_reports if r.Status == "P"])
             absent = len([r for r in attendance_reports if r.Status == "A"])
             total_days = len(attendance_reports)
-            
+
             team_attendance.append({
                 "emp_id": emp.emp_id, 
                 "name": emp.name or "Unknown", 
@@ -7778,9 +7848,17 @@ def create_chillax_request(req: schemas.AruviChillaxCreate, db: Session = Depend
         last_updated_by=req.requested_by,
         last_update_date=now,
     )
-    db.add(new_rec)
-    db.commit()
-    db.refresh(new_rec)
+    try:
+        db.add(new_rec)
+        db.commit()
+        db.refresh(new_rec)
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Chillax insert error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to submit Chillax booking. Please try again."
+        )
 
     try:
         emp = resolve_requester_employee(db, req.requested_by)
