@@ -7626,6 +7626,7 @@ def update_announcement_endpoint(ann_id: int, request: schemas.AnnouncementCreat
         ann.priority = request.priority
         ann.status = computed_status
         ann.updated_at = ist_now
+        ann.last_edited_at = ist_now
 
         db.commit()
         db.refresh(ann)
@@ -7672,6 +7673,7 @@ def get_announcements_endpoint(db: Session = Depends(get_db)):
             s_date = ann.start_date.strftime("%d-%b-%y") if ann.start_date else None
             e_date = ann.end_date.strftime("%d-%b-%y") if ann.end_date else None
             c_at = ann.created_at.strftime("%Y-%m-%dT%H:%M:%S") if ann.created_at else None
+            e_at = ann.last_edited_at.strftime("%Y-%m-%dT%H:%M:%S") if ann.last_edited_at else None
 
             results.append(schemas.AnnouncementResponse(
                 id=ann.id,
@@ -7684,7 +7686,8 @@ def get_announcements_endpoint(db: Session = Depends(get_db)):
                 created_by=ann.created_by,
                 target_audience=ann.target_audience,
                 target_value=ann.target_value,
-                createdAt=c_at
+                createdAt=c_at,
+                lastEditedAt=e_at
             ))
 
         return results
@@ -7692,27 +7695,13 @@ def get_announcements_endpoint(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Failed to fetch announcements: {str(e)}")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# PLAY ZONE CONFIG
-# ═══════════════════════════════════════════════════════════════════════════════
-
 PLAYZONE_FACILITIES = ("Meeting Pod", "Rest Area")
-
-
-def _get_or_create_playzone_config(db: Session) -> models.AruviPlayzoneConfig:
-    config = db.query(models.AruviPlayzoneConfig).filter(models.AruviPlayzoneConfig.id == 1).first()
-    if not config:
-        config = models.AruviPlayzoneConfig(id=1, is_enabled=True, updated_at=datetime.now())
-        db.add(config)
-        db.commit()
-        db.refresh(config)
-    return config
 
 
 def _is_admin_or_management(db: Session, emp: Optional["models.EmpDet"]) -> bool:
     """Broad admin/management check (mirrors the login endpoint's is_global_admin
     computation: dom_id in [1,2,3,9] = Admin/Management/Executive/Project Management),
-    used to gate Play Zone approve/reject actions."""
+    used to gate Chillax approve/reject actions."""
     if not emp or not emp.dom_id:
         return False
     try:
@@ -7745,22 +7734,6 @@ def _has_chillax_update_privilege(db: Session, requester: Optional["models.EmpDe
         return False
 
 
-@app.get("/playzone/config", response_model=schemas.PlayzoneConfigResponse)
-def get_playzone_config(db: Session = Depends(get_db)):
-    return _get_or_create_playzone_config(db)
-
-
-@app.put("/playzone/config", response_model=schemas.PlayzoneConfigResponse)
-def update_playzone_config(req: schemas.PlayzoneConfigUpdate, db: Session = Depends(get_db)):
-    config = _get_or_create_playzone_config(db)
-    config.is_enabled = req.is_enabled
-    config.updated_by = req.updated_by
-    config.updated_at = datetime.now()
-    db.commit()
-    db.refresh(config)
-    return config
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # CHILLAX MODULE
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -7781,14 +7754,6 @@ def get_chillax_request(chillax_id: int, db: Session = Depends(get_db)):
 
 @app.post("/chillax", response_model=schemas.AruviChillaxResponse)
 def create_chillax_request(req: schemas.AruviChillaxCreate, db: Session = Depends(get_db)):
-    if req.request_type in PLAYZONE_FACILITIES:
-        config = _get_or_create_playzone_config(db)
-        if not config.is_enabled:
-            raise HTTPException(
-                status_code=403,
-                detail="Play Zone is currently disabled by the administrator."
-            )
-
     # Overlap check: new_start < existing_end AND new_end > existing_start
     # Only active bookings (not Withdrawn/Rejected) block new ones
     conflict = db.query(models.AruviChillax).filter(
