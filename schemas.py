@@ -565,21 +565,7 @@ class AnnouncementResponse(BaseModel):
     target_audience: Optional[str] = None
     target_value: Optional[str] = None
     createdAt: Optional[str] = None
-
-
-# ── AruviPlayzoneConfig (xxits_aruvi_playzone_config_t) ───────────────────────
-
-class PlayzoneConfigResponse(BaseModel):
-    model_config = {"from_attributes": True}
-
-    is_enabled: bool
-    updated_by: Optional[str] = None
-    updated_at: Optional[Any] = None
-
-
-class PlayzoneConfigUpdate(BaseModel):
-    is_enabled: bool
-    updated_by: Optional[str] = None
+    lastEditedAt: Optional[str] = None
 
 
 # ── AruviChillax (xxits_aruvi_chillax_t) ──────────────────────────────────────
