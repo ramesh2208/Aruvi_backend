@@ -7625,6 +7625,8 @@ def update_announcement_endpoint(ann_id: int, request: schemas.AnnouncementCreat
         ann.end_date = end_val
         ann.priority = request.priority
         ann.status = computed_status
+        ann.target_audience = request.target_audience or "all"
+        ann.target_value = request.target_value
         ann.updated_at = ist_now
         ann.last_edited_at = ist_now
 
@@ -7646,15 +7648,18 @@ def get_announcements_endpoint(db: Session = Depends(get_db)):
         ist_now = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=5, minutes=30)
         today = ist_now.date()
 
-        # Update status dynamically
+        # Update status dynamically. Skip rows a user has manually edited via PUT
+        # (last_edited_at set) so a manual status choice isn't silently reverted here.
         db.query(models.AruviAnnouncement).filter(
             models.AruviAnnouncement.status != "Deleted",
+            models.AruviAnnouncement.last_edited_at.is_(None),
             models.AruviAnnouncement.start_date <= today,
             models.AruviAnnouncement.end_date >= today
         ).update({"status": "Active", "updated_at": ist_now}, synchronize_session=False)
 
         db.query(models.AruviAnnouncement).filter(
             models.AruviAnnouncement.status != "Deleted",
+            models.AruviAnnouncement.last_edited_at.is_(None),
             or_(
                 models.AruviAnnouncement.start_date > today,
                 models.AruviAnnouncement.end_date < today
