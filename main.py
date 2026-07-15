@@ -7625,8 +7625,6 @@ def update_announcement_endpoint(ann_id: int, request: schemas.AnnouncementCreat
         ann.end_date = end_val
         ann.priority = request.priority
         ann.status = computed_status
-        ann.target_audience = request.target_audience or "all"
-        ann.target_value = request.target_value
         ann.updated_at = ist_now
         ann.last_edited_at = ist_now
 
