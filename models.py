@@ -757,14 +757,7 @@ class AruviAnnouncement(Base):
     status = Column(String(50), default="Active") # 'Active', 'Inactive', 'Deleted'
     created_at = Column(DateTime)
     updated_at = Column(DateTime)
-
-class AruviPlayzoneConfig(Base):
-    __tablename__ = "xxits_aruvi_playzone_config_t"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    is_enabled = Column(Boolean, default=True)
-    updated_by = Column(String(240))
-    updated_at = Column(DateTime)
+    last_edited_at = Column(DateTime, nullable=True)  # set only when a user edits via PUT, not by the auto status-flip
 
 class AruviChillax(Base):
     __tablename__ = "xxits_aruvi_chillax_t"
