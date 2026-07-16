@@ -7626,7 +7626,6 @@ def update_announcement_endpoint(ann_id: int, request: schemas.AnnouncementCreat
         ann.priority = request.priority
         ann.status = computed_status
         ann.updated_at = ist_now
-        ann.last_edited_at = ist_now
 
         db.commit()
         db.refresh(ann)
@@ -7646,29 +7645,30 @@ def get_announcements_endpoint(db: Session = Depends(get_db)):
         ist_now = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=5, minutes=30)
         today = ist_now.date()
 
-        # Update status dynamically. Skip rows a user has manually edited via PUT
-        # (last_edited_at set) so a manual status choice isn't silently reverted here.
+        not_deleted = or_(models.AruviAnnouncement.status.is_(None), models.AruviAnnouncement.status != "Deleted")
+
+        # Update status dynamically based on date range. Only `status` is touched here —
+        # `updated_at` must be left alone so it keeps reflecting the last real user edit
+        # (via POST/PUT), not this automatic recompute that runs on every GET.
         db.query(models.AruviAnnouncement).filter(
-            models.AruviAnnouncement.status != "Deleted",
-            models.AruviAnnouncement.last_edited_at.is_(None),
+            not_deleted,
             models.AruviAnnouncement.start_date <= today,
             models.AruviAnnouncement.end_date >= today
-        ).update({"status": "Active", "updated_at": ist_now}, synchronize_session=False)
+        ).update({"status": "Active"}, synchronize_session=False)
 
         db.query(models.AruviAnnouncement).filter(
-            models.AruviAnnouncement.status != "Deleted",
-            models.AruviAnnouncement.last_edited_at.is_(None),
+            not_deleted,
             or_(
                 models.AruviAnnouncement.start_date > today,
                 models.AruviAnnouncement.end_date < today
             )
-        ).update({"status": "Inactive", "updated_at": ist_now}, synchronize_session=False)
+        ).update({"status": "Inactive"}, synchronize_session=False)
 
         db.commit()
 
         # Query announcements
         announcements = db.query(models.AruviAnnouncement).filter(
-            models.AruviAnnouncement.status != "Deleted"
+            not_deleted
         ).order_by(models.AruviAnnouncement.id.desc()).all()
 
         results = []
@@ -7676,7 +7676,11 @@ def get_announcements_endpoint(db: Session = Depends(get_db)):
             s_date = ann.start_date.strftime("%d-%b-%y") if ann.start_date else None
             e_date = ann.end_date.strftime("%d-%b-%y") if ann.end_date else None
             c_at = ann.created_at.strftime("%Y-%m-%dT%H:%M:%S") if ann.created_at else None
-            e_at = ann.last_edited_at.strftime("%Y-%m-%dT%H:%M:%S") if ann.last_edited_at else None
+            last_edited = (
+                ann.updated_at.strftime("%Y-%m-%dT%H:%M:%S")
+                if ann.updated_at and ann.created_at and ann.updated_at != ann.created_at
+                else None
+            )
 
             results.append(schemas.AnnouncementResponse(
                 id=ann.id,
@@ -7690,7 +7694,7 @@ def get_announcements_endpoint(db: Session = Depends(get_db)):
                 target_audience=ann.target_audience,
                 target_value=ann.target_value,
                 createdAt=c_at,
-                lastEditedAt=e_at
+                lastEditedAt=last_edited
             ))
 
         return results
