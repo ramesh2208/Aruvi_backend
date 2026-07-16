@@ -757,7 +757,6 @@ class AruviAnnouncement(Base):
     status = Column(String(50), default="Active") # 'Active', 'Inactive', 'Deleted'
     created_at = Column(DateTime)
     updated_at = Column(DateTime)
-    last_edited_at = Column(DateTime, nullable=True)  # set only when a user edits via PUT, not by the auto status-flip
 
 class AruviChillax(Base):
     __tablename__ = "xxits_aruvi_chillax_t"
