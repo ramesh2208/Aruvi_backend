@@ -1,6 +1,7 @@
 from fastapi.openapi import constants
 from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, case
@@ -245,6 +246,9 @@ def handle_db_error(e: Exception):
 
 app = FastAPI()
 
+os.makedirs("uploads", exist_ok=True)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
 router = APIRouter()
 
 test_db_connection()
@@ -270,6 +274,10 @@ def run_migrations_with_retry(max_retries: int = 3, delay: int = 5):
                 try:
                     conn.execute(sqlalchemy.text("ALTER TABLE xxits_emp_det_t ADD COLUMN attribute7 VARCHAR(255)"))
                     print(" ✅ Migration: Added attribute7 to xxits_emp_det_t")
+                except: pass
+                try:
+                    conn.execute(sqlalchemy.text("ALTER TABLE xxits_aruvi_client_t ADD COLUMN client_type VARCHAR(50)"))
+                    print(" ✅ Migration: Added client_type to xxits_aruvi_client_t")
                 except: pass
             return True
         except Exception as e:
@@ -1214,7 +1222,7 @@ def get_employees(
     except Exception as e:
         handle_db_error(e)
 
-    dom_ids = {emp.dom_id for emp in employees if emp.dom_id}
+    dom_ids = {emp.dom_id for emp in employees if emp and emp.dom_id}
     domain_by_id = {}
     if dom_ids:
         for d in db.query(models.Domain).filter(models.Domain.dom_id.in_(dom_ids)).all():
@@ -1222,6 +1230,8 @@ def get_employees(
 
     emp_id_lookup = set()
     for emp in employees:
+        if not emp:
+            continue
         if emp.assign_manager:
             emp_id_lookup.add(emp.assign_manager)
         if emp.delegate_manager:
@@ -1394,23 +1404,165 @@ def get_attendance_logs(manager_id: Optional[str] = None, db: Session = Depends(
         })
     return results
 
+HALF_DAY_SESSION_WINDOWS = {
+    "1st half": ("09:30:00", "14:00:00"),
+    "2nd half": ("14:00:00", "18:30:00"),
+}
+
+# Minimum time an employee must already have logged that day (per CheckIn.Total_hours)
+# before they're allowed to apply Half-Day Leave against it.
+HALF_DAY_MIN_MINUTES = 4 * 60 + 30  # 4h 30m
+
+
+def _parse_total_hours_to_minutes(total_hours_str: Optional[str]) -> Optional[int]:
+    """Parses CheckIn.Total_hours (e.g. "8Hr 30Min") into total minutes, or None if unset/unparseable."""
+    if not total_hours_str or not total_hours_str.strip():
+        return None
+    try:
+        s = total_hours_str.strip()
+        hrs = 0
+        mins = 0
+        if 'Hr' in s:
+            hrs_part, rest = s.split('Hr', 1)
+            hrs = int(hrs_part.strip() or 0)
+            if 'Min' in rest:
+                mins_part = rest.split('Min', 1)[0].strip()
+                mins = int(mins_part or 0)
+        else:
+            return None
+        return hrs * 60 + mins
+    except (ValueError, TypeError):
+        return None
+
+
+def get_approved_half_day_session(db: Session, emp_id: str, on_date):
+    leaves = db.query(models.EmpLeave).filter(
+        func.lower(func.trim(models.EmpLeave.emp_id)) == emp_id.lower(),
+        func.lower(func.trim(models.EmpLeave.status)) == "approved"
+    ).all()
+    for leave in leaves:
+        try:
+            if float(leave.days or 0) != 0.5:
+                continue
+        except (TypeError, ValueError):
+            continue
+        l_from = parse_date(leave.from_date)
+        l_to = parse_date(leave.to_date) if leave.to_date else l_from
+        if not l_from or not l_to:
+            continue
+        if l_from.date() <= on_date <= l_to.date():
+            return (leave.half_day_session or "").strip()
+    return None
+
+
+def detect_half_day_session(checkin_record):
+    """Infer which half of the day a 0.5-day leave should cover, based on the
+    employee's actual In Time / Out Time recorded for that date."""
+    if not checkin_record:
+        return None
+    in_t = parse_time_str((checkin_record.in_time or "").strip())
+    out_t = parse_time_str((checkin_record.out_time or "").strip())
+    if not in_t:
+        return None
+    nine_am = parse_time_str("09:00:00")
+    ten_am = parse_time_str("10:00:00")
+    two_pm = parse_time_str("14:00:00")
+    if nine_am <= in_t < ten_am and out_t and out_t > two_pm:
+        return "2nd Half"
+    if in_t >= two_pm:
+        return "1st Half"
+    return None
+
+
+def check_half_day_restriction(db: Session, emp_id: str, on_date, time_str: str, action: str):
+    session = get_approved_half_day_session(db, emp_id, on_date)
+    if not session:
+        return
+    window = HALF_DAY_SESSION_WINDOWS.get(session.strip().lower())
+    if not window:
+        return
+    restricted_start = parse_time_str(window[0])
+    restricted_end = parse_time_str(window[1])
+    t = parse_time_str(time_str)
+    if not t or not restricted_start or not restricted_end:
+        return
+    if restricted_start <= t <= restricted_end:
+        raise HTTPException(
+            status_code=400,
+            detail=f"You have applied for {session} Day Leave on this date. {action} is not allowed between "
+                   f"{restricted_start.strftime('%I:%M %p')} and {restricted_end.strftime('%I:%M %p')}."
+        )
+
+
+@app.get("/half-day-session-check/{emp_id}")
+def half_day_session_check(emp_id: str, date: str, db: Session = Depends(get_db)):
+    emp_id = emp_id.strip()
+    target_date = parse_date(date)
+    if not target_date:
+        raise HTTPException(status_code=400, detail="Invalid date format")
+
+    checkin = db.query(models.CheckIn).filter(
+        func.lower(func.trim(models.CheckIn.emp_id)) == emp_id.lower(),
+        models.CheckIn.t_date == target_date.date()
+    ).first()
+
+    if not checkin:
+        return {"has_checkin": False, "in_time": None, "out_time": None, "auto_session": None,
+                "total_hours": None, "eligible_for_half_day": False}
+
+    auto_session = detect_half_day_session(checkin)
+    worked_minutes = _parse_total_hours_to_minutes(checkin.Total_hours)
+    hours_eligible = worked_minutes is not None and worked_minutes >= HALF_DAY_MIN_MINUTES
+    # Matches /apply-leave: eligible if the in/out pattern itself proves a half was
+    # missed (e.g. checked in after 2:30 PM), OR enough hours are already logged.
+    return {
+        "has_checkin": True,
+        "in_time": checkin.in_time,
+        "out_time": checkin.out_time,
+        "auto_session": auto_session,
+        "total_hours": checkin.Total_hours,
+        "eligible_for_half_day": bool(auto_session) or hours_eligible
+    }
+
+
 @app.post("/check-in")
 def check_in(request: schemas.CheckInRequest, db: Session = Depends(get_db)):
     emp_id = request.emp_id.strip()
     now = datetime.now()
     today_date = now.date()
     try:
+        # ── Block check-in if the employee has an approved leave covering today ──
+        approved_leaves = db.query(models.EmpLeave).filter(
+            func.lower(func.trim(models.EmpLeave.emp_id)) == emp_id.lower(),
+            func.lower(func.trim(models.EmpLeave.status)) == "approved"
+        ).all()
+        for al in approved_leaves:
+            al_from = parse_date(al.from_date)
+            al_to = parse_date(al.to_date) if al.to_date else al_from
+            if not al_from:
+                continue
+            al_from_d = al_from.date()
+            al_to_d = al_to.date() if al_to else al_from_d
+            if al_from_d <= today_date <= al_to_d:
+                leave_type_display = (al.leave_type or "Leave").strip()
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Check-in is not allowed. You have an approved {leave_type_display} on {today_date.strftime('%d-%b-%Y')}. "
+                           f"Please contact your manager if this is incorrect."
+                )
+
         existing = db.query(models.CheckIn).filter(
             models.CheckIn.emp_id == emp_id,
             models.CheckIn.t_date == today_date
         ).first()
         if existing:
             raise HTTPException(status_code=400, detail="Already checked in for today")
-        
+
         in_time_str = request.in_time.strip() if request.in_time else now.strftime("%H:%M:%S")
+        check_half_day_restriction(db, emp_id, today_date, in_time_str, "Check-in")
         month_name = now.strftime("%B")
         day_name = now.strftime("%A")
-        
+
         new_checkin = models.CheckIn(
             emp_id=emp_id,
             in_time=in_time_str,
@@ -1419,7 +1571,7 @@ def check_in(request: schemas.CheckInRequest, db: Session = Depends(get_db)):
             t_date=today_date,
             t_day=day_name,
             month=month_name,
-            status="Present",
+            status="P",
             created_by=emp_id,
             creation_date=now,
             last_updated_by=emp_id,
@@ -1427,7 +1579,7 @@ def check_in(request: schemas.CheckInRequest, db: Session = Depends(get_db)):
         )
         db.add(new_checkin)
         db.commit()
-        return {"message": "Checked in successfully", "status": "Present", "in_time": in_time_str}
+        return {"message": "Checked in successfully", "status": "P", "in_time": in_time_str}
     except HTTPException:
         raise
     except Exception as e:
@@ -1451,6 +1603,8 @@ def check_out(request: schemas.CheckOutRequest, db: Session = Depends(get_db)):
 
     if not checkin_record:
         raise HTTPException(status_code=404, detail="No check-in found for today")
+
+    check_half_day_restriction(db, emp_id, today_date, (request.out_time or "").strip(), "Check-out")
 
     try:
         raw_in_time = (checkin_record.in_time or "").strip()
@@ -1600,6 +1754,28 @@ def check_status(emp_id: str, db: Session = Depends(get_db)):
     emp_id = emp_id.strip()
     today_date = datetime.now().date()
     try:
+        # Check if employee has an approved leave covering today
+        leave_blocked = False
+        leave_type_blocked = None
+        try:
+            approved_leaves = db.query(models.EmpLeave).filter(
+                func.lower(func.trim(models.EmpLeave.emp_id)) == emp_id.lower(),
+                func.lower(func.trim(models.EmpLeave.status)) == "approved"
+            ).all()
+            for al in approved_leaves:
+                al_from = parse_date(al.from_date)
+                al_to = parse_date(al.to_date) if al.to_date else al_from
+                if not al_from:
+                    continue
+                al_from_d = al_from.date()
+                al_to_d = al_to.date() if al_to else al_from_d
+                if al_from_d <= today_date <= al_to_d:
+                    leave_blocked = True
+                    leave_type_blocked = (al.leave_type or "Leave").strip()
+                    break
+        except Exception as leave_err:
+            print(f"⚠️ Leave-block check error for {emp_id}: {leave_err}")
+
         checkin_record = db.query(models.CheckIn).filter(
             func.lower(func.trim(models.CheckIn.emp_id)) == emp_id.lower(),
             models.CheckIn.t_date == today_date
@@ -1611,7 +1787,9 @@ def check_status(emp_id: str, db: Session = Depends(get_db)):
                 "in_time": checkin_record.in_time,
                 "out_time": checkin_record.out_time,
                 "total_hours": checkin_record.Total_hours or "0Hr 0Min",
-                "status": checkin_record.status
+                "status": checkin_record.status,
+                "leave_blocked": leave_blocked,
+                "leave_type_blocked": leave_type_blocked
             }
         else:
             return {
@@ -1619,7 +1797,9 @@ def check_status(emp_id: str, db: Session = Depends(get_db)):
                 "in_time": None,
                 "out_time": None,
                 "total_hours": "0Hr 0Min",
-                "status": None
+                "status": None,
+                "leave_blocked": leave_blocked,
+                "leave_type_blocked": leave_type_blocked
             }
     except Exception as e:
         print(f" ERROR checking status for {emp_id}: {str(e)}")
@@ -1632,6 +1812,10 @@ def get_leave_stats(emp_id: str, db: Session = Depends(get_db)):
     try:
         leave_rows = db.query(models.LeaveDet).filter(
             func.lower(func.trim(models.LeaveDet.emp_id)) == emp_id.lower()).all()
+        history_rows = db.query(models.EmpLeave).filter(
+            func.lower(func.trim(models.EmpLeave.emp_id)) == emp_id.lower(),
+            models.EmpLeave.status.notin_(["Rejected", "Cancelled"])
+        ).all()
     except Exception as e:
         handle_db_error(e)
     stats: dict = {
@@ -1663,15 +1847,55 @@ def get_leave_stats(emp_id: str, db: Session = Depends(get_db)):
     stats["marriageLeave"] = {"total": wl_total, "availed": wl_availed}
     stats["total"] = cl_total + sl_total + mp_total + wl_total
     stats["availed"] = cl_availed + sl_availed + mp_availed + wl_availed
+
+    # Override availed with dynamic computation from actual leave history
+    # (non-rejected, non-withdrawn) so balances always reflect real usage.
+    try:
+        dyn_cl = dyn_sl = dyn_mp = dyn_wl = 0.0
+        for hr in history_rows:
+            lt = (hr.leave_type or "").strip().lower()
+            d = float(hr.days or 0)
+            if d <= 0:
+                continue
+            if 'casual' in lt or lt == 'cl':
+                dyn_cl += d
+            elif 'sick' in lt or lt == 'sl':
+                dyn_sl += d
+            elif 'maternity' in lt or 'paternity' in lt or lt in ['ml', 'pl']:
+                dyn_mp += d
+            elif 'wedding' in lt or 'marriage' in lt:
+                dyn_wl += d
+        stats["casualLeave"]["availed"] = dyn_cl
+        stats["sickLeave"]["availed"] = dyn_sl
+        stats["maternityPaternity"]["availed"] = dyn_mp
+        stats["marriageLeave"]["availed"] = dyn_wl
+        stats["availed"] = dyn_cl + dyn_sl + dyn_mp + dyn_wl
+    except Exception as hist_err:
+        print(f"⚠️ get_leave_stats: dynamic availed failed, using DB value: {hist_err}")
+
     leave_types = []
     for row in leave_rows:
+        l_type_key = (row.leave_type or "").lower()
         try:
             t_val = float(row.total_leave or 0)
-            a_val = float(row.availed_leave or 0)
         except:
-            t_val, a_val = 0.0, 0.0
+            t_val = 0.0
+        # Use the dynamically-computed availed for the matching bucket
+        if 'casual' in l_type_key or l_type_key == 'cl':
+            dyn_a = stats["casualLeave"]["availed"]
+        elif 'sick' in l_type_key or l_type_key == 'sl':
+            dyn_a = stats["sickLeave"]["availed"]
+        elif 'maternity' in l_type_key or 'paternity' in l_type_key or l_type_key in ['ml', 'pl']:
+            dyn_a = stats["maternityPaternity"]["availed"]
+        elif 'wedding' in l_type_key or 'marriage' in l_type_key:
+            dyn_a = stats["marriageLeave"]["availed"]
+        else:
+            try:
+                dyn_a = float(row.availed_leave or 0)
+            except:
+                dyn_a = 0.0
         if row.leave_type:
-            leave_types.append({"name": row.leave_type, "total": t_val, "availed": a_val})
+            leave_types.append({"name": row.leave_type, "total": t_val, "availed": dyn_a})
     return {**stats, "has_record": len(leave_rows) > 0, "leaveTypes": leave_types}
 
 
@@ -1736,6 +1960,14 @@ def update_wfh(wfh_id: int, request: schemas.WFHUpdateRequest, background_tasks:
                 raise HTTPException(status_code=400, detail=f"WFH already applied for {sd}.")
 
     wfh_emp_id = (wfh.emp_id or "").strip()
+
+    # Snapshot the as-originally-applied values before they're overwritten below, so the
+    # update notification can also show "Applied Request Details" (in the same table
+    # format as the Apply email) alongside "Updated Request Details".
+    applied_dates_str = wfh.date
+    applied_days = wfh.days
+    applied_reason = wfh.reason
+
     wfh.date = dates_str
     wfh.to_date = date_list[-1] if date_list else None
     wfh.days = fmt_days(request.days) if request.days is not None else str(len(date_list))
@@ -1789,6 +2021,29 @@ def update_wfh(wfh_id: int, request: schemas.WFHUpdateRequest, background_tasks:
                         </tbody>
                     </table>
                     <br>
+                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                    <p style="color: #00008B; font-size: 14px;"><strong>Applied Request Details:</strong></p>
+                    <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                        <thead>
+                            <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Name</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Date(s)</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Days</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="background-color: transparent;">
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{user.name}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{applied_dates_str}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{fmt_days(applied_days)} {"Day" if float(applied_days or 0) == 1.0 else "Days"}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{applied_reason}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                 
                     """
                     body = get_email_template(appr["name"], "Work From Home Request Updated", content, user.name)
                     background_tasks.add_task(send_email_notification, appr["email"], subject, body)
@@ -1867,6 +2122,29 @@ def withdraw_wfh(wfh_id: int, background_tasks: BackgroundTasks, db: Session = D
                         </tbody>
                     </table>
                     <br>
+                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                    <p style="color: #00008B; font-size: 14px;"><strong>Applied Request Details:</strong></p>
+                    <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                        <thead>
+                            <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Name</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Date(s)</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Days</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="background-color: transparent;">
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{user.name}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{wfh_dates}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{wfh_days_fmt} {wfh_day_label}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{wfh_reason}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <br>
                     """
                     body = get_email_template(appr["name"], "Work From Home Request Withdrawn", content, user.name)
                     background_tasks.add_task(send_email_notification, appr["email"], subject, body)
@@ -1888,6 +2166,7 @@ def get_leave_history(emp_id: str, db: Session = Depends(get_db)):
     return [
         {"l_id": row.l_id, "leaveType": row.leave_type, "leave_type": row.leave_type,
         "from_date": row.from_date, "to_date": row.to_date, "days": row.days,
+        "lop_days": row.lop_days,
         "reason": row.reason, "status": row.status, "remarks": row.remarks, "revision": row.revision}
         for row in history
     ]
@@ -2047,43 +2326,61 @@ def _get_approvers_legacy(db: Session, user: models.EmpDet):
     return approvers
 
 
+def _add_approver_entry(db: Session, approvers: list, approver_ids: set, label: str, reference: Optional[str]):
+    """Resolves `reference` (an emp_id, name, or raw email) to an approver entry and
+    appends it to `approvers` if not already present. Shared by get_approvers and
+    get_leave_approvers so both resolve managers identically."""
+    ref = (reference or "").strip()
+    if not ref:
+        return
+
+    approver = find_employee_reference(db, ref)
+    if approver:
+        email = get_employee_email(approver)
+        print(f"   {label} found: {approver.name} ({approver.emp_id}) | email={email}")
+        if not email:
+            print(f"   {label} '{ref}' has no email in p_mail/mail_id. Mail cannot be sent.")
+            return
+        if approver.emp_id not in approver_ids:
+            approvers.append({"email": email, "name": approver.name, "token": getattr(approver, "attribute7", None)})
+            approver_ids.add(approver.emp_id)
+        return
+
+    if looks_like_email(ref):
+        print(f"   {label} is already an email address: {ref}")
+        email_key = ref.lower()
+        if email_key not in approver_ids:
+            approvers.append({"email": ref, "name": label, "token": None})
+            approver_ids.add(email_key)
+        return
+
+    print(f"   {label} emp_id='{ref}' NOT found in EmpDet table!")
+
+
 def get_approvers(db: Session, user: models.EmpDet):
     approvers = []
     approver_ids = set()
 
     print(f"\n[get_approvers] emp_id={user.emp_id}, assign_manager={user.assign_manager}, project_manager={user.project_manager}")
 
-    def add_approver(label: str, reference: Optional[str]):
-        ref = (reference or "").strip()
-        if not ref:
-            return
-
-        approver = find_employee_reference(db, ref)
-        if approver:
-            email = get_employee_email(approver)
-            print(f"   {label} found: {approver.name} ({approver.emp_id}) | email={email}")
-            if not email:
-                print(f"   {label} '{ref}' has no email in p_mail/mail_id. Mail cannot be sent.")
-                return
-            if approver.emp_id not in approver_ids:
-                approvers.append({"email": email, "name": approver.name, "token": getattr(approver, "attribute7", None)})
-                approver_ids.add(approver.emp_id)
-            return
-
-        if looks_like_email(ref):
-            print(f"   {label} is already an email address: {ref}")
-            email_key = ref.lower()
-            if email_key not in approver_ids:
-                approvers.append({"email": ref, "name": label, "token": None})
-                approver_ids.add(email_key)
-            return
-
-        print(f"   {label} emp_id='{ref}' NOT found in EmpDet table!")
-
-    add_approver("Assign Manager", user.assign_manager)
-    add_approver("Project Manager", user.project_manager)
+    _add_approver_entry(db, approvers, approver_ids, "Assign Manager", user.assign_manager)
+    _add_approver_entry(db, approvers, approver_ids, "Project Manager", user.project_manager)
 
     print(f"   Total approvers with email: {sum(1 for a in approvers if a['email'])}/{len(approvers)}")
+    return approvers
+
+
+def get_leave_approvers(db: Session, user: models.EmpDet):
+    """Leave notifications (apply/withdraw/update) go to the Project Manager only —
+    unlike WFH/Permission/OT notifications, which still go to the Assign Manager too."""
+    approvers = []
+    approver_ids = set()
+
+    print(f"\n[get_leave_approvers] emp_id={user.emp_id}, project_manager={user.project_manager}")
+
+    _add_approver_entry(db, approvers, approver_ids, "Project Manager", user.project_manager)
+
+    print(f"   Leave approvers with email: {sum(1 for a in approvers if a['email'])}/{len(approvers)}")
     return approvers
 
 
@@ -2169,7 +2466,33 @@ def fmt_days(d):
         return str(d)
 
 
-def get_email_template(receiver_name, title, content_html, sender_name="Aruvi Team"):
+def _signature_block_html(sender_name: str) -> str:
+    """The "Thanks & Regards" sign-off block shared by get_email_template and the
+    quoted-original-request block appended after it."""
+    return f"""
+        <p style="margin-top: 30px; margin-bottom: 5px;">Thanks &amp; Regards,</p>
+        <strong style="color: #00008B;">{sender_name}</strong><br>
+        Ilan Tech Solutions Pvt. Ltd.,
+        <p style="margin-top: 5px; font-size: 14px; color: #00008B;">
+            Website: <a href="http://www.ilantechsolutions.com" style="color: #0ea5e9;">www.ilantechsolutions.com</a>
+        </p>
+    """
+
+
+def get_email_template(receiver_name, title, content_html, sender_name="Aruvi Team", extra_content_html=None):
+    """extra_content_html, when given, is rendered after the main signature — used to
+    quote the original Apply-request email content below an Approve/Reject notification,
+    closed with its own repeated "Thanks & Regards" sign-off (matching the requested
+    email-thread-style layout: new message, then the original request quoted below)."""
+    quoted_block = (
+        f"""
+        <hr style="border: 0; border-top: 1px dashed #94A3B8; margin: 25px 0;">
+        <p style="color: #00008B; font-size: 14px;"><strong>Original Request Details:</strong></p>
+        {extra_content_html}
+        {_signature_block_html(sender_name)}
+        """
+        if extra_content_html else ""
+    )
     return f"""
     <html>
     <head>
@@ -2182,12 +2505,8 @@ def get_email_template(receiver_name, title, content_html, sender_name="Aruvi Te
     <body style="font-family: 'Times New Roman', Times, serif; color: #00008B; padding: 15px;">
         <p style="margin-top: 0;"><strong>Dear {receiver_name},</strong></p>
         <div>{content_html}</div>
-        <p style="margin-top: 40px; margin-bottom: 5px;">Thanks & Regards,</p>
-        <strong style="color: #00008B;">{sender_name}</strong><br>
-        Ilan Tech Solutions Pvt. Ltd.,
-        <p style="margin-top: 5px; font-size: 14px; color: #00008B;">
-            Website: <a href="http://www.ilantechsolutions.com" style="color: #0ea5e9;">www.ilantechsolutions.com</a>
-        </p>
+        {_signature_block_html(sender_name)}
+        {quoted_block}
     </body>
     </html>
     """
@@ -2205,6 +2524,7 @@ async def apply_leave(
         status: str = Form(...),
         is_half_day: Optional[str] = Form(None),
         half_day_date: Optional[str] = Form(None),
+        half_day_session: Optional[str] = Form(None),
         attachments: Optional[List[UploadFile]] = File(None),
         db: Session = Depends(get_db)
 ):
@@ -2220,8 +2540,9 @@ async def apply_leave(
     if not user:
         raise HTTPException(status_code=404, detail=f"Employee with ID {emp_id} not found in the system.")
 
-    if half_day_date and days % 1 != 0:
-        reason += f" [Half Day Date: {half_day_date}]"
+    # Note: the "(Half day on ...)" tag is already appended to `reason` by the mobile
+    # app before this request is sent — don't append a second, differently-worded tag
+    # here, or the Reason shown in notification emails ends up duplicated/garbled.
 
     emp_name = user.name if user else 'Unknown'
     normalized_leave_type = (leave_type or "").strip().lower()
@@ -2252,12 +2573,57 @@ async def apply_leave(
     try:
         req_from = parse_date(from_date)
         req_to = parse_date(to_date)
+        print(f"DEBUG: apply_leave date range: from_date={from_date!r} -> {req_from}, to_date={to_date!r} -> {req_to}")
         if not req_from or not req_to:
+            print(f"DEBUG: apply_leave rejected - invalid date format")
             raise HTTPException(status_code=400, detail="Invalid From/To date format")
         if req_to < req_from:
+            print(f"DEBUG: apply_leave rejected - to_date before from_date")
             raise HTTPException(status_code=400, detail="To date must be on or after from date")
         if requested_days <= 0:
+            print(f"DEBUG: apply_leave rejected - requested_days={requested_days} <= 0")
             raise HTTPException(status_code=400, detail="Invalid leave days")
+
+        checkin_conflict = db.query(models.CheckIn).filter(
+            func.lower(func.trim(models.CheckIn.emp_id)) == emp_id.lower(),
+            models.CheckIn.t_date >= req_from,
+            models.CheckIn.t_date <= req_to,
+            models.CheckIn.in_time.isnot(None)
+        ).first()
+
+        is_half_day_request = abs(requested_days - 0.5) < 0.001
+        auto_detected_session = None
+        if checkin_conflict and is_half_day_request:
+            # Two independent ways to qualify for Half-Day Leave against a date already
+            # checked in for:
+            #  1. The in/out time pattern itself clearly proves a half was missed — e.g.
+            #     checked in after 2:30 PM (so the 1st Half was missed) — even if they
+            #     haven't checked out yet and Total_hours isn't computed at all.
+            #  2. Total_hours already logged for the day is 4h30m or more (a completed/
+            #     partial day that's long enough to justify the other half being leave).
+            auto_detected_session = detect_half_day_session(checkin_conflict)
+            worked_minutes = _parse_total_hours_to_minutes(checkin_conflict.Total_hours)
+            hours_eligible = worked_minutes is not None and worked_minutes >= HALF_DAY_MIN_MINUTES
+
+            if not auto_detected_session and not hours_eligible:
+                print(f"DEBUG: apply_leave rejected - not half-day eligible (Total_hours={checkin_conflict.Total_hours!r}) on {checkin_conflict.t_date}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Half-Day Leave is not available for {checkin_conflict.t_date.strftime('%d-%b-%Y')}. "
+                        f"It requires either Total Hours checked in of 4 hours 30 minutes or more, or a check-in/out "
+                        f"time that clearly falls within a single half of the day."
+                    )
+                )
+            if auto_detected_session:
+                half_day_session = auto_detected_session
+
+        if checkin_conflict and not is_half_day_request:
+            print(f"DEBUG: apply_leave rejected - checkin conflict on {checkin_conflict.t_date}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"You have already checked in on {checkin_conflict.t_date.strftime('%d-%b-%Y')}. Leave cannot be applied for a date you have already checked in."
+            )
 
         existing_leaves = db.query(models.EmpLeave).filter(
             func.lower(func.trim(models.EmpLeave.emp_id)) == emp_id.lower(),
@@ -2270,10 +2636,43 @@ async def apply_leave(
             if not row_from or not row_to: continue
             if (req_from <= row_to) and (req_to >= row_from):
                 existing_type = row.leave_type or "Leave Request"
+                st_label = (row.status or "Pending").strip().capitalize()
+                print(f"DEBUG: apply_leave rejected - overlaps existing {existing_type} ({row.from_date} to {row.to_date})")
                 raise HTTPException(
                     status_code=400,
-                    detail=f"You have already applied for {existing_type} on these dates ({row.from_date} to {row.to_date}). Please check your leave history."
+                    detail=f"Leave cannot be applied on these dates ({row.from_date} to {row.to_date}) because you have a {st_label} {existing_type}."
                 )
+
+        # ── Check WFH overlap (Pending or Approved) ─────────────────────────
+        existing_wfh = db.query(models.WFHDet).filter(
+            func.lower(func.trim(models.WFHDet.emp_id)) == emp_id.lower(),
+            func.lower(func.trim(models.WFHDet.status)).in_(["pending", "approved"])
+        ).all()
+        for w in existing_wfh:
+            stored_parts = [p.strip() for p in (w.date or "").split(',') if p.strip()]
+            for sd in stored_parts:
+                sd_dt = parse_date(sd)
+                if sd_dt and req_from <= sd_dt <= req_to:
+                    st_label = (w.status or "Pending").strip().capitalize()
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Leave cannot be applied for {sd_dt.strftime('%d-%b-%Y')} because you have a {st_label} Work From Home (WFH) on that date."
+                    )
+
+        # ── Check Permission overlap (Pending or Approved) ───────────────────
+        existing_permissions = db.query(models.EmpPermission).filter(
+            func.lower(func.trim(models.EmpPermission.emp_id)) == emp_id.lower(),
+            func.lower(func.trim(models.EmpPermission.status)).in_(["pending", "approved"])
+        ).all()
+        for perm in existing_permissions:
+            if perm.date:
+                perm_dt = datetime.combine(perm.date, datetime.min.time())
+                if req_from <= perm_dt <= req_to:
+                    st_label = (perm.status or "Pending").strip().capitalize()
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Leave cannot be applied for {perm.date.strftime('%d-%b-%Y')} because you have a {st_label} Permission on that date."
+                    )
 
         l_type_lower = leave_type.lower()
         balance_row = None
@@ -2281,13 +2680,25 @@ async def apply_leave(
             search_key = 'casual'
         elif 'sick' in l_type_lower or 'sl' == l_type_lower:
             search_key = 'sick'
-        elif 'maternity' in l_type_lower or 'paternity' in l_type_lower or l_type_lower in ['ml', 'pl']:
+        elif 'maternity' in l_type_lower or l_type_lower == 'ml':
             balance_row = db.query(models.LeaveDet).filter(
                 func.lower(func.trim(models.LeaveDet.emp_id)) == emp_id.strip().lower(),
                 or_(
                     func.lower(func.trim(models.LeaveDet.leave_type)).contains('maternity'),
+                    func.lower(func.trim(models.LeaveDet.leave_type)) == 'ml'
+                )
+            ).first()
+            search_key = None
+        elif 'paternity' in l_type_lower or l_type_lower == 'pl':
+            # Paternity Leave shares the same combined maternity/paternity balance row,
+            # which is stored as "Maternity Leave" in xxits_leave_det_t.
+            balance_row = db.query(models.LeaveDet).filter(
+                func.lower(func.trim(models.LeaveDet.emp_id)) == emp_id.strip().lower(),
+                or_(
                     func.lower(func.trim(models.LeaveDet.leave_type)).contains('paternity'),
-                    func.lower(func.trim(models.LeaveDet.leave_type)).in_(['ml', 'pl'])
+                    func.lower(func.trim(models.LeaveDet.leave_type)).contains('maternity'),
+                    func.lower(func.trim(models.LeaveDet.leave_type)) == 'pl',
+                    func.lower(func.trim(models.LeaveDet.leave_type)) == 'ml'
                 )
             ).first()
             search_key = None
@@ -2301,6 +2712,25 @@ async def apply_leave(
                 func.lower(func.trim(models.LeaveDet.emp_id)) == emp_id.strip().lower(),
                 func.lower(func.trim(models.LeaveDet.leave_type)).contains(search_key)
             ).first()
+
+        if not balance_row:
+            default_total = "3.0" if ('paternity' in l_type_lower or l_type_lower == 'pl') else ("12.0" if ('casual' in l_type_lower or l_type_lower == 'cl') else "5.0")
+            balance_row = models.LeaveDet(
+                emp_id=emp_id.strip(),
+                leave_type=leave_type.strip(),
+                description=leave_type.strip(),
+                total_leave=default_total,
+                available_leave=float(default_total),
+                availed_leave=0.0,
+                revision="0",
+                created_by=emp_id.strip(),
+                creation_date=datetime.now(),
+                last_updated_by=emp_id.strip(),
+                last_update_date=datetime.now()
+            )
+            db.add(balance_row)
+            db.flush()
+            print(f"✅ Auto-created missing LeaveDet row for '{leave_type}' (emp_id={emp_id.strip()})")
 
         print(f"DEBUG: balance_row found? {'Yes' if balance_row else 'No'} key={search_key}")
 
@@ -2344,7 +2774,44 @@ async def apply_leave(
                 lop_days_val = policy_lop
 
         if balance_row:
-            avail = float(balance_row.available_leave or 0)
+            # Compute actual availed from non-rejected leave history (same leave type bucket)
+            # to avoid relying on stale availed_leave column in LeaveDet.
+            try:
+                hist_leaves = db.query(models.EmpLeave).filter(
+                    func.lower(func.trim(models.EmpLeave.emp_id)) == emp_id.lower(),
+                    func.lower(func.trim(models.EmpLeave.status)).notin_(["rejected", "withdrawn", "cancelled"])
+                ).all()
+                dyn_availed = 0.0
+                for hl in hist_leaves:
+                    hl_lt = (hl.leave_type or "").strip().lower()
+                    hl_d = float(hl.days or 0)
+                    if hl_d <= 0:
+                        continue
+                    l_type_l = l_type_lower  # current leave type being applied
+                    # Match same bucket: casual, sick, maternity/paternity, wedding/marriage
+                    if ('casual' in l_type_l or l_type_l == 'cl') and ('casual' in hl_lt or hl_lt == 'cl'):
+                        dyn_availed += hl_d
+                    elif ('sick' in l_type_l or l_type_l == 'sl') and ('sick' in hl_lt or hl_lt == 'sl'):
+                        dyn_availed += hl_d
+                    elif ('maternity' in l_type_l or 'paternity' in l_type_l or l_type_l in ['ml', 'pl']) and \
+                         ('maternity' in hl_lt or 'paternity' in hl_lt or hl_lt in ['ml', 'pl']):
+                        dyn_availed += hl_d
+                    elif ('wedding' in l_type_l or 'marriage' in l_type_l) and \
+                         ('wedding' in hl_lt or 'marriage' in hl_lt):
+                        dyn_availed += hl_d
+                total_cap = float(balance_row.total_leave or 0)
+                l_type_l = l_type_lower
+                if 'paternity' in l_type_l or l_type_l == 'pl':
+                    total_cap = min(total_cap, 3.0) if total_cap > 0 else 3.0
+                avail = max(0.0, total_cap - dyn_availed)
+                print(f"DEBUG: dynamic availed={dyn_availed}, total_cap={total_cap}, avail={avail}")
+            except Exception as dyn_err:
+                print(f"⚠️ Dynamic availed compute failed, falling back to DB: {dyn_err}")
+                total_cap = float(balance_row.total_leave or 0)
+                if 'paternity' in l_type_lower or l_type_lower == 'pl':
+                    total_cap = min(total_cap, 3.0) if total_cap > 0 else 3.0
+                avail = max(0.0, total_cap - float(balance_row.availed_leave or 0))
+
             print(f"DEBUG: checking balance: req_deduct={cl_days_to_deduct}, avail={avail}")
             if cl_days_to_deduct > avail:
                 extra_lop = cl_days_to_deduct - avail
@@ -2360,6 +2827,8 @@ async def apply_leave(
         cl_days_to_deduct = float(Decimal(str(cl_days_to_deduct)).quantize(_twodp, rounding=ROUND_HALF_UP))
         lop_days_val = float(Decimal(str(lop_days_val)).quantize(_twodp, rounding=ROUND_HALF_UP))
 
+        print(f"DEBUG: Final → cl_days={cl_days_to_deduct}, lop_days={lop_days_val}")
+
         det_id = balance_row.l_det_id if balance_row else None
 
         new_leave = models.EmpLeave(
@@ -2372,36 +2841,38 @@ async def apply_leave(
             lop_days=fmt_days(lop_days_val), remarks="", approved_by="",
             reporting_manager=(user.assign_manager.strip() if user.assign_manager else "") if user else "",
             approver=(user.project_manager.strip() if user.project_manager else "") if user else "",
+            half_date=half_day_date, half_day_session=half_day_session,
             revision="0", attribute_category=None, attribute1=None,
             attribute2="", attribute3="", attribute4="", attribute5="",
             last_update_login="", created_by=emp_id.strip(), creation_date=datetime.now(),
             last_updated_by=emp_id.strip(), last_update_date=datetime.now()
         )
         db.add(new_leave)
-        db.flush()
 
+        # Update leave balance in LeaveDet (availed_leave column)
         if balance_row and cl_days_to_deduct > 0:
-            try:
-                balance_row.availed_leave = float(balance_row.availed_leave or 0) + cl_days_to_deduct
-                balance_row.available_leave = float(balance_row.available_leave or 0) - cl_days_to_deduct
-                db.commit()
-                print(f"✅ Updated balance for {emp_id}: Available={balance_row.available_leave}, Availed={balance_row.availed_leave}")
-            except Exception as balance_err:
-                print(f"❌ Error updating balance: {balance_err}")
-                db.rollback()
+            balance_row.availed_leave = float(balance_row.availed_leave or 0) + cl_days_to_deduct
+            balance_row.available_leave = max(
+                0.0, float(balance_row.total_leave or 0) - float(balance_row.availed_leave)
+            )
+            balance_row.last_updated_by = emp_id.strip()
+            balance_row.last_update_date = datetime.now()
+            db.add(balance_row)
+            print(f"✅ Updated xxits_leave_det_t for {emp_id}: availed_leave={balance_row.availed_leave}, available_leave={balance_row.available_leave}")
 
+        # Single atomic commit covering both the leave record and the balance update
         try:
             db.commit()
             db.refresh(new_leave)
-            print(f"DEBUG: Leave committed before mail trigger. leave_id={new_leave.l_id}")
+            print(f"✅ Leave applied. l_id={new_leave.l_id}, days={cl_days_to_deduct}, lop={lop_days_val}")
         except Exception as commit_err:
-            print(f"ERROR: Leave commit failed before mail trigger: {commit_err}")
+            print(f"❌ Leave commit failed: {commit_err}")
             db.rollback()
             raise
 
         try:
             if user:
-                approvers = get_approvers(db, user)
+                approvers = get_leave_approvers(db, user)
                 month_str = req_from.strftime("%b-%y") if req_from else ""
                 pure_days = fmt_days(requested_days)
                 subject = f"ITS - {emp_name} - {leave_type} Request | {from_date}"
@@ -2414,7 +2885,7 @@ async def apply_leave(
                             content = f"""
                             <p>Good Day!</p>
                             <p>Please find below the details of my leave.</p>
-                            <p>Let me know if you require any additional information.</p>
+                            <p>Let me know if any adjustments are required or if you need additional information.</p>
                             <br>
                             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                                 <thead>
@@ -2436,7 +2907,6 @@ async def apply_leave(
                                     </tr>
                                 </tbody>
                             </table>
-                            <br>
                             """
                             body = get_email_template(appr["name"], "Leave Request", content, emp_name)
                             print(f"   Triggering leave email API now: {appr['email']}")
@@ -2500,27 +2970,53 @@ def withdraw_leave(l_id: int, background_tasks: BackgroundTasks, db: Session = D
     cl_days = float(leave.days or 0)
     if cl_days > 0:
         l_type_lower = (leave.leave_type or "").strip().lower()
-        if 'casual' in l_type_lower:
-            search_key = 'casual'
-        elif 'sick' in l_type_lower:
-            search_key = 'sick'
+        balance_row_wd = None
+        if 'casual' in l_type_lower or l_type_lower == 'cl':
+            balance_row_wd = db.query(models.LeaveDet).filter(
+                func.lower(func.trim(models.LeaveDet.emp_id)) == (leave.emp_id or "").strip().lower(),
+                func.lower(func.trim(models.LeaveDet.leave_type)).contains('casual')
+            ).first()
+        elif 'sick' in l_type_lower or l_type_lower == 'sl':
+            balance_row_wd = db.query(models.LeaveDet).filter(
+                func.lower(func.trim(models.LeaveDet.emp_id)) == (leave.emp_id or "").strip().lower(),
+                func.lower(func.trim(models.LeaveDet.leave_type)).contains('sick')
+            ).first()
+        elif 'maternity' in l_type_lower or 'paternity' in l_type_lower or l_type_lower in ['ml', 'pl']:
+            # PL and ML share the same balance row stored as "Maternity Leave" in DB
+            balance_row_wd = db.query(models.LeaveDet).filter(
+                func.lower(func.trim(models.LeaveDet.emp_id)) == (leave.emp_id or "").strip().lower(),
+                or_(
+                    func.lower(func.trim(models.LeaveDet.leave_type)).contains('maternity'),
+                    func.lower(func.trim(models.LeaveDet.leave_type)).contains('paternity'),
+                    func.lower(func.trim(models.LeaveDet.leave_type)) == 'ml',
+                    func.lower(func.trim(models.LeaveDet.leave_type)) == 'pl'
+                )
+            ).first()
+        elif 'marriage' in l_type_lower or 'wedding' in l_type_lower:
+            balance_row_wd = db.query(models.LeaveDet).filter(
+                func.lower(func.trim(models.LeaveDet.emp_id)) == (leave.emp_id or "").strip().lower(),
+                or_(
+                    func.lower(func.trim(models.LeaveDet.leave_type)).contains('marriage'),
+                    func.lower(func.trim(models.LeaveDet.leave_type)).contains('wedding')
+                )
+            ).first()
         else:
-            search_key = l_type_lower.split(' ')[0] or 'casual'
+            sk = l_type_lower.split(' ')[0] if l_type_lower else None
+            if sk:
+                balance_row_wd = db.query(models.LeaveDet).filter(
+                    func.lower(func.trim(models.LeaveDet.emp_id)) == (leave.emp_id or "").strip().lower(),
+                    func.lower(func.trim(models.LeaveDet.leave_type)).contains(sk)
+                ).first()
 
-        balance_row = db.query(models.LeaveDet).filter(
-            func.lower(func.trim(models.LeaveDet.emp_id)) == (leave.emp_id or "").strip().lower(),
-            func.lower(func.trim(models.LeaveDet.leave_type)).contains(search_key)
-        ).first()
-
-        if balance_row:
-            balance_row.availed_leave = max(0.0, float(balance_row.availed_leave or 0) - cl_days)
-            balance_row.available_leave = float(balance_row.available_leave or 0) + cl_days
+        if balance_row_wd:
+            balance_row_wd.availed_leave = max(0.0, float(balance_row_wd.availed_leave or 0) - cl_days)
+            balance_row_wd.available_leave = max(0.0, float(balance_row_wd.total_leave or 0) - float(balance_row_wd.availed_leave))
 
     # Fetch user and approvers before deletion (session still valid)
     user = db.query(models.EmpDet).filter(
         func.lower(func.trim(models.EmpDet.emp_id)) == leave_emp_id.lower()
     ).first()
-    approvers = get_approvers(db, user) if user else []
+    approvers = get_leave_approvers(db, user) if user else []
 
     db.delete(leave)
     db.commit()
@@ -2565,6 +3061,29 @@ def withdraw_leave(l_id: int, background_tasks: BackgroundTasks, db: Session = D
                         </tbody>
                     </table>
                     <br>
+                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                    <p style="color: #00008B; font-size: 14px;"><strong>Applied Request Details:</strong></p>
+                    <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                        <thead>
+                            <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Month</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff; width: 40%;">Date</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Days</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="background-color: transparent;">
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{month_str}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{leave_from} to {leave_to}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{fmt_days(leave_days)}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{leave_reason}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+               
                     """
                     body = get_email_template(appr["name"], "Leave Request Withdrawn", content, user.name)
                     background_tasks.add_task(send_email_notification, appr["email"], subject, body)
@@ -2587,6 +3106,7 @@ async def update_leave(
     emp_id: str = Form(...),
     is_half_day: Optional[str] = Form(None),
     half_day_date: Optional[str] = Form(None),
+    half_day_session: Optional[str] = Form(None),
     attachments: Optional[List[UploadFile]] = File(None),
     db: Session = Depends(get_db)
 ):
@@ -2596,48 +3116,93 @@ async def update_leave(
     if (leave.status or "").strip().lower() not in ("pending",):
         raise HTTPException(status_code=400, detail="Only pending leave requests can be updated")
 
+    # Snapshot the as-originally-applied values before they're overwritten below, so the
+    # update notification can show both "Updated Request Details" and the original
+    # "Applied Request Details" (in the same table format as the Apply email).
+    applied_from_date = leave.from_date
+    applied_to_date = leave.to_date
+    applied_days = leave.days
+    applied_reason = leave.reason
+
     emp_id = emp_id.strip()
 
-    # Restore old balance
-    old_days = float(leave.days or 0)
-    old_l_type_lower = (leave.leave_type or "").strip().lower()
-    if 'casual' in old_l_type_lower:
-        old_search_key = 'casual'
-    elif 'sick' in old_l_type_lower:
-        old_search_key = 'sick'
-    else:
-        old_search_key = (old_l_type_lower.split(' ')[0] or 'casual')
+    def _find_leave_balance_row(l_type_str: str):
+        l_type_l = (l_type_str or "").strip().lower()
+        if 'casual' in l_type_l or l_type_l == 'cl':
+            key = 'casual'
+        elif 'sick' in l_type_l or l_type_l == 'sl':
+            key = 'sick'
+        elif 'maternity' in l_type_l or l_type_l == 'ml':
+            row = db.query(models.LeaveDet).filter(
+                func.lower(func.trim(models.LeaveDet.emp_id)) == emp_id.lower(),
+                or_(
+                    func.lower(func.trim(models.LeaveDet.leave_type)).contains('maternity'),
+                    func.lower(func.trim(models.LeaveDet.leave_type)) == 'ml'
+                )
+            ).first()
+            return row
+        elif 'paternity' in l_type_l or l_type_l == 'pl':
+            # Paternity Leave shares the same combined maternity/paternity balance row,
+            # which is stored as "Maternity Leave" in xxits_leave_det_t.
+            row = db.query(models.LeaveDet).filter(
+                func.lower(func.trim(models.LeaveDet.emp_id)) == emp_id.lower(),
+                or_(
+                    func.lower(func.trim(models.LeaveDet.leave_type)).contains('paternity'),
+                    func.lower(func.trim(models.LeaveDet.leave_type)).contains('maternity'),
+                    func.lower(func.trim(models.LeaveDet.leave_type)) == 'pl',
+                    func.lower(func.trim(models.LeaveDet.leave_type)) == 'ml'
+                )
+            ).first()
+            return row
+        elif 'marriage' in l_type_l or 'wedding' in l_type_l:
+            key = 'wedding'
+        else:
+            key = l_type_l.split(' ')[0] if l_type_l else None
+        if not key:
+            return None
+        return db.query(models.LeaveDet).filter(
+            func.lower(func.trim(models.LeaveDet.emp_id)) == emp_id.lower(),
+            func.lower(func.trim(models.LeaveDet.leave_type)).contains(key)
+        ).first()
 
-    old_balance_row = db.query(models.LeaveDet).filter(
-        func.lower(func.trim(models.LeaveDet.emp_id)) == emp_id.lower(),
-        func.lower(func.trim(models.LeaveDet.leave_type)).contains(old_search_key)
-    ).first()
+    # Restore old balance (leave.days already holds only the previously-availed,
+    # non-LOP portion — the LOP portion never touched available_leave)
+    old_days = float(leave.days or 0)
+    old_balance_row = _find_leave_balance_row(leave.leave_type or "")
 
     if old_balance_row and old_days > 0:
         old_balance_row.availed_leave = max(0.0, float(old_balance_row.availed_leave or 0) - old_days)
-        old_balance_row.available_leave = float(old_balance_row.available_leave or 0) + old_days
+        old_balance_row.available_leave = max(0.0, float(old_balance_row.total_leave or 0) - float(old_balance_row.availed_leave))
 
-    # Deduct new balance
-    new_days = float(days)
-    new_l_type_lower = leave_type.strip().lower()
-    if 'casual' in new_l_type_lower:
-        new_search_key = 'casual'
-    elif 'sick' in new_l_type_lower:
-        new_search_key = 'sick'
-    else:
-        new_search_key = (new_l_type_lower.split(' ')[0] or 'casual')
-
-    if new_search_key == old_search_key and old_balance_row:
+    # Deduct new balance, converting any shortfall beyond the available balance into LOP
+    requested_new_days = float(days)
+    new_balance_row = _find_leave_balance_row(leave_type)
+    if old_balance_row is not None and new_balance_row is not None and old_balance_row.l_det_id == new_balance_row.l_det_id:
         new_balance_row = old_balance_row
-    else:
-        new_balance_row = db.query(models.LeaveDet).filter(
-            func.lower(func.trim(models.LeaveDet.emp_id)) == emp_id.lower(),
-            func.lower(func.trim(models.LeaveDet.leave_type)).contains(new_search_key)
-        ).first()
 
-    if new_balance_row and new_days > 0:
-        new_balance_row.availed_leave = float(new_balance_row.availed_leave or 0) + new_days
-        new_balance_row.available_leave = max(0.0, float(new_balance_row.available_leave or 0) - new_days)
+    new_days_to_deduct = requested_new_days
+    new_lop_days_val = 0.0
+    if new_balance_row:
+        total_cap = float(new_balance_row.total_leave or 0)
+        l_type_l = (leave_type or "").strip().lower()
+        if 'paternity' in l_type_l or l_type_l == 'pl':
+            total_cap = min(total_cap, 3.0) if total_cap > 0 else 3.0
+        avail = max(0.0, total_cap - float(new_balance_row.availed_leave or 0))
+        if new_days_to_deduct > avail:
+            new_lop_days_val = new_days_to_deduct - avail
+            new_days_to_deduct = avail
+    else:
+        new_lop_days_val = requested_new_days
+        new_days_to_deduct = 0.0
+
+    from decimal import Decimal, ROUND_HALF_UP
+    _twodp = Decimal('0.01')
+    new_days_to_deduct = float(Decimal(str(new_days_to_deduct)).quantize(_twodp, rounding=ROUND_HALF_UP))
+    new_lop_days_val = float(Decimal(str(new_lop_days_val)).quantize(_twodp, rounding=ROUND_HALF_UP))
+
+    if new_balance_row and new_days_to_deduct > 0:
+        new_balance_row.availed_leave = float(new_balance_row.availed_leave or 0) + new_days_to_deduct
+        new_balance_row.available_leave = max(0.0, float(new_balance_row.total_leave or 0) - float(new_balance_row.availed_leave))
 
     # Handle new attachment
     if attachments:
@@ -2656,13 +3221,27 @@ async def update_leave(
     leave.leave_type = leave_type
     leave.from_date = from_date
     leave.to_date = to_date
-    leave.days = str(new_days)
+    leave.days = fmt_days(new_days_to_deduct)
+    leave.lop_days = fmt_days(new_lop_days_val)
     leave.reason = reason
     leave.status = status
     leave.last_update_date = datetime.now()
     leave.last_updated_by = emp_id
     if half_day_date:
         leave.half_date = half_day_date
+    if half_day_session:
+        leave.half_day_session = half_day_session
+
+    if abs(requested_new_days - 0.5) < 0.001:
+        req_from_date = parse_date(from_date)
+        if req_from_date:
+            checkin_for_date = db.query(models.CheckIn).filter(
+                func.lower(func.trim(models.CheckIn.emp_id)) == emp_id.lower(),
+                models.CheckIn.t_date == req_from_date.date()
+            ).first()
+            auto_session = detect_half_day_session(checkin_for_date)
+            if auto_session:
+                leave.half_day_session = auto_session
 
     db.commit()
 
@@ -2672,12 +3251,19 @@ async def update_leave(
             func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.lower()
         ).first()
         if user:
-            approvers = get_approvers(db, user)
+            approvers = get_leave_approvers(db, user)
             month_str = ""
             try:
                 from_dt = parse_date(from_date)
                 if from_dt:
                     month_str = from_dt.strftime("%b-%y")
+            except Exception:
+                pass
+            applied_month_str = ""
+            try:
+                applied_from_dt = parse_date(applied_from_date)
+                if applied_from_dt:
+                    applied_month_str = applied_from_dt.strftime("%b-%y")
             except Exception:
                 pass
             subject = f"ITS - {user.name} - {leave_type} Request Updated | {from_date}"
@@ -2704,12 +3290,35 @@ async def update_leave(
                                 <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
                                 <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{month_str}</td>
                                 <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{from_date} to {to_date}</td>
-                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{fmt_days(new_days)}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{fmt_days(requested_new_days)}</td>
                                 <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{reason}</td>
                             </tr>
                         </tbody>
                     </table>
                     <br>
+                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                    <p style="color: #00008B; font-size: 14px;"><strong>Applied Request Details:</strong></p>
+                    <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                        <thead>
+                            <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Month</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff; width: 40%;">Date</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Days</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="background-color: transparent;">
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{applied_month_str}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{applied_from_date} to {applied_to_date}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{fmt_days(applied_days)}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{applied_reason}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                
                     """
                     body = get_email_template(appr["name"], "Leave Request Updated", content, user.name)
                     background_tasks.add_task(send_email_notification, appr["email"], subject, body)
@@ -2796,7 +3405,7 @@ def get_all_leave_history(manager_id: Optional[str] = None, db: Session = Depend
             "l_id": leave.l_id, "emp_name": emp.name or "Unknown Employee",
             "emp_id": emp.emp_id.strip() if emp.emp_id else "",
             "leave_type": leave.leave_type, "from_date": leave.from_date, "to_date": leave.to_date,
-            "days": leave.days, "reason": leave.reason, "remarks": leave.remarks or "",
+            "days": leave.days, "lop_days": leave.lop_days, "reason": leave.reason, "remarks": leave.remarks or "",
             "status": leave.status, "file": leave.file, "revision": leave.revision,
             "is_delegated": is_delegated, "is_read_only": is_read_only
         })
@@ -2869,14 +3478,73 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
             req_from = parse_date(leave.from_date)
             req_to = parse_date(leave.to_date) if leave.to_date else req_from
             if req_from and req_to:
-                current_date = req_from
                 cl_days = float(leave.days) if leave.days else 0.0
                 lop_days = float(leave.lop_days) if leave.lop_days else 0.0
                 requested_days = cl_days + lop_days
+
+                # Enforce PL cap (max 3 days) for Paternity Leave on approval
+                l_type_l = (leave.leave_type or "").strip().lower()
+                if 'paternity' in l_type_l or l_type_l == 'pl':
+                    if cl_days > 3.0:
+                        extra_lop = cl_days - 3.0
+                        lop_days += extra_lop
+                        cl_days = 3.0
+                        leave.days = fmt_days(cl_days)
+                        leave.lop_days = fmt_days(lop_days)
+
                 temp_cl = cl_days
                 temp_lop = lop_days
-                prefix = "CL" if "casual" in (leave.leave_type or "").lower() else "SL" if "sick" in (leave.leave_type or "").lower() else "LOP"
+
+                def _leave_type_prefix(l_type: str) -> str:
+                    t = (l_type or "").strip().lower()
+                    if "casual" in t:
+                        return "CL"
+                    if "sick" in t:
+                        return "SL"
+                    if "paternity" in t:
+                        return "PL"
+                    if "maternity" in t:
+                        return "ML"
+                    if "marriage" in t or "wedding" in t:
+                        return "MGL"
+                    if "comp" in t:
+                        return "CO"
+                    # Generic fallback: initials of each word, e.g. "Bereavement Leave" -> "BL"
+                    words = [w for w in re.split(r"[\s_-]+", (l_type or "").strip()) if w]
+                    return ("".join(w[0].upper() for w in words)[:3] or "OL") if words else "OL"
+
+                prefix = _leave_type_prefix(leave.leave_type)
+                current_date = req_from
                 while current_date <= req_to:
+                    # ── Skip Week Off days entirely — no insertion, no status update,
+                    # no balance deduction.  Two cases must both be handled:
+                    #
+                    #  1. Sunday (weekday == 6): no check-in record exists at all for
+                    #     this date, so the old "existing_checkin and status == week off"
+                    #     guard never fired — a brand-new PL/LOP row was being inserted.
+                    #
+                    #  2. An explicit "Week Off" record already exists in CheckIn (e.g.
+                    #     a Saturday configured as week-off in the organisation calendar).
+                    #     The status must not be overwritten.
+                    existing_checkin = db.query(models.CheckIn).filter(
+                        models.CheckIn.emp_id == leave.emp_id,
+                        models.CheckIn.t_date == current_date.date()
+                    ).first()
+
+                    is_sunday = current_date.weekday() == 6          # Python: Mon=0 … Sun=6
+                    is_week_off_record = (
+                        existing_checkin is not None and
+                        (existing_checkin.status or "").strip().lower() == "week off"
+                    )
+
+                    if is_sunday or is_week_off_record:
+                        print(
+                            f"ℹ️ Skipping {'Sunday' if is_sunday else 'Week Off'} "
+                            f"{current_date.date()} for {leave.emp_id} — no insert/update"
+                        )
+                        current_date += timedelta(days=1)
+                        continue
+
                     day_val = 0.5 if requested_days == 0.5 else 1.0
                     day_status = ""
                     if temp_cl >= day_val:
@@ -2888,11 +3556,7 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
                     elif temp_lop > 0:
                         day_status = "0.5LOP"; temp_lop = 0
                     else:
-                        day_status = f"{prefix}"
-                    existing_checkin = db.query(models.CheckIn).filter(
-                        models.CheckIn.emp_id == leave.emp_id,
-                        models.CheckIn.t_date == current_date.date()
-                    ).first()
+                        day_status = f"{'0.5' if day_val == 0.5 else ''}LOP"
                     if existing_checkin:
                         existing_checkin.status = day_status
                         existing_checkin.last_updated_by = request_item.admin_id
@@ -2918,62 +3582,34 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
         ).first()
         if emp_user and emp_user.p_mail:
             subject = f"ITS - {emp_user.name} - {leave.leave_type} Request | {leave.from_date}"
-            
-            # Original Table Content to be appended below the status
-            month_str = ""
-            try:
-                from_dt = parse_date(leave.from_date)
-                if from_dt: month_str = from_dt.strftime("%b-%y")
-            except: pass
-            
-            # Ensure we show the computed working days if stored `leave.days` is missing/zero
-            try:
-                has_days = False
-                if leave.days is not None:
-                    try:
-                        has_days = float(str(leave.days).strip()) > 0
-                    except:
-                        has_days = False
-                if has_days:
-                    pure_days = fmt_days(leave.days)
-                else:
-                    # compute working days between from_date and to_date (exclude Sundays and office holidays)
-                    computed_days = 0
-                    try:
-                        req_from = parse_date(leave.from_date)
-                        req_to = parse_date(leave.to_date) if leave.to_date else req_from
-                        # gather holidays
-                        holidays_raw = db.query(models.HolidayDet.Office_Holiday_Date).all()
-                        holiday_dates = set()
-                        for h in holidays_raw:
-                            try:
-                                hd = parse_date(h[0])
-                                if hd:
-                                    holiday_dates.add(hd.date())
-                            except:
-                                continue
-                        if req_from and req_to:
-                            cur = req_from
-                            while cur <= req_to:
-                                # Python weekday: Monday=0 ... Sunday=6
-                                if cur.weekday() != 6 and cur.date() not in holiday_dates:
-                                    computed_days += 1
-                                cur += timedelta(days=1)
-                        # adjust for half-day recorded in leave.half_date
-                        if getattr(leave, 'half_date', None):
-                            computed_days = max(0.5, computed_days - 0.5)
-                    except Exception:
-                        computed_days = 0
-                    pure_days = fmt_days(computed_days)
-            except Exception:
-                pure_days = fmt_days(leave.days)
-            
+
+            remarks_html = f'<p><strong>Remarks:</strong> {request_item.remarks or ""}</p>'
+
             status_content = f"""
             <p>Good Day!</p>
-            <p>Your leave request has been <strong>{request_item.action}</strong>.</p>
+            <p>Your Leave Request has been <strong>{request_item.action}</strong>.</p>
+            {remarks_html}
+            """
+
+            # Reconstruct the original Apply-request content (same shape as the Apply
+            # email) to quote below the approval/rejection message.
+            orig_month_str = ""
+            try:
+                orig_from_dt = parse_date(leave.from_date)
+                if orig_from_dt:
+                    orig_month_str = orig_from_dt.strftime("%b-%y")
+            except Exception:
+                pass
+            try:
+                orig_days = fmt_days(float(leave.days or 0) + float(leave.lop_days or 0))
+            except (TypeError, ValueError):
+                orig_days = leave.days or ""
+            original_request_html = f"""
+            <p style="margin-top: 0;"><strong>Dear {emp_user.name},</strong></p>
+            <p>Good Day!</p>
+            <p>Please find below the details of my leave.</p>
+            <p>Let me know if any adjustments are required or if you need additional information.</p>
             <br>
-            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-            <p style="color: #00008B; font-size: 14px;"><strong>Original Request Details:</strong></p>
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
                     <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
@@ -2987,16 +3623,15 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
                 <tbody>
                     <tr style="background-color: transparent;">
                         <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
-                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{month_str}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{orig_month_str}</td>
                         <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{leave.from_date} to {leave.to_date}</td>
-                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{pure_days}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{orig_days}</td>
                         <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{leave.reason}</td>
                     </tr>
                 </tbody>
             </table>
-            <br>
             """
-            body = get_email_template(emp_user.name, f"Leave Request {request_item.action}", status_content, leave.approved_by or "Manager")
+            body = get_email_template(emp_user.name, f"Leave Request {request_item.action}", status_content, leave.approved_by or "Manager", original_request_html)
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
             if emp_user.attribute7:
                 background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7],
@@ -3309,6 +3944,7 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
                     content = f"""
                     <p>Good Day!</p>
                     <p>Please find below the details of my overtime request.</p>
+                    <p>Let me know if any adjustments are required or if you need additional information.</p>
                     <br>
                     <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                         <thead>
@@ -3332,7 +3968,6 @@ def apply_ot(request: schemas.OverTimeApplyRequest, background_tasks: Background
                             </tr>
                         </tbody>
                     </table>
-                    <br>
                     """
                     body = get_email_template(appr["name"], "New Overtime Request", content, user.name)
                     background_tasks.add_task(send_email_notification, appr["email"], subject, body)
@@ -3473,44 +4108,48 @@ def approve_permission(request_item: schemas.PermissionApprovalAction, backgroun
         ).first()
         if emp_user and emp_user.p_mail:
             date_str = perm.date.strftime("%d-%b-%Y") if perm.date else ""
-            f_display = format_time_safe(perm.f_time)
-            t_display = format_time_safe(perm.t_time)
             subject = f"Permission Request {request_item.action.upper()} - {date_str}"
+            remarks_html = f'<p><strong>Remarks:</strong> {request_item.remarks or ""}</p>'
             content = f"""
             <p>Good Day!</p>
-            <p>Your request for <strong>Permission</strong> has been processed.</p>
-            <div style="font-size: 20px; font-weight: 700; color: #00008B; margin: 20px 0;">{request_item.action}</div>
+            <p>Your Permission Request has been <strong>{request_item.action}</strong>.</p>
+            {remarks_html}
+            """
+
+            # Reconstruct the original Apply-request content (same shape as the Apply
+            # email) to quote below the approval/rejection message.
+            orig_f_display = format_time_safe(perm.f_time)
+            orig_t_display = format_time_safe(perm.t_time)
+            original_request_html = f"""
+            <p style="margin-top: 0;"><strong>Dear {emp_user.name},</strong></p>
+            <p>Good Day!</p>
+            <p>Please find below the details of my permission request.</p>
+            <p>Let me know if any adjustments are required or if you need additional information.</p>
             <br>
-            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-            <p style="color: #00008B; font-size: 14px;"><strong>Original Request Details:</strong></p>
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
-                    <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                    <tr style="background-color: #00008B; font-weight: bold;">
                         <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Name</th>
                         <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Date</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">From Time</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">From time</th>
                         <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">To Time</th>
                         <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Total Hours</th>
                         <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <tr style="background-color: transparent;">
+                    <tr>
                         <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
-                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{emp_user.name}</td>
                         <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{date_str}</td>
-                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{f_display}</td>
-                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{t_display}</td>
-                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{perm.total_hours}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{orig_f_display}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{orig_t_display}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{perm.total_hours} hrs</td>
                         <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{perm.reason or "No reason"}</td>
                     </tr>
                 </tbody>
             </table>
-            <br>
-            <p><strong>Remarks:</strong> {request_item.remarks or 'No remarks provided.'}</p>
             """
-            body = get_email_template(emp_user.name, f"Permission Request {request_item.action}", content, perm.approved_by or "Manager")
+            body = get_email_template(emp_user.name, f"Permission Request {request_item.action}", content, perm.approved_by or "Manager", original_request_html)
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
             if emp_user.attribute7:
                 background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7],
@@ -3586,12 +4225,13 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
 
         # ── ★ NEW: Approved leave overlap check ────────────────────────────────
         # Fetch all approved leaves for this employee and check if p_date falls within any range.
-        approved_leaves = db.query(models.EmpLeave).filter(
+        # ── Leave overlap check (Pending or Approved) ──────────────────────
+        existing_leaves = db.query(models.EmpLeave).filter(
             func.lower(func.trim(models.EmpLeave.emp_id)) == target_emp_id,
-            func.lower(func.trim(models.EmpLeave.status)) == "approved"
+            func.lower(func.trim(models.EmpLeave.status)).in_(["pending", "approved"])
         ).all()
 
-        for leave in approved_leaves:
+        for leave in existing_leaves:
             leave_from = parse_date(leave.from_date)
             leave_to   = parse_date(leave.to_date) if leave.to_date else leave_from
             if not leave_from:
@@ -3600,12 +4240,12 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
             leave_to_date   = leave_to.date() if leave_to else leave_from_date
 
             if leave_from_date <= p_date <= leave_to_date:
-                # p_date is inside an approved leave range — block it
                 leave_type = leave.leave_type or "Leave"
+                st_label = (leave.status or "Pending").strip().capitalize()
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        f"Permission cannot be applied on {request.date} because you have an approved "
+                        f"Permission cannot be applied on {request.date} because you have a {st_label} "
                         f"{leave_type} on that date "
                         f"({leave.from_date} to {leave.to_date or leave.from_date}). "
                         f"Please select a different date."
@@ -3676,6 +4316,7 @@ def apply_permission(request: schemas.PermissionApplyRequest, background_tasks: 
                     content = f"""
                     <p>Good Day!</p>
                     <p>Please find below the details of my permission request.</p>
+                    <p>Let me know if any adjustments are required or if you need additional information.</p>
                     <br>
                     <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                         <thead>
@@ -3819,23 +4460,32 @@ def approve_ot(request: schemas.OverTimeApprovalAction, background_tasks: Backgr
         emp_user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == ot.emp_id).first()
         if emp_user and emp_user.p_mail:
             subject = f"OT Request {request.action.upper()} - {ot.ot_date}"
+            remarks_html = f'<p><strong>Remarks:</strong> {request.remarks or ""}</p>'
             content = f"""
             <p>Good Day!</p>
-            <p>Your request for <strong>Overtime</strong> has been processed.</p>
-            <div style="font-size: 20px; font-weight: 700; color: #00008B; margin: 20px 0;">{request.action}</div>
+            <p>Your Overtime Request has been <strong>{request.action}</strong>.</p>
+            {remarks_html}
+            """
+
+            # Reconstruct the original Apply-request content (same shape as the Apply
+            # email) to quote below the approval/rejection message.
+            orig_duration_display = (ot.duration or "").replace("h", "Hr").replace("m", "Min")
+            original_request_html = f"""
+            <p style="margin-top: 0;"><strong>Dear {emp_user.name},</strong></p>
+            <p>Good Day!</p>
+            <p>Please find below the details of my overtime request.</p>
+            <p>Let me know if any adjustments are required or if you need additional information.</p>
             <br>
-            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-            <p style="color: #00008B; font-size: 14px;"><strong>Original Request Details:</strong></p>
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
-                    <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
-                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Name</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">In time</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Out time</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">OT Hours(Duration)</th>
-                    </tr>
+                        <tr style="background-color: #00008B; background: #00008B; font-weight: bold; color: #ffffff;">
+                            <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                            <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Name</th>
+                            <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
+                            <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">In time</th>
+                            <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Out time</th>
+                            <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">OT Hours(Duration)</th>
+                        </tr>
                 </thead>
                 <tbody>
                     <tr style="background-color: transparent;">
@@ -3844,14 +4494,12 @@ def approve_ot(request: schemas.OverTimeApprovalAction, background_tasks: Backgr
                         <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{ot.reason or "No reason"}</td>
                         <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{ot.from_time}</td>
                         <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{ot.to_time}</td>
-                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{ot.duration}</td>
+                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{orig_duration_display}</td>
                     </tr>
                 </tbody>
             </table>
-            <br>
-            <p><strong>Remarks:</strong> {request.remarks or 'No remarks provided.'}</p>
             """
-            body = get_email_template(emp_user.name, "OT Request Update", content, "HR Team")
+            body = get_email_template(emp_user.name, "OT Request Update", content, ot.approved_by or "Manager", original_request_html)
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
             if emp_user.attribute7:
                 background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7],
@@ -3970,25 +4618,34 @@ def approve_wfh(request: schemas.WFHApprovalAction, background_tasks: Background
     wfh.status = request.action
     wfh.last_update_date = datetime.now()
     admin_user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == request.admin_id.strip()).first()
+    if admin_user:
+        wfh.approved_by = admin_user.name
     db.commit()
     try:
         emp_user = db.query(models.EmpDet).filter(models.EmpDet.emp_id == wfh.emp_id).first()
         if emp_user and emp_user.p_mail:
             subject = f"WFH Request {request.action.upper()} - {wfh.date}"
+            remarks_html = f'<p><strong>Remarks:</strong> {request.remarks or ""}</p>'
             content = f"""
             <p>Good Day!</p>
-            <p>Your request for <strong>Work From Home</strong> has been processed.</p>
-            <div style="font-size: 20px; font-weight: 700; color: #00008B; margin: 20px 0;">{request.action}</div>
+            <p>Your Work From Home Request has been <strong>{request.action}</strong>.</p>
+            {remarks_html}
+            """
+
+            # Reconstruct the original Apply-request content (same shape as the Apply
+            # email) to quote below the approval/rejection message.
+            original_request_html = f"""
+            <p style="margin-top: 0;"><strong>Dear {emp_user.name},</strong></p>
+            <p>Good Day!</p>
+            <p>Please find below the details of my Work from Home (WFH) schedule.</p>
+            <p>Let me know if any adjustments are required or if you need additional information.</p>
             <br>
-            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-            <p style="color: #00008B; font-size: 14px;"><strong>Original Request Details:</strong></p>
             <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                 <thead>
                     <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
                         <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
                         <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Name</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">From Date</th>
-                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">To Date</th>
+                        <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Date(s)</th>
                         <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Days</th>
                         <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
                     </tr>
@@ -3998,16 +4655,13 @@ def approve_wfh(request: schemas.WFHApprovalAction, background_tasks: Background
                         <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
                         <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{emp_user.name}</td>
                         <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{wfh.date}</td>
-                        <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{wfh.to_date}</td>
                         <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{fmt_days(wfh.days)} {"Day" if float(wfh.days or 0) == 1.0 else "Days"}</td>
                         <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{wfh.reason or "No reason"}</td>
                     </tr>
                 </tbody>
             </table>
-            <br>
-            <p><strong>Remarks:</strong> {request.remarks or 'No remarks provided.'}</p>
             """
-            body = get_email_template(emp_user.name, "WFH Request Update", content, "HR Team")
+            body = get_email_template(emp_user.name, "WFH Request Update", content, wfh.approved_by or "Manager", original_request_html)
             background_tasks.add_task(send_email_notification, emp_user.p_mail, subject, body)
             if emp_user.attribute7:
                 background_tasks.add_task(send_expo_push_notification, [emp_user.attribute7],
@@ -4095,12 +4749,12 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
                 if sd_dt and sd_dt.date() in new_dates_set:
                     raise HTTPException(status_code=400, detail=f"WFH already applied for {sd}.")
 
-        # ── Approved leave overlap check ──────────────────────────────────────
-        approved_leaves = db.query(models.EmpLeave).filter(
+        # ── Leave overlap check (Pending or Approved) ─────────────────────────
+        existing_leaves = db.query(models.EmpLeave).filter(
             func.lower(func.trim(models.EmpLeave.emp_id)) == clean_emp_id.lower(),
-            func.lower(func.trim(models.EmpLeave.status)) == "approved"
+            func.lower(func.trim(models.EmpLeave.status)).in_(["pending", "approved"])
         ).all()
-        for leave in approved_leaves:
+        for leave in existing_leaves:
             leave_from = parse_date(leave.from_date)
             leave_to = parse_date(leave.to_date) if leave.to_date else leave_from
             if not leave_from:
@@ -4110,10 +4764,11 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
             for new_dt in date_objects:
                 if leave_from_date <= new_dt.date() <= leave_to_date:
                     leave_type = leave.leave_type or "Leave"
+                    st_label = (leave.status or "Pending").strip().capitalize()
                     raise HTTPException(
                         status_code=400,
                         detail=(
-                            f"WFH cannot be applied on {new_dt.strftime('%d-%b-%Y')} because you have an approved "
+                            f"WFH cannot be applied on {new_dt.strftime('%d-%b-%Y')} because you have a {st_label} "
                             f"{leave_type} from {leave.from_date} to {leave.to_date or leave.from_date}. "
                             f"Please select different dates."
                         )
@@ -4179,7 +4834,8 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
                     if appr["email"]:
                         content = f"""
                         <p>Good Day!</p>
-                        <p>Please find below the details of my work from home request.</p>
+                        <p>Please find below the details of my Work from Home (WFH) schedule.</p>
+                        <p>Let me know if any adjustments are required or if you need additional information.</p>
                         <br>
                         <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
                             <thead>
@@ -4201,7 +4857,6 @@ def apply_wfh(request: schemas.WFHApplyRequest, background_tasks: BackgroundTask
                                 </tr>
                             </tbody>
                         </table>
-                        <br>
                         """
                         body = get_email_template(appr["name"], "Work From Home Request", content, user.name)
                         background_tasks.add_task(send_email_notification, appr["email"], subject, body)
@@ -4354,6 +5009,31 @@ def withdraw_permission(p_id: int, background_tasks: BackgroundTasks, db: Sessio
                         </tbody>
                     </table>
                     <br>
+                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                    <p style="color: #00008B; font-size: 14px;"><strong>Applied Request Details:</strong></p>
+                    <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                        <thead>
+                            <tr style="background-color: #00008B; font-weight: bold;">
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Date</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">From time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">To Time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Total Hours</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{perm_date_str}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{perm_f_time}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{perm_t_time}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{perm_total_hours} hrs</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{perm_reason}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <br>
                     """
                     body = get_email_template(appr["name"], "Permission Request Withdrawn", content, user.name)
                     background_tasks.add_task(send_email_notification, appr["email"], subject, body)
@@ -4382,6 +5062,16 @@ def update_permission_by_id(p_id: int, request: schemas.PermissionApplyRequest, 
         raise HTTPException(status_code=400, detail="Invalid to time")
 
     perm_emp_id = (perm.emp_id or "").strip()
+
+    # Snapshot the as-originally-applied values before they're overwritten below, so the
+    # update notification can also show "Applied Request Details" (in the same table
+    # format as the Apply email) alongside "Updated Request Details".
+    applied_date_str = perm.date.strftime("%d-%b-%Y") if perm.date else ""
+    applied_f_display = format_time_safe(perm.f_time)
+    applied_t_display = format_time_safe(perm.t_time)
+    applied_total_hours = perm.total_hours
+    applied_reason = perm.reason
+
     perm.date = p_date_dt.date()
     perm.f_time = f_time_dt
     perm.t_time = t_time_dt
@@ -4435,6 +5125,31 @@ def update_permission_by_id(p_id: int, request: schemas.PermissionApplyRequest, 
                         </tbody>
                     </table>
                     <br>
+                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                    <p style="color: #00008B; font-size: 14px;"><strong>Applied Request Details:</strong></p>
+                    <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                        <thead>
+                            <tr style="background-color: #00008B; font-weight: bold;">
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Date</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">From time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">To Time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Total Hours</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{applied_date_str}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{applied_f_display}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{applied_t_display}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{applied_total_hours} hrs</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{applied_reason}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <br>
                     """
                     body = get_email_template(appr["name"], "Permission Request Updated", content, user.name)
                     background_tasks.add_task(send_email_notification, appr["email"], subject, body)
@@ -4467,6 +5182,16 @@ def update_permission_post(request: schemas.PermissionUpdateRequest, background_
         raise HTTPException(status_code=400, detail="Invalid to time")
 
     perm_emp_id = (perm.emp_id or "").strip()
+
+    # Snapshot the as-originally-applied values before they're overwritten below, so the
+    # update notification can also show "Applied Request Details" (in the same table
+    # format as the Apply email) alongside "Updated Request Details".
+    applied_date_str = perm.date.strftime("%d-%b-%Y") if perm.date else ""
+    applied_f_display = format_time_safe(perm.f_time)
+    applied_t_display = format_time_safe(perm.t_time)
+    applied_total_hours = perm.total_hours
+    applied_reason = perm.reason
+
     perm.date = p_date_dt.date()
     perm.f_time = f_time_dt
     perm.t_time = t_time_dt
@@ -4516,6 +5241,31 @@ def update_permission_post(request: schemas.PermissionUpdateRequest, background_
                                 <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{t_display}</td>
                                 <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.total_hours or 0} hrs</td>
                                 <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.reason}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <br>
+                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                    <p style="color: #00008B; font-size: 14px;"><strong>Applied Request Details:</strong></p>
+                    <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                        <thead>
+                            <tr style="background-color: #00008B; font-weight: bold;">
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Date</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">From time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">To Time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Total Hours</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{applied_date_str}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{applied_f_display}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{applied_t_display}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{applied_total_hours} hrs</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{applied_reason}</td>
                             </tr>
                         </tbody>
                     </table>
@@ -4719,6 +5469,8 @@ def get_birthdays_this_month(db: Session = Depends(get_db)):
         all_emps = db.query(models.EmpDet).all()
         birthdays = []
         for emp in all_emps:
+            if emp is None:
+                continue
             try:
                 is_active = not emp.end_date or str(emp.end_date).strip().lower() in ("", "none", "0000-00-00", "0000-00-00 00:00:00", "00-00-0000", "00-00-0000 00:00:00")
                 if is_active and emp.dob and emp.name:
@@ -4743,6 +5495,8 @@ def get_all_birthdays(db: Session = Depends(get_db)):
         all_emps = db.query(models.EmpDet).all()
         birthdays = []
         for emp in all_emps:
+            if emp is None:
+                continue
             try:
                 is_active = not emp.end_date or str(emp.end_date).strip().lower() in ("", "none", "0000-00-00", "0000-00-00 00:00:00", "00-00-0000", "00-00-0000 00:00:00")
                 if is_active and emp.dob and emp.name:
@@ -4970,6 +5724,15 @@ async def upload_project_file(file: UploadFile = File(...)):
 @app.post("/admin/projects", response_model=schemas.ProjectResponse)
 def create_project(project_req: schemas.ProjectCreateRequest, db: Session = Depends(get_db)):
     now = datetime.now()
+
+    # ── Duplicate project check ─────────────────────────────────────────
+    duplicate = db.query(models.Project).filter(
+        func.lower(func.trim(models.Project.project_name)) == (project_req.project_name or "").strip().lower(),
+        func.lower(func.trim(models.Project.client_ref_no)) == (project_req.client_ref_no or "").strip().lower()
+    ).first()
+    if duplicate:
+        raise HTTPException(status_code=400, detail="Duplicate record already exists.")
+
     new_project = models.Project(
         project_ref_no=project_req.project_ref_no, project_name=project_req.project_name,
         project_type=project_req.project_type, team_size=project_req.team_size, budget=project_req.budget,
@@ -5096,6 +5859,15 @@ def update_ot(ot_id: int, request: schemas.OTUpdateRequest, background_tasks: Ba
         raise HTTPException(status_code=400, detail=f"OT already applied for {ot_date_clean}.")
 
     ot_emp_id = (ot.emp_id or "").strip()
+
+    # Snapshot the as-originally-applied values before they're overwritten below, so the
+    # update notification can also show "Applied Request Details" (in the same table
+    # format as the Apply email) alongside "Updated Request Details".
+    applied_ot_reason = ot.reason
+    applied_ot_from_time = ot.from_time
+    applied_ot_to_time = ot.to_time
+    applied_ot_duration = ot.duration
+
     ot.ot_date = ot_date_clean
     ot.from_time = request.from_time
     ot.to_time = request.to_time
@@ -5114,6 +5886,7 @@ def update_ot(ot_id: int, request: schemas.OTUpdateRequest, background_tasks: Ba
         if user:
             approvers = get_approvers(db, user)
             duration_display = request.duration.replace("h", "Hr").replace("m", "Min")
+            applied_duration_display = (applied_ot_duration or "").replace("h", "Hr").replace("m", "Min")
             subject = f"ITS - {user.name} - OT Request Updated | {ot_date_clean} | {request.from_time} to {request.to_time}"
             for appr in approvers:
                 if appr["email"]:
@@ -5142,6 +5915,31 @@ def update_ot(ot_id: int, request: schemas.OTUpdateRequest, background_tasks: Ba
                                 <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.from_time}</td>
                                 <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{request.to_time}</td>
                                 <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{duration_display}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <br>
+                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                    <p style="color: #00008B; font-size: 14px;"><strong>Applied Request Details:</strong></p>
+                    <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                        <thead>
+                                <tr style="background-color: #00008B; background: #00008B; font-weight: bold; color: #ffffff;">
+                                    <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Name</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">In time</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Out time</th>
+                                    <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">OT Hours(Duration)</th>
+                                </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="background-color: transparent;">
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{user.name}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{applied_ot_reason}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{applied_ot_from_time}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{applied_ot_to_time}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{applied_duration_display}</td>
                             </tr>
                         </tbody>
                     </table>
@@ -5220,6 +6018,31 @@ def withdraw_ot(ot_id: int, background_tasks: BackgroundTasks, db: Session = Dep
                         </tbody>
                     </table>
                     <br>
+                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                    <p style="color: #00008B; font-size: 14px;"><strong>Applied Request Details:</strong></p>
+                    <table style="border-collapse: collapse; width: 100%; max-width: 600px; text-align: center; font-family: 'Times New Roman', Times, serif; border: 1px solid #000;">
+                        <thead>
+                            <tr style="background-color: #00008B; background: #00008B; font-weight: bold;">
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">S.No</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Name</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Reason</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">In time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">Out time</th>
+                                <th style="padding: 8px; border: 1px solid #000; color: #ffffff;">OT Hours(Duration)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="background-color: transparent;">
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">1</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{user.name}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{ot_reason}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{ot_from_time}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{ot_to_time}</td>
+                                <td style="padding: 8px; border: 1px solid #000; color: #00008B;">{duration_display}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <br>
                     """
                     body = get_email_template(appr["name"], "Overtime Request Withdrawn", content, user.name)
                     background_tasks.add_task(send_email_notification, appr["email"], subject, body)
@@ -5250,6 +6073,67 @@ def get_domains(dom_id: Optional[str] = None, db: Session = Depends(get_db)):
         ids = [int(i.strip()) for i in dom_id.split(",") if i.strip().isdigit()]
         query = query.filter(models.Domain.dom_id.in_(ids))
     return query.all()
+
+
+
+
+
+@app.post("/admin/employees/{emp_id}/delegate-manager")
+def set_delegate_manager(emp_id: str, req: schemas.DelegateManagerRequest, db: Session = Depends(get_db)):
+    """
+    Set or clear delegate manager for an employee.
+    """
+    try:
+        emp = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.strip().lower()
+        ).first()
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found")
+
+        del_id = (req.delegate_manager_id or "").strip()
+        del_name = ""
+        if del_id:
+            del_emp = db.query(models.EmpDet).filter(
+                func.lower(func.trim(models.EmpDet.emp_id)) == del_id.lower()
+            ).first()
+            if not del_emp:
+                raise HTTPException(status_code=404, detail=f"Delegate manager '{del_id}' not found")
+            del_name = del_emp.name
+
+        emp.delegate_manager = del_id if del_id else None
+        db.commit()
+
+        return {
+            "message": "Delegate manager updated successfully",
+            "delegate_manager": del_id,
+            "delegate_manager_name": del_name
+        }
+    except HTTPException:
+        db.rollback(); raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/admin/employees/{emp_id}/reset-device")
+def reset_employee_device(emp_id: str, db: Session = Depends(get_db)):
+    """
+    Clear registered device lock for an employee.
+    """
+    try:
+        emp = db.query(models.EmpDet).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == emp_id.strip().lower()
+        ).first()
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found")
+
+        emp.device_id = None
+        db.commit()
+
+        return {"message": "Device lock reset successfully"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/admin/employees/brief", response_model=List[schemas.EmployeeBriefResponse])
@@ -5427,20 +6311,40 @@ def get_employee_allocations(emp_id: str, db: Session = Depends(get_db)):
         dept = db.query(models.Department.department).filter(models.Department.dpt_id == a.dpt_id).first()
         dom = db.query(models.Domain.domain).filter(models.Domain.dom_id == a.dom_id).first()
         lead_id = a.attribute1 or ""
-        manager_name = a.manager_name
-        if not manager_name and a.project_ref_no:
-            alloc_project = db.query(models.Project).filter(
+
+        # a.lead_name is only a snapshot taken when the allocation was created/updated —
+        # if it was never set (older rows) or came back blank, resolve it live from the
+        # lead's emp_id instead of leaving it to fall through to a placeholder.
+        lead_name = a.lead_name
+        if not lead_name and lead_id and lead_id.strip().lower() != "none":
+            lead_emp = db.query(models.EmpDet.name).filter(
+                func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(lead_id))
+            ).first()
+            lead_name = lead_emp[0] if lead_emp else None
+
+        # Join the project for type/status/priority — these were never populated by
+        # this endpoint even though the schema and the UI both expect them.
+        project = None
+        if a.project_ref_no:
+            project = db.query(models.Project).filter(
                 func.lower(func.trim(models.Project.project_ref_no)) == func.lower(func.trim(a.project_ref_no))
             ).first()
-            manager_name = _resolve_manager_name(alloc_project, db)
+
+        manager_name = a.manager_name
+        if not manager_name and project:
+            manager_name = _resolve_manager_name(project, db)
+
         res.append(schemas.ProjectAllocationResponse(
             assign_id=a.assign_id, emp_id=a.emp_id, role_id=a.role_id, dom_id=a.dom_id, dpt_id=a.dpt_id,
             lead_id=lead_id, from_date=_fmt_alloc_date(a.e_start_date), to_date=_fmt_alloc_date(a.e_end_date), task_description=a.task,
             allocation_pct=str(a.allocation) if a.allocation is not None else "", emp_name=emp[0] if emp else "Unknown",
-            lead_name=a.lead_name or "Unknown",
+            lead_name=lead_name or ("—" if not lead_id or lead_id.lower() == "none" else "Unknown"),
             role_name=role[0] if role else "Unknown", dept_name=dept[0] if dept else "Unknown",
             dom_name=dom[0] if dom else "Unknown", project_name=a.project_name or "Unknown", client_name=a.client_name,
-            manager_name=manager_name
+            manager_name=manager_name,
+            project_type=(project.project_type if project else "") or "",
+            project_status=a.e_status or "",
+            project_priority=(project.project_priority if project else "") or ""
         ))
     return res
 
@@ -5470,17 +6374,25 @@ def get_allocation_details(assign_id: int, db: Session = Depends(get_db)):
     lead_id = a.attribute1 or ""
     manager_name = a.manager_name or _resolve_manager_name(project, db)
 
+    lead_name = a.lead_name
+    if not lead_name and lead_id and lead_id.strip().lower() != "none":
+        lead_emp = db.query(models.EmpDet.name).filter(
+            func.lower(func.trim(models.EmpDet.emp_id)) == func.lower(func.trim(lead_id))
+        ).first()
+        lead_name = lead_emp[0] if lead_emp else None
+
     return schemas.ProjectAllocationResponse(
         assign_id=a.assign_id, emp_id=a.emp_id, role_id=a.role_id, dom_id=a.dom_id, dpt_id=a.dpt_id,
         lead_id=lead_id, from_date=_fmt_alloc_date(a.e_start_date), to_date=_fmt_alloc_date(a.e_end_date),
         task_description=a.task, allocation_pct=str(a.allocation) if a.allocation is not None else "",
         emp_name=emp[0] if emp else "Unknown",
-        lead_name=a.lead_name or "Unknown",
+        lead_name=lead_name or ("—" if not lead_id or lead_id.lower() == "none" else "Unknown"),
         role_name=role[0] if role else "Unknown", dept_name=dept[0] if dept else "Unknown",
         dom_name=dom[0] if dom else "Unknown", project_name=a.project_name or "Unknown",
         client_name=a.client_name, manager_name=manager_name,
         project_type=(project.project_type if project else "") or "",
-        project_status=a.e_status or ""
+        project_status=a.e_status or "",
+        project_priority=(project.project_priority if project else "") or ""
     )
 
 
@@ -5573,7 +6485,7 @@ def get_client(client_id: int, db: Session = Depends(get_db)):
     last_update_dt = safe_dt(client.last_update_date)
     return {
         "client_id": client.cl_id, "client_ref_no": client.client_ref_no, "client_name": client.client_name,
-        "company_name": client.company_name,
+        "company_name": client.company_name, "client_type": getattr(client, "client_type", None),
         "mobile_no": client.mobile_no, "email_id": client.email,
         "gst_available": client.gst, "gst": client.gst_no, "msme_available": client.msme,
         "msme": client.msme_no, "pan_no": client.pan, "status": client.status or "Active",
@@ -5591,6 +6503,7 @@ def update_client(client_id: int, client_req: schemas.ClientApplyRequest, db: Se
     now = datetime.now()
     client.client_name = client_req.client_name
     client.company_name = client_req.company_name
+    client.client_type = client_req.client_type
     client.mobile_no = client_req.mobile_no
     client.email = client_req.email_id
     client.gst = client_req.gst_available
@@ -5659,6 +6572,7 @@ def create_client(client_req: schemas.ClientApplyRequest, db: Session = Depends(
             client_ref_no=client_req.client_ref_no.strip(),
             client_name=client_req.client_name,
             company_name=client_req.company_name,
+            client_type=client_req.client_type,
             mobile_no=client_req.mobile_no,
             country_code=client_req.country_code,
             email=client_req.email_id,
@@ -6239,7 +7153,7 @@ def mark_halfday_auto(background_tasks: BackgroundTasks, db: Session = Depends(g
                         </tr>
                     </tbody>
                 </table>
-                <br>
+          
                 <p>If this is incorrect, please contact your HR/Admin.</p>
                 """
                 body = get_email_template(emp.name, "Half Day Auto-Deduction", content, "Aruvi System")
@@ -6395,9 +7309,11 @@ def get_holiday_details(db: Session = Depends(get_db)):
 @app.get("/leave-month/{emp_id}")
 def get_leave_month(emp_id: str, year: int, month: int, db: Session = Depends(get_db)):
     """
-    Returns approved one-day leave records for an employee for a given year/month,
-    as [{date, leave_type}] objects. Used by the timesheet month-view to auto-display
-    the Leave Type against the matching timesheet date.
+    Returns approved leave records for an employee for a given year/month,
+    expanded to individual dates as [{date, leave_type}] objects.
+    Includes all leave types: CL, SL, PL, ML, LOP, etc.
+    Multi-day leaves are expanded so every date in the range gets an entry.
+    Used by the timesheet month-view to auto-display the Leave Type per date.
     """
     try:
         leaves = db.query(models.EmpLeave).filter(
@@ -6407,19 +7323,29 @@ def get_leave_month(emp_id: str, year: int, month: int, db: Session = Depends(ge
     except Exception as e:
         raise HTTPException(status_code=503, detail="Database unavailable.")
 
+    from datetime import timedelta as _td_lm
+
     result = []
+    seen_dates = set()  # avoid duplicates
     for lv in leaves:
         from_dt = parse_date(lv.from_date)
-        to_dt = parse_date(lv.to_date)
+        to_dt = parse_date(lv.to_date) if lv.to_date else from_dt
         if not from_dt or not to_dt:
             continue
-        # Only one-day leaves (from_date == to_date)
-        if from_dt.date() != to_dt.date():
-            continue
-        if from_dt.year != year or from_dt.month != month:
-            continue
-        result.append({"date": lv.from_date, "leave_type": lv.leave_type or "Leave"})
+        # Expand the date range into individual days
+        cur = from_dt.date()
+        end = to_dt.date()
+        leave_label = lv.leave_type or "Leave"
+        while cur <= end:
+            if cur.year == year and cur.month == month:
+                # Format as DD-Mon-YYYY (matches holiday key format in frontend)
+                date_str = cur.strftime("%d-%b-%Y")
+                if date_str not in seen_dates:
+                    seen_dates.add(date_str)
+                    result.append({"date": date_str, "leave_type": leave_label})
+            cur += _td_lm(days=1)
     return result
+
 
 
 def _is_global_admin_user(db: Session, emp: Optional["models.EmpDet"]) -> bool:
