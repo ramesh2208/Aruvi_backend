@@ -283,6 +283,7 @@ class ClientResponse(BaseModel):
     client_ref_no: str
     client_name: str
     company_name: str
+    client_type: Optional[str] = None
     country_code: Optional[str] = "+91"
     mobile_no: Optional[str] = None
     email_id: Optional[str] = None
@@ -672,4 +673,9 @@ class AruviChillaxResponse(BaseModel):
             except Exception:
                 return None
         return v
+
+
+class DelegateManagerRequest(BaseModel):
+    delegate_manager_id: Optional[str] = None
+
 
