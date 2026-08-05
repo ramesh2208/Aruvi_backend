@@ -3505,8 +3505,8 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
                         return "PL"
                     if "maternity" in t:
                         return "ML"
-                    if "marriage" in t or "wedding" in t:
-                        return "MGL"
+                    if "marriage" in t or "wedding" in t or "mgl" in t:
+                        return "WL"
                     if "comp" in t:
                         return "CO"
                     # Generic fallback: initials of each word, e.g. "Bereavement Leave" -> "BL"
@@ -3514,6 +3514,18 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
                     return ("".join(w[0].upper() for w in words)[:3] or "OL") if words else "OL"
 
                 prefix = _leave_type_prefix(leave.leave_type)
+
+                # Pre-fetch organisation week-off dates (e.g. non-Sunday week-offs
+                # configured in xxits_holiday_det_t as Holiday_Name == "Week-off")
+                # so they can be skipped during the leave range walk below.
+                week_off_dates = set()
+                for hol in db.query(models.HolidayDet).all():
+                    if (hol.Holiday_Name or "").strip().lower() != "week-off":
+                        continue
+                    hol_dt = parse_date(hol.Office_Holiday_Date)
+                    if hol_dt:
+                        week_off_dates.add(hol_dt.date())
+
                 current_date = req_from
                 while current_date <= req_to:
                     # ── Skip Week Off days entirely — no insertion, no status update,
@@ -3535,7 +3547,7 @@ def approve_leave(request_item: schemas.LeaveApprovalAction, background_tasks: B
                     is_week_off_record = (
                         existing_checkin is not None and
                         (existing_checkin.status or "").strip().lower() == "week off"
-                    )
+                    ) or current_date.date() in week_off_dates
 
                     if is_sunday or is_week_off_record:
                         print(
@@ -7325,6 +7337,25 @@ def get_leave_month(emp_id: str, year: int, month: int, db: Session = Depends(ge
 
     from datetime import timedelta as _td_lm
 
+    # Week-off dates (e.g. non-Sunday week-offs configured in xxits_holiday_det_t
+    # as Holiday_Name == "Week-off") must not be expanded as a leave day below.
+    week_off_dates = set()
+    for hol in db.query(models.HolidayDet).all():
+        if (hol.Holiday_Name or "").strip().lower() != "week-off":
+            continue
+        hol_dt = parse_date(hol.Office_Holiday_Date)
+        if hol_dt:
+            week_off_dates.add(hol_dt.date())
+
+    # Only dates that actually have a Check-in record (written by approve_leave)
+    # count as a valid leave day — a date with no Check-in row must never be
+    # displayed as a leave type in the Timesheet.
+    checkin_dates = {
+        row.t_date for row in db.query(models.CheckIn.t_date).filter(
+            func.lower(func.trim(models.CheckIn.emp_id)) == emp_id.strip().lower()
+        ).all()
+    }
+
     result = []
     seen_dates = set()  # avoid duplicates
     for lv in leaves:
@@ -7338,6 +7369,9 @@ def get_leave_month(emp_id: str, year: int, month: int, db: Session = Depends(ge
         leave_label = lv.leave_type or "Leave"
         while cur <= end:
             if cur.year == year and cur.month == month:
+                if cur.weekday() == 6 or cur in week_off_dates or cur not in checkin_dates:
+                    cur += _td_lm(days=1)
+                    continue
                 # Format as DD-Mon-YYYY (matches holiday key format in frontend)
                 date_str = cur.strftime("%d-%b-%Y")
                 if date_str not in seen_dates:
